@@ -1,0 +1,94 @@
+# Structural (non-secret) config. Copy to caf.config.yaml and edit.
+# Secrets and operational toggles stay in .env — see .env.example.
+
+server:
+  port: 3000
+
+linear:
+  apiUrl: https://api.linear.app/graphql
+  # UUID of the workflow state that triggers the pipeline (e.g. "Ready for AI").
+  # Required — startup fails fast if missing.
+  readyStateId: 00000000-0000-0000-0000-000000000000
+  webhookTimestampToleranceMs: 60000
+  deliveryDedupeTtlSeconds: 86400
+
+github:
+  apiUrl: https://api.github.com
+  deliveryDedupeTtlSeconds: 86400
+
+# Claude Code agent spawning
+claude:
+  command: claude
+  agentTimeoutMs: 1800000
+
+# Target repo (v1: single repo, no multi-repo routing). cloneUrl is required.
+repo:
+  cloneUrl: https://github.com/your-org/your-repo.git
+  baseBranch: main
+
+workspace:
+  dir: /tmp/caf-orchestrator/workspace
+
+# Multi-project registry foundation (CAF-REGISTRY-1). Not yet consumed by
+# any existing code — repo.*/workspace.dir above remain what's actually
+# used until a later checkpoint migrates the pipeline over. Key is a
+# project name of your choosing; ticketPrefix is what the registry keys on.
+# projects:
+#   your-project:
+#     ticketPrefix: ABC
+#     repoCloneUrl: https://github.com/your-org/your-repo.git
+#     baseBranch: main
+#     workspaceDir: /tmp/caf-orchestrator/workspace/your-project
+#     agents:
+#       modelOverrides: {}
+
+queue:
+  jobTtlSeconds: 86400
+  maxJobsRetained: 100
+  # BullMQ job-level retry (full pipeline re-run from clone, no step-resume).
+  jobAttempts: 2
+  backoffDelayMs: 10000
+  # Concurrent Claude Code agent processes per worker.
+  workerConcurrency: 1
+
+agents:
+  # Pipeline gate retries: how many times to re-run implementation agents
+  # after a QA FAIL / reviewer CHANGES_REQUESTED before stopping for human review.
+  qa:
+    maxRetries: 1
+  reviewer:
+    maxRetries: 1
+  # Per-agent model override, e.g. { qa: "ag/gemini-3.5-flash-low" }.
+  # Applied on top of openai.defaultModel — a per-agent entry wins over the
+  # global default when both are set for the same run. Keys must be one of
+  # planner/caf-frontend/caf-backend/qa/reviewer/documentation; values must be an
+  # exact entry in openai.allowedModels (below).
+  modelOverrides: {}
+
+# Opt-in routing of spawned Claude Code agents through OpenRouter's
+# Anthropic-compatible endpoint (failover + budget visibility). Off by
+# default; if useOpenai is true, OPENAI_API_KEY (.env) becomes required.
+openai:
+  useOpenai: false
+  baseUrl: https://openrouter.ai/api
+  # Optional model override (maps to ANTHROPIC_DEFAULT_SONNET_MODEL in the
+  # spawned claude process). Unset = claude CLI's own default model.
+  # defaultModel: ag/claude-sonnet-4-6
+  #
+  # Exact model ids allowed to be sent to the claude CLI (openai.defaultModel
+  # and every value in agents.modelOverrides above are checked against this
+  # list, byte-for-byte — not a prefix match). Empty by default: fail-closed,
+  # no model passes until you list it here. Each entry must be a model you
+  # have personally verified actually works against openai.baseUrl (a model
+  # id can look plausible and still 404 at call time if it doesn't exist on
+  # the endpoint — startup validation only catches typos/unlisted ids, not
+  # nonexistent ones). To add a model, verify it runs, then uncomment/add a
+  # line like:
+  #   - ag/gemini-3.5-flash-low
+  allowedModels: []
+
+# Bull Board queue dashboard at /admin/queues, basic-auth gated. Off by default
+# (fail-safe). If enabled, DASHBOARD_BASIC_AUTH_PASSWORD must be set in .env.
+dashboard:
+  enabled: false
+  # basicAuthUser: admin

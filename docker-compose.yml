@@ -1,0 +1,72 @@
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "127.0.0.1:6389:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - default
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  api:
+    image: caf-orchestrator:latest
+    build: .
+    command: node dist/presentation/web/server.js
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3030:3030"
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+      - REDIS_URL=redis://redis:6379
+      - WORKSPACE_DIR=/workspace
+    volumes:
+      - workspace:/workspace
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - default
+      - devbox_devnet
+
+  worker:
+    image: caf-orchestrator:latest
+    build: .
+    command: node dist/worker.js
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+      - REDIS_URL=redis://redis:6379
+      - WORKSPACE_DIR=/workspace
+      - GIT_SSH_COMMAND=ssh -i /home/node/.ssh/id_ed25519 -o StrictHostKeyChecking=no
+    volumes:
+      - workspace:/workspace
+      - /home/ubuntu/.ssh/id_ed25519:/home/node/.ssh/id_ed25519:ro
+      - /home/ubuntu/.ssh/id_ed25519.pub:/home/node/.ssh/id_ed25519.pub:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - default
+      - devbox_devnet
+    healthcheck:
+      disable: true
+
+networks:
+  default:
+  devbox_devnet:
+    external: true
+
+volumes:
+  redis_data:
+  workspace:

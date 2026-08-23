@@ -1,0 +1,25 @@
+{
+  "action": "update",
+  "type": "Issue",
+  "data": {
+    "id": "00000000-0000-0000-0000-000000000001",
+    "identifier": "CAF-123",
+    "stateId": "3b76f298-054b-4de8-8ea6-071dcadefeb4",
+    "title": "Example ticket title (redacted fixture)",
+    "assignee": {
+      "id": "00000000-0000-0000-0000-000000000002",
+      "name": "Test User",
+      "email": "test.user@example.com"
+    }
+  },
+  "updatedFrom": {
+    "stateId": "00000000-0000-0000-0000-000000000099"
+  },
+  "actor": {
+    "id": "00000000-0000-0000-0000-000000000003",
+    "name": "Test Actor",
+    "email": "test.actor@example.com"
+  },
+  "createdAt": "2026-07-04T00:00:00.000Z",
+  "webhookTimestamp": 1751587200000
+}
