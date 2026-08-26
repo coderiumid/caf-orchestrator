@@ -111,14 +111,13 @@ describe('ProjectRegistry.load', () => {
     expect(() => ProjectRegistry.load(missingPath)).toThrow(/Config file not found at/);
   });
 
-  it('returns an empty registry when the file has no projects: key at all', () => {
+  it('throws when the file has no projects: key at all (would silently never trigger the pipeline)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'caf-orchestrator-registry-test-'));
     const filePath = join(dir, 'caf.config.yaml');
     writeFileSync(filePath, 'server:\n  port: 4000\n');
 
     try {
-      const registry = ProjectRegistry.load(filePath);
-      expect(registry.getAll()).toEqual([]);
+      expect(() => ProjectRegistry.load(filePath)).toThrow(/at least one project must be configured/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
