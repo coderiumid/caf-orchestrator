@@ -11,9 +11,6 @@ const baseEnv = {
   linear: {
     readyStateId: '3b76f298-054b-4de8-8ea6-071dcadefeb4',
   },
-  repo: {
-    cloneUrl: 'https://example.com/test-org/test-repo.git',
-  },
 };
 
 describe('configSchema — required structural fields', () => {
@@ -22,15 +19,6 @@ describe('configSchema — required structural fields', () => {
     expect(result.success).toBe(false);
     if (!result.success) {
       const issue = result.error.issues.find((i) => i.path.join('.') === 'linear.readyStateId');
-      expect(issue).toBeDefined();
-    }
-  });
-
-  it('rejects a merged input missing repo.cloneUrl', () => {
-    const result = configSchema.safeParse({ ...baseEnv, repo: {} });
-    expect(result.success).toBe(false);
-    if (!result.success) {
-      const issue = result.error.issues.find((i) => i.path.join('.') === 'repo.cloneUrl');
       expect(issue).toBeDefined();
     }
   });

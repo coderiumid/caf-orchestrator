@@ -5,12 +5,12 @@ import { PassThrough } from 'node:stream';
 const configMock: {
   claude: { command: string };
   OPENAI_API_KEY?: string;
-  openai: { useOpenai: boolean; baseUrl: string; defaultModel?: string };
+  openai: { useOpenai: boolean; baseUrl: string; defaultModel?: string; allowedModels: string[] };
   agents: { modelOverrides: Record<string, string> };
 } = {
   claude: { command: 'claude' },
   OPENAI_API_KEY: undefined,
-  openai: { useOpenai: false, baseUrl: 'https://openrouter.ai/api', defaultModel: undefined },
+  openai: { useOpenai: false, baseUrl: 'https://openrouter.ai/api', defaultModel: undefined, allowedModels: [] },
   agents: { modelOverrides: {} },
 };
 
@@ -45,7 +45,7 @@ function createFakeProc() {
 describe('SpawnAgentService', () => {
   beforeEach(() => {
     spawnMock.mockReset();
-    configMock.openai = { useOpenai: false, baseUrl: 'https://openrouter.ai/api', defaultModel: undefined };
+    configMock.openai = { useOpenai: false, baseUrl: 'https://openrouter.ai/api', defaultModel: undefined, allowedModels: [] };
     configMock.OPENAI_API_KEY = undefined;
     configMock.agents = { modelOverrides: {} };
   });
@@ -161,6 +161,7 @@ describe('SpawnAgentService', () => {
 
   it('applies a per-agent model override even when openai.useOpenai is false', async () => {
     configMock.agents.modelOverrides = { qa: 'claude-haiku-4-5-20251001' };
+    configMock.openai.allowedModels = ['claude-haiku-4-5-20251001'];
 
     const { SpawnAgentService } = await import('../../src/infrastructure/agent/spawn-agent.service.js');
     const service = new SpawnAgentService();
@@ -180,6 +181,7 @@ describe('SpawnAgentService', () => {
 
   it('lets a caller-supplied modelOverride win over the global agents.modelOverrides entry', async () => {
     configMock.agents.modelOverrides = { qa: 'claude-haiku-4-5-20251001' };
+    configMock.openai.allowedModels = ['claude-haiku-4-5-20251001', 'project-specific-model'];
 
     const { SpawnAgentService } = await import('../../src/infrastructure/agent/spawn-agent.service.js');
     const service = new SpawnAgentService();
@@ -216,6 +218,7 @@ describe('SpawnAgentService', () => {
     configMock.OPENAI_API_KEY = 'sk-or-test-key';
     configMock.openai.defaultModel = 'anthropic/claude-sonnet-4.5';
     configMock.agents.modelOverrides = { qa: 'google/gemini-2.5-pro' };
+    configMock.openai.allowedModels = ['google/gemini-2.5-pro'];
 
     const { SpawnAgentService } = await import('../../src/infrastructure/agent/spawn-agent.service.js');
     const service = new SpawnAgentService();
