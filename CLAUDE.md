@@ -83,14 +83,17 @@ Bull Board UI for the `agent-pipeline` BullMQ queue, mounted at `/admin/queues` 
 
 ### v1 scope constraints (intentional, not gaps)
 
-- Single target repo only (`REPO_CLONE_URL`/`REPO_BASE_BRANCH` are global config, not per-ticket/per-team routing).
-- Worker concurrency defaults to 1 (`WORKER_CONCURRENCY`) — concurrent Claude Code agent processes are expensive.
+- Worker concurrency defaults to 1 (`queue.workerConcurrency` in `caf.config.yaml`) — concurrent Claude Code agent processes are expensive.
 - No step-resume: any pipeline failure retries the whole job from planner onward.
+
+### Per-project registry (`config/project-registry.ts`)
+
+Multi-repo/multi-team routing is live, not global config: `caf.config.yaml`'s `projects:` map (validated by `project-config.schema.ts`) holds one entry per project — `ticketPrefix`, `repoCloneUrl`, `baseBranch`, `workspaceDir`, `agents.modelOverrides` — keyed by an arbitrary project name but re-keyed by `ticketPrefix` in the loaded `ProjectRegistry`. The webhook handler looks up the target project by the incoming ticket's key prefix (e.g. `ABC-123` → `ABC`) and carries the matched config through the job payload as `projectConfig`. `ProjectRegistry.load()` fails startup fast if `projects:` is missing or empty — at least one project must be configured, or no ticket could ever match and the pipeline would silently never trigger.
 
 ## Config
 
 Config is split two ways, both validated through `src/config/schema.ts` (zod):
-- **Structural** (non-secret) fields — server port, Linear/GitHub API URLs, `repo.cloneUrl`/`baseBranch`, workspace dir, queue settings, `agents.qa.maxRetries`/`agents.reviewer.maxRetries`, `agents.modelOverrides`, `openai.*` — live in `caf.config.yaml` (copy from `caf.config.example.yaml`).
+- **Structural** (non-secret) fields — server port, Linear/GitHub API URLs, workspace dir, queue settings, `agents.qa.maxRetries`/`agents.reviewer.maxRetries`, `agents.modelOverrides`, `openai.*`, and the per-project `projects:` map — live in `caf.config.yaml` (copy from `caf.config.example.yaml`).
 - **Secrets** and operational toggles — `REDIS_URL`, `LINEAR_WEBHOOK_SECRET`, `LINEAR_API_KEY`, `GITHUB_TOKEN`, `ENABLE_PIPELINE_TRIGGER`, `AGENT_SKIP_ENABLED`, Telegram vars, `OPENAI_API_KEY` — stay in `.env`. See `.env.example`/`caf.config.example.yaml` for full lists.
 
 `linear.readyStateId` (in `caf.config.yaml`, must be a UUID) is required — startup fails fast if missing. Telegram vars (`TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`) are optional but must be set together (enforced via `superRefine`).
