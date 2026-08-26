@@ -77,8 +77,12 @@ function makeJob(): ExistingJobPayload {
     ticketKey: 'CAF-123',
     ticketTitle: 'Test ticket',
     ticketDescription: 'Test description',
-    cloneUrl: 'https://github.com/ganjardbc/umkm-pos.git',
-    baseBranch: 'main',
+    projectConfig: {
+      repoCloneUrl: 'https://github.com/ganjardbc/umkm-pos.git',
+      baseBranch: 'main',
+      workspaceDir: '/tmp/caf-orchestrator/workspace/umkm-pos',
+      agents: { modelOverrides: {} },
+    },
   };
 }
 
@@ -232,7 +236,7 @@ describe('RunAgentPipelineUseCase', () => {
     await expect(useCase.execute(makeJob())).rejects.toThrow(/exited with code 1/);
 
     const failureLogCall = loggerErrorMock.mock.calls.find(
-      (call) => call[0] === 'planner agent run failed' || call[0] === 'Planner agent run failed',
+      (call) => call[0] === 'caf-planner agent run failed',
     );
     expect(failureLogCall).toBeDefined();
     const fields = failureLogCall?.[2];
@@ -391,6 +395,7 @@ describe('RunAgentPipelineUseCase', () => {
       'caf-documentation',
       expect.any(String),
       expect.stringContaining('Docs Tasks'),
+      undefined,
     );
     expect(gitService.commitAll).toHaveBeenCalledTimes(1);
     expect(gitService.push).toHaveBeenCalledTimes(1);
@@ -766,7 +771,7 @@ describe('RunAgentPipelineUseCase', () => {
       await useCase.execute(makeJob());
 
       expect(agentRunner.run).not.toHaveBeenCalledWith('caf-backend', expect.anything(), expect.anything());
-      expect(agentRunner.run).toHaveBeenCalledWith('caf-frontend', expect.any(String), expect.any(String));
+      expect(agentRunner.run).toHaveBeenCalledWith('caf-frontend', expect.any(String), expect.any(String), undefined);
       expect(notifier.notifyAgentSkipped).toHaveBeenCalledWith({
         jobId: 'job-1',
         ticketKey: 'CAF-123',
@@ -790,7 +795,7 @@ describe('RunAgentPipelineUseCase', () => {
       const useCase = new RunAgentPipelineUseCase({ gitService, workspaceManager, agentRunner, linearClient, vcsClient, notifier });
       await useCase.execute(makeJob());
 
-      expect(agentRunner.run).toHaveBeenCalledWith('caf-backend', expect.any(String), expect.any(String));
+      expect(agentRunner.run).toHaveBeenCalledWith('caf-backend', expect.any(String), expect.any(String), undefined);
       expect(notifier.notifyAgentSkipped).not.toHaveBeenCalledWith(
         expect.objectContaining({ agentName: 'caf-backend' }),
       );
@@ -880,9 +885,9 @@ describe('RunAgentPipelineUseCase', () => {
       const useCase = new RunAgentPipelineUseCase({ gitService, workspaceManager, agentRunner, linearClient, vcsClient, notifier });
       await useCase.execute(makeJob());
 
-      expect(agentRunner.run).toHaveBeenCalledWith('caf-backend', expect.any(String), expect.any(String));
-      expect(agentRunner.run).toHaveBeenCalledWith('caf-qa', expect.any(String), expect.any(String));
-      expect(agentRunner.run).toHaveBeenCalledWith('caf-reviewer', expect.any(String), expect.any(String));
+      expect(agentRunner.run).toHaveBeenCalledWith('caf-backend', expect.any(String), expect.any(String), undefined);
+      expect(agentRunner.run).toHaveBeenCalledWith('caf-qa', expect.any(String), expect.any(String), undefined);
+      expect(agentRunner.run).toHaveBeenCalledWith('caf-reviewer', expect.any(String), expect.any(String), undefined);
       expect(notifier.notifyAgentSkipped).not.toHaveBeenCalled();
       expect(appendSkipNoteMock).not.toHaveBeenCalled();
       expect(gitService.commitAll).toHaveBeenCalledTimes(1);

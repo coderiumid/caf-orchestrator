@@ -178,6 +178,23 @@ describe('SpawnAgentService', () => {
     expect(options.env.ANTHROPIC_BASE_URL).toBeUndefined();
   });
 
+  it('lets a caller-supplied modelOverride win over the global agents.modelOverrides entry', async () => {
+    configMock.agents.modelOverrides = { qa: 'claude-haiku-4-5-20251001' };
+
+    const { SpawnAgentService } = await import('../../src/infrastructure/agent/spawn-agent.service.js');
+    const service = new SpawnAgentService();
+    const fakeProc = createFakeProc();
+    spawnMock.mockReturnValue(fakeProc);
+
+    const runPromise = service.run('qa', '/tmp/workspace', 'run qa', 'project-specific-model');
+    setImmediate(() => fakeProc.emit('close', 0, null));
+    await runPromise;
+
+    const [, , options] = spawnMock.mock.calls[0] as [string, string[], { env: NodeJS.ProcessEnv }];
+    expect(options.env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('project-specific-model');
+    expect(options.env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe('project-specific-model');
+  });
+
   it('does not apply another agent\'s override', async () => {
     configMock.agents.modelOverrides = { qa: 'claude-haiku-4-5-20251001' };
 
