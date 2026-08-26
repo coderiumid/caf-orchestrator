@@ -52,11 +52,11 @@ agents:
     maxRetries: 1
   reviewer:
     maxRetries: 1
-  # Per-agent model override, e.g. { qa: "ag/gemini-3.5-flash-low" }.
+  # Per-agent model override, e.g. { caf-qa: "ag/gemini-3.5-flash-low" }.
   # Applied on top of openai.defaultModel — a per-agent entry wins over the
   # global default when both are set for the same run. Keys must be one of
-  # planner/caf-frontend/caf-backend/qa/reviewer/documentation; values must be an
-  # exact entry in openai.allowedModels (below).
+  # caf-planner/caf-frontend/caf-backend/caf-qa/caf-reviewer/caf-documentation;
+  # values must be an exact entry in openai.allowedModels (below).
   modelOverrides: {}
 
 # Opt-in routing of spawned Claude Code agents through OpenRouter's
