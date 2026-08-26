@@ -4,8 +4,9 @@ import type { IGitService } from '../../domain/interfaces/git.interface.js';
 import { config } from '../../config/index.js';
 import { GitError, ValidationError } from '../../domain/errors/app-errors.js';
 import { logger } from '../logging/logger.js';
+import { isSafeBranchName } from '../vcs/security.js';
 
-const WORKSPACE_ROOT = resolve(config.workspace.dir);
+const DEFAULT_WORKSPACE_ROOT = resolve(config.workspace.dir);
 const CLONE_DEPTH = 50;
 
 const GIT_ENV: NodeJS.ProcessEnv = {
@@ -25,10 +26,17 @@ function getAuthenticatedRepoUrl(repoUrl: string): string {
   return repoUrl;
 }
 
-function assertInsideWorkspace(dirPath: string): void {
+function assertInsideWorkspace(dirPath: string, workspaceRoot?: string): void {
+  const root = workspaceRoot ? resolve(workspaceRoot) : DEFAULT_WORKSPACE_ROOT;
   const resolved = resolve(dirPath);
-  if (!resolved.startsWith(WORKSPACE_ROOT + '/') && resolved !== WORKSPACE_ROOT) {
+  if (!resolved.startsWith(root + '/') && resolved !== root) {
     throw new ValidationError(`Path escape attempt detected: ${dirPath}`);
+  }
+}
+
+function assertSafeBranchName(branch: string): void {
+  if (!isSafeBranchName(branch)) {
+    throw new ValidationError(`Unsafe branch name rejected: ${branch}`);
   }
 }
 
@@ -63,8 +71,9 @@ function runGit(args: string[], cwd: string): Promise<string> {
 }
 
 export class GitService implements IGitService {
-  async clone(repoUrl: string, branch: string, targetDir: string): Promise<void> {
-    assertInsideWorkspace(targetDir);
+  async clone(repoUrl: string, branch: string, targetDir: string, workspaceRoot?: string): Promise<void> {
+    assertInsideWorkspace(targetDir, workspaceRoot);
+    assertSafeBranchName(branch);
 
     const authenticatedUrl = getAuthenticatedRepoUrl(repoUrl);
     logger.info('Cloning repository', undefined, { repoUrl: repoUrl.replace(/:[^@]+@/, ':***@'), branch });
@@ -79,29 +88,31 @@ export class GitService implements IGitService {
         authenticatedUrl,
         targetDir,
       ],
-      WORKSPACE_ROOT,
+      workspaceRoot ? resolve(workspaceRoot) : DEFAULT_WORKSPACE_ROOT,
     );
 
     logger.debug('Clone complete', undefined, { targetDir });
   }
 
-  async createBranch(targetDir: string, branch: string): Promise<void> {
-    assertInsideWorkspace(targetDir);
+  async createBranch(targetDir: string, branch: string, workspaceRoot?: string): Promise<void> {
+    assertInsideWorkspace(targetDir, workspaceRoot);
+    assertSafeBranchName(branch);
 
     logger.debug('Creating branch', undefined, { branch });
     await runGit(['checkout', '-b', branch], targetDir);
   }
 
-  async commitAll(targetDir: string, message: string): Promise<void> {
-    assertInsideWorkspace(targetDir);
+  async commitAll(targetDir: string, message: string, workspaceRoot?: string): Promise<void> {
+    assertInsideWorkspace(targetDir, workspaceRoot);
 
     await runGit(['add', '-A'], targetDir);
     await runGit(['commit', '-m', message, '--allow-empty'], targetDir);
     logger.debug('Committed changes', undefined, { targetDir });
   }
 
-  async push(targetDir: string, branch: string): Promise<void> {
-    assertInsideWorkspace(targetDir);
+  async push(targetDir: string, branch: string, workspaceRoot?: string): Promise<void> {
+    assertInsideWorkspace(targetDir, workspaceRoot);
+    assertSafeBranchName(branch);
 
     logger.info('Pushing branch', undefined, { branch });
     await runGit(['push', '--set-upstream', 'origin', branch], targetDir);

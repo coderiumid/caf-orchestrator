@@ -79,6 +79,11 @@ export class QueueWorker {
     });
 
     this.worker.on('stalled', (jobId: string) => {
+      // A stalled job re-enters the processor (re-setting jobStartTimes) if BullMQ
+      // retries it, or ends via 'failed' if retries are exhausted — but neither is
+      // guaranteed (e.g. the job is removed from the queue mid-stall), so drop the
+      // entry here too rather than leaking it forever.
+      this.jobStartTimes.delete(jobId);
       logger.warn('Job stalled', undefined, { jobId });
     });
   }

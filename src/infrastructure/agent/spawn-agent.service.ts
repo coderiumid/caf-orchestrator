@@ -18,7 +18,7 @@ import { logger } from '../logging/logger.js';
  * step-resume state is written (risk #2).
  */
 export class SpawnAgentService implements IAgentRunner {
-  async run(agentName: string, cwd: string, prompt: string): Promise<AgentRunResult> {
+  async run(agentName: string, cwd: string, prompt: string, modelOverride?: string): Promise<AgentRunResult> {
     return new Promise((resolve) => {
       logger.info('Spawning agent', undefined, { agentName, cwd });
 
@@ -58,8 +58,9 @@ export class SpawnAgentService implements IAgentRunner {
       // openai.defaultModel above, and applies independent of openai.useOpenai —
       // ANTHROPIC_DEFAULT_SONNET_MODEL/HAIKU_MODEL are honored by the claude CLI
       // against the native Anthropic API too, not just through a custom
-      // ANTHROPIC_BASE_URL.
-      const agentModel = config.agents.modelOverrides[agentName];
+      // ANTHROPIC_BASE_URL. A caller-supplied modelOverride (per-project
+      // agents.modelOverrides) takes precedence over the global one.
+      const agentModel = modelOverride ?? config.agents.modelOverrides[agentName];
       const env = {
         ...(agentModel
           ? {

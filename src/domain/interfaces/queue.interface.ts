@@ -25,8 +25,6 @@ export interface ExistingJobPayload {
   ticketKey: string;
   ticketTitle: string;
   ticketDescription: string;
-  cloneUrl: string;
-  baseBranch: string;
   projectConfig: JobProjectContext;
 }
 

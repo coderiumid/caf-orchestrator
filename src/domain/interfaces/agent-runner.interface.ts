@@ -7,5 +7,6 @@ export interface AgentRunResult {
 }
 
 export interface IAgentRunner {
-  run(agentName: string, cwd: string, prompt: string): Promise<AgentRunResult>;
+  /** modelOverride, when set, takes precedence over the global agents.modelOverrides[agentName] entry (per-project override). */
+  run(agentName: string, cwd: string, prompt: string, modelOverride?: string): Promise<AgentRunResult>;
 }

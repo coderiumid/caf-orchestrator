@@ -255,8 +255,6 @@ export async function webhookRoutes(app: FastifyInstance): Promise<void> {
       ticketKey: payload.data.identifier,
       ticketTitle: payload.data.title,
       ticketDescription: payload.data.description ?? '',
-      cloneUrl: config.repo.cloneUrl,
-      baseBranch: config.repo.baseBranch,
       projectConfig: toJobProjectContext(projectConfig),
     };
 

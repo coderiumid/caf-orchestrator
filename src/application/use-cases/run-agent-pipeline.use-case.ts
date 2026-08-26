@@ -108,7 +108,8 @@ export class RunAgentPipelineUseCase {
     });
 
     const jobStart = process.hrtime.bigint();
-    const workspacePath = await workspaceManager.createWorkspace();
+    const workspaceRoot = job.projectConfig.workspaceDir;
+    const workspacePath = await workspaceManager.createWorkspace(workspaceRoot);
     const repoPath = `${workspacePath}/repo`;
     const branch = `ai-agent/${job.ticketKey}`;
 
@@ -119,8 +120,8 @@ export class RunAgentPipelineUseCase {
     });
 
     try {
-      await gitService.clone(job.cloneUrl, job.baseBranch, repoPath);
-      await gitService.createBranch(repoPath, branch);
+      await gitService.clone(job.projectConfig.repoCloneUrl, job.projectConfig.baseBranch, repoPath, workspaceRoot);
+      await gitService.createBranch(repoPath, branch, workspaceRoot);
 
       const plannerPrompt = [
         `Ticket ${job.ticketKey}: ${job.ticketTitle}`,
@@ -129,7 +130,12 @@ export class RunAgentPipelineUseCase {
       ].join('\n');
 
       void notifier?.notifyAgentStarted({ jobId: job.jobId, ticketKey: job.ticketKey, agentName: 'caf-planner' });
-      const plannerResult = await agentRunner.run('caf-planner', repoPath, plannerPrompt);
+      const plannerResult = await agentRunner.run(
+        'caf-planner',
+        repoPath,
+        plannerPrompt,
+        job.projectConfig.agents.modelOverrides['caf-planner'],
+      );
       logger.info('caf-planner agent run result', undefined, {
         jobId: job.jobId,
         ticketKey: job.ticketKey,
@@ -352,7 +358,12 @@ export class RunAgentPipelineUseCase {
         const docsPrompt = `Implement the Docs Tasks section of .caf/tasks/${job.ticketKey}/tasks.md for ticket ${job.ticketKey}.`;
         try {
           void notifier?.notifyAgentStarted({ jobId: job.jobId, ticketKey: job.ticketKey, agentName: 'caf-documentation' });
-          const docsResult = await agentRunner.run('caf-documentation', repoPath, docsPrompt);
+          const docsResult = await agentRunner.run(
+            'caf-documentation',
+            repoPath,
+            docsPrompt,
+            job.projectConfig.agents.modelOverrides['caf-documentation'],
+          );
           logger.info('caf-documentation agent run result', undefined, {
             jobId: job.jobId,
             ticketKey: job.ticketKey,
@@ -390,20 +401,20 @@ export class RunAgentPipelineUseCase {
         }
       }
 
-      await gitService.commitAll(repoPath, `AI agent pipeline: ${job.ticketKey}`);
-      await gitService.push(repoPath, branch);
+      await gitService.commitAll(repoPath, `AI agent pipeline: ${job.ticketKey}`, workspaceRoot);
+      await gitService.push(repoPath, branch, workspaceRoot);
 
       const qualityGateSkips: Array<{ agent: 'qa' | 'reviewer'; reason: string }> = [];
       if (qaSkipReason !== undefined) qualityGateSkips.push({ agent: 'qa', reason: qaSkipReason });
       if (reviewerSkipReason !== undefined) qualityGateSkips.push({ agent: 'reviewer', reason: reviewerSkipReason });
       const qualityGateWarning = buildQualityGateWarning(qualityGateSkips);
 
-      const { owner, repo } = parseGithubRepo(job.cloneUrl);
+      const { owner, repo } = parseGithubRepo(job.projectConfig.repoCloneUrl);
       const pullRequest = await vcsClient.createPullRequest({
         owner,
         repo,
         head: branch,
-        base: job.baseBranch,
+        base: job.projectConfig.baseBranch,
         title: `${job.ticketKey}: ${job.ticketTitle}`,
         body: buildPrBody(job, docsNote, qaReport, reviewerReport, qualityGateWarning),
       });
@@ -449,7 +460,7 @@ export class RunAgentPipelineUseCase {
 
       throw err;
     } finally {
-      await workspaceManager.cleanupWorkspace(workspacePath);
+      await workspaceManager.cleanupWorkspace(workspacePath, workspaceRoot);
     }
   }
 
@@ -511,7 +522,12 @@ export class RunAgentPipelineUseCase {
 
     for (const agentName of agentsToRun) {
       void notifier?.notifyAgentStarted({ jobId: job.jobId, ticketKey: job.ticketKey, agentName });
-      const result = await agentRunner.run(agentName, repoPath, implementationPrompt);
+      const result = await agentRunner.run(
+        agentName,
+        repoPath,
+        implementationPrompt,
+        job.projectConfig.agents.modelOverrides[agentName],
+      );
       logger.info(`${agentName} agent run result`, undefined, {
         jobId: job.jobId,
         ticketKey: job.ticketKey,
@@ -549,7 +565,12 @@ export class RunAgentPipelineUseCase {
 
     void notifier?.notifyAgentStarted({ jobId: job.jobId, ticketKey: job.ticketKey, agentName: 'caf-qa' });
     const qaPrompt = `Run QA against .caf/tasks/${job.ticketKey}/tasks.md for ticket ${job.ticketKey} and write .caf/tasks/${job.ticketKey}/qa-report.md.`;
-    const qaResult = await agentRunner.run('caf-qa', repoPath, qaPrompt);
+    const qaResult = await agentRunner.run(
+      'caf-qa',
+      repoPath,
+      qaPrompt,
+      job.projectConfig.agents.modelOverrides['caf-qa'],
+    );
     logger.info('caf-qa agent run result', undefined, {
       jobId: job.jobId,
       ticketKey: job.ticketKey,
@@ -593,7 +614,12 @@ export class RunAgentPipelineUseCase {
 
     void notifier?.notifyAgentStarted({ jobId: job.jobId, ticketKey: job.ticketKey, agentName: 'caf-reviewer' });
     const reviewerPrompt = `Review implementasi untuk ticket ${job.ticketKey} sesuai .caf/tasks/${job.ticketKey}/ dan tulis .caf/tasks/${job.ticketKey}/review-notes.md.`;
-    const reviewerResult = await agentRunner.run('caf-reviewer', repoPath, reviewerPrompt);
+    const reviewerResult = await agentRunner.run(
+      'caf-reviewer',
+      repoPath,
+      reviewerPrompt,
+      job.projectConfig.agents.modelOverrides['caf-reviewer'],
+    );
     logger.info('caf-reviewer agent run result', undefined, {
       jobId: job.jobId,
       ticketKey: job.ticketKey,

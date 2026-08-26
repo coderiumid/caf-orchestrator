@@ -8,6 +8,10 @@ const YAML_CONFIG_PATH = resolve(process.cwd(), 'caf.config.yaml');
 
 function loadConfig(): Readonly<AppConfig> {
   const yamlRaw = readYamlConfig(YAML_CONFIG_PATH);
+  // yamlRaw spreads last, so a caf.config.yaml top-level key wins over a same-named
+  // env var. Intentional: yaml keys are lower/nested (repo, workspace, agents, ...)
+  // and env keys are UPPER_SNAKE, so there's no live collision today — but this is
+  // the precedence to keep in mind if that ever changes.
   const merged = { ...process.env, ...(typeof yamlRaw === 'object' && yamlRaw !== null ? yamlRaw : {}) };
 
   const result = configSchema.safeParse(merged);

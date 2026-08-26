@@ -105,10 +105,13 @@ export class RunPrReviewUseCase {
   async execute(job: PrReviewJobPayload): Promise<void> {
     const { gitService, workspaceManager, agentRunner, vcsClient } = this.deps;
 
-    const workspacePath = await workspaceManager.createWorkspace();
-    const repoPath = `${workspacePath}/repo`;
+    // Validate before creating a workspace — a throw here must not leave an
+    // orphaned workspace dir behind (this line runs outside the try/finally).
     const ticketKey = extractTicketKey(job.prHeadBranch);
     const [owner, repo] = job.repoFullName.split('/');
+
+    const workspacePath = await workspaceManager.createWorkspace();
+    const repoPath = `${workspacePath}/repo`;
 
     logger.info('PR review job started', undefined, {
       jobId: job.jobId,

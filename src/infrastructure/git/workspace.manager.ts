@@ -7,23 +7,25 @@ import { config } from '../../config/index.js';
 import { ValidationError } from '../../domain/errors/app-errors.js';
 import { logger } from '../logging/logger.js';
 
-const WORKSPACE_ROOT = resolve(config.workspace.dir);
+const DEFAULT_WORKSPACE_ROOT = resolve(config.workspace.dir);
 
 export class WorkspaceManager implements IWorkspaceManager {
-  validatePath(dirPath: string): boolean {
+  validatePath(dirPath: string, rootDir?: string): boolean {
+    const root = rootDir ? resolve(rootDir) : DEFAULT_WORKSPACE_ROOT;
     const resolved = resolve(dirPath);
-    return resolved.startsWith(WORKSPACE_ROOT + '/') || resolved === WORKSPACE_ROOT;
+    return resolved.startsWith(root + '/') || resolved === root;
   }
 
-  async createWorkspace(): Promise<string> {
-    const workspacePath = join(WORKSPACE_ROOT, `job-${randomUUID()}`);
+  async createWorkspace(rootDir?: string): Promise<string> {
+    const root = rootDir ? resolve(rootDir) : DEFAULT_WORKSPACE_ROOT;
+    const workspacePath = join(root, `job-${randomUUID()}`);
     mkdirSync(workspacePath, { recursive: true });
     logger.debug('Workspace created', undefined, { path: workspacePath });
     return workspacePath;
   }
 
-  async cleanupWorkspace(dirPath: string): Promise<void> {
-    if (!this.validatePath(dirPath)) {
+  async cleanupWorkspace(dirPath: string, rootDir?: string): Promise<void> {
+    if (!this.validatePath(dirPath, rootDir)) {
       throw new ValidationError(`Workspace path escape attempt detected: ${dirPath}`);
     }
     await remove(dirPath);
