@@ -21,26 +21,20 @@ claude:
   command: claude
   agentTimeoutMs: 1800000
 
-# Target repo (v1: single repo, no multi-repo routing). cloneUrl is required.
-repo:
-  cloneUrl: https://github.com/your-org/your-repo.git
-  baseBranch: main
-
 workspace:
   dir: /tmp/caf-orchestrator/workspace
 
-# Multi-project registry foundation (CAF-REGISTRY-1). Not yet consumed by
-# any existing code — repo.*/workspace.dir above remain what's actually
-# used until a later checkpoint migrates the pipeline over. Key is a
-# project name of your choosing; ticketPrefix is what the registry keys on.
-# projects:
-#   your-project:
-#     ticketPrefix: ABC
-#     repoCloneUrl: https://github.com/your-org/your-repo.git
-#     baseBranch: main
-#     workspaceDir: /tmp/caf-orchestrator/workspace/your-project
-#     agents:
-#       modelOverrides: {}
+# Per-project registry — every ticket-triggering project must be listed here.
+# Key is a project name of your choosing; ticketPrefix is what the registry
+# keys on (must match the Linear ticket key prefix, e.g. "ABC" for ABC-123).
+projects:
+  your-project:
+    ticketPrefix: ABC
+    repoCloneUrl: https://github.com/your-org/your-repo.git
+    baseBranch: main
+    workspaceDir: /tmp/caf-orchestrator/workspace/your-project
+    agents:
+      modelOverrides: {}
 
 queue:
   jobTtlSeconds: 86400
