@@ -107,6 +107,25 @@ export class RunAgentPipelineUseCase {
       ticketTitle: job.ticketTitle,
     });
 
+    // Guards against a job enqueued under the pre-projectConfig payload shape
+    // (cloneUrl/baseBranch at the top level, no projectConfig) still sitting in
+    // Redis across a deploy of this change — drop it cleanly instead of crashing
+    // on `job.projectConfig.workspaceDir` below and looping through every retry.
+    if (!job.projectConfig) {
+      logger.error(
+        'Job payload missing projectConfig (stale pre-migration payload) — dropping without retry',
+        undefined,
+        { jobId: job.jobId, ticketKey: job.ticketKey },
+      );
+      await linearClient
+        .postComment(
+          job.ticketId,
+          'Agent pipeline could not start: this job was queued with an outdated payload format. Please retrigger the ticket.',
+        )
+        .catch((err) => logger.error('Failed to post stale-payload comment', err, { jobId: job.jobId }));
+      return;
+    }
+
     const jobStart = process.hrtime.bigint();
     const workspaceRoot = job.projectConfig.workspaceDir;
     const workspacePath = await workspaceManager.createWorkspace(workspaceRoot);

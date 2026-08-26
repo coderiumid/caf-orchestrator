@@ -60,7 +60,21 @@ export class SpawnAgentService implements IAgentRunner {
       // against the native Anthropic API too, not just through a custom
       // ANTHROPIC_BASE_URL. A caller-supplied modelOverride (per-project
       // agents.modelOverrides) takes precedence over the global one.
-      const agentModel = modelOverride ?? config.agents.modelOverrides[agentName];
+      // Global agents.modelOverrides values are checked against openai.allowedModels
+      // at startup (schema.ts), but a caller-supplied modelOverride (per-project
+      // agents.modelOverrides, validated only for shape, not against the allowlist)
+      // is not — re-check it here at the single spawn choke point so a per-project
+      // override can't bypass the documented fail-closed allowlist guarantee.
+      const rawAgentModel = modelOverride ?? config.agents.modelOverrides[agentName];
+      const agentModel =
+        rawAgentModel && config.openai.allowedModels.includes(rawAgentModel) ? rawAgentModel : undefined;
+      if (rawAgentModel && !agentModel) {
+        logger.error(
+          'Ignoring model override not in openai.allowedModels',
+          undefined,
+          { agentName, model: rawAgentModel, allowedModels: config.openai.allowedModels },
+        );
+      }
       const env = {
         ...(agentModel
           ? {

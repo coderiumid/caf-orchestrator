@@ -99,7 +99,7 @@ export class GitService implements IGitService {
     assertSafeBranchName(branch);
 
     logger.debug('Creating branch', undefined, { branch });
-    await runGit(['checkout', '-b', branch], targetDir);
+    await runGit(['checkout', '-b', branch, '--'], targetDir);
   }
 
   async commitAll(targetDir: string, message: string, workspaceRoot?: string): Promise<void> {
@@ -115,6 +115,6 @@ export class GitService implements IGitService {
     assertSafeBranchName(branch);
 
     logger.info('Pushing branch', undefined, { branch });
-    await runGit(['push', '--set-upstream', 'origin', branch], targetDir);
+    await runGit(['push', '--set-upstream', 'origin', '--', branch], targetDir);
   }
 }

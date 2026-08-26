@@ -130,25 +130,6 @@ const yamlSchema = z.object({
     agentTimeoutMs: z.coerce.number().int().positive().default(30 * 60_000),
   }).default(() => ({ command: 'claude', agentTimeoutMs: 30 * 60_000 })),
 
-  // v1 targets a single repo (one Linear team -> one codebase). Multi-repo
-  // routing (e.g. by ticket prefix/team) is out of scope for this bootstrap.
-  repo: z.object({
-    cloneUrl: z
-      .string()
-      .refine(
-        (v) =>
-          v.startsWith('https://') ||
-          v.startsWith('http://') ||
-          /^[^/]+@[^/]+?:.+/.test(v) ||
-          /^ssh:\/\//.test(v),
-        {
-          message:
-            "repo.cloneUrl must be an HTTPS URL or SSH-style URL like git@github.com:owner/repo.git",
-        },
-      ),
-    baseBranch: z.string().default('main'),
-  }),
-
   workspace: z.object({
     dir: z.string().default('/tmp/caf-orchestrator/workspace'),
   }).default(() => ({ dir: '/tmp/caf-orchestrator/workspace' })),

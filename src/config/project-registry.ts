@@ -5,8 +5,9 @@ export type { ProjectConfig };
 
 /**
  * Registry of per-project structural config, keyed by ticketPrefix (not
- * project name). Standalone in this checkpoint — nothing wires it into
- * config/index.ts, the webhook handler, or the pipeline use-case yet.
+ * project name). Wired into config/index.ts (exported as `projectRegistry`),
+ * the webhook handler (looks up by ticket prefix), and carried through the
+ * pipeline use-case via the job's `projectConfig`.
  */
 export class ProjectRegistry {
   private constructor(private readonly byPrefix: Map<string, ProjectConfig>) {}

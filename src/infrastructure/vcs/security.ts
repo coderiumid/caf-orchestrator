@@ -91,5 +91,9 @@ export function verifyGitHubSignature(
 const BRANCH_PATTERN = /^[a-zA-Z0-9_\-\/\.:]+$/;
 
 export function isSafeBranchName(branch: string): boolean {
-  return BRANCH_PATTERN.test(branch);
+  // Reject a leading '-' even though it matches BRANCH_PATTERN — otherwise a
+  // value like "-f" or "-o=x" would pass this check yet still be parsable by
+  // git as an option rather than a ref name wherever a caller passes it as a
+  // bare positional argument (no `--` separator).
+  return BRANCH_PATTERN.test(branch) && !branch.startsWith('-');
 }
