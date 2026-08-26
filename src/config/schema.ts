@@ -13,7 +13,7 @@ const boolEnvVar = (defaultVal: 'true' | 'false' = 'true') =>
 // call time — exact-match closes that gap: a model must be individually verified
 // and listed before it can be sent to the `claude` CLI. Fail-closed: an empty/unset
 // list means no model passes.
-function isAllowedModel(model: string, allowedModels: readonly string[]): boolean {
+export function isAllowedModel(model: string, allowedModels: readonly string[]): boolean {
   return allowedModels.includes(model);
 }
 

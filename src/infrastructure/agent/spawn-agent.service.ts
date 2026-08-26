@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import type { IAgentRunner, AgentRunResult } from '../../domain/interfaces/agent-runner.interface.js';
 import { config } from '../../config/index.js';
+import { isAllowedModel } from '../../config/schema.js';
 import { logger } from '../logging/logger.js';
 
 /**
@@ -67,8 +68,10 @@ export class SpawnAgentService implements IAgentRunner {
       // override can't bypass the documented fail-closed allowlist guarantee.
       const rawAgentModel = modelOverride ?? config.agents.modelOverrides[agentName];
       const agentModel =
-        rawAgentModel && config.openai.allowedModels.includes(rawAgentModel) ? rawAgentModel : undefined;
-      if (rawAgentModel && !agentModel) {
+        rawAgentModel !== undefined && isAllowedModel(rawAgentModel, config.openai.allowedModels)
+          ? rawAgentModel
+          : undefined;
+      if (rawAgentModel !== undefined && !agentModel) {
         logger.error(
           'Ignoring model override not in openai.allowedModels',
           undefined,

@@ -29,11 +29,24 @@ export class ProjectRegistry {
     return new ProjectRegistry(byPrefix);
   }
 
-  /** Reads and validates the `projects:` section of a caf.config.yaml-shaped file at filePath. */
+  /**
+   * Reads and validates the `projects:` section of a caf.config.yaml-shaped file at
+   * filePath. Fails fast if the section is missing or empty — unlike
+   * `fromRawProjects` (which tolerates an empty map for callers that build a
+   * registry incrementally), a registry loaded at startup with zero projects
+   * means no ticket prefix could ever match, so the pipeline would silently
+   * never trigger for any webhook with no error anywhere.
+   */
   static load(filePath: string): ProjectRegistry {
     const raw = readYamlConfig(filePath);
     const projects = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>).projects : undefined;
-    return ProjectRegistry.fromRawProjects(projects);
+    const registry = ProjectRegistry.fromRawProjects(projects);
+    if (registry.getAll().length === 0) {
+      throw new Error(
+        `Project registry validation failed:\n  - projects: at least one project must be configured under "projects:" in ${filePath} — an empty/missing registry means no ticket could ever trigger the pipeline`,
+      );
+    }
+    return registry;
   }
 
   getByPrefix(prefix: string): ProjectConfig | undefined {
