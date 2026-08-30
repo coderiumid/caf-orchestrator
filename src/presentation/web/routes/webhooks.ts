@@ -9,14 +9,17 @@ import {
   linearIssueWebhookSchema,
   githubIssueCommentSchema,
   githubPullRequestReviewCommentSchema,
+  githubIssueEventSchema,
   type GithubIssueCommentPayload,
   type GithubPullRequestReviewCommentPayload,
+  type GithubIssueEventPayload,
 } from '../../dto/webhook.dto.js';
 import { logger } from '../../../infrastructure/logging/logger.js';
 import { pipelineQueue } from '../../../infrastructure/queue/client.js';
 import type { ExistingJobPayload, PrReviewCommentContext, PrReviewJobPayload } from '../../../domain/interfaces/queue.interface.js';
 import { checkReviewPermission } from '../../../infrastructure/vcs/github-permission.js';
-import { githubService } from '../../../infrastructure/vcs/github.service.js';
+import { githubService, parseGithubRepo } from '../../../infrastructure/vcs/github.service.js';
+import type { ProjectConfig } from '../../../config/project-registry.js';
 
 // Slash-command prefixes that trigger a pr-review job from a general PR
 // comment (`issue_comment`). Checked in this order because
@@ -29,6 +32,25 @@ const FIX_ALL_COMMAND = '/caf-fix-review';
 function splitRepoFullName(fullName: string): { owner: string; repo: string } {
   const [owner, repo] = fullName.split('/');
   return { owner, repo };
+}
+
+// GitHub Issues carry no ticket-prefix (unlike Linear identifiers), so the
+// project registry — keyed by ticketPrefix — is matched here by repo instead:
+// parse each registered project's repoCloneUrl (SSH or HTTPS) and compare
+// owner/repo against the incoming webhook's repository.full_name.
+function findProjectByGithubRepo(
+  projects: ProjectConfig[],
+  owner: string,
+  repo: string,
+): ProjectConfig | undefined {
+  return projects.find((project) => {
+    try {
+      const parsed = parseGithubRepo(project.repoCloneUrl);
+      return parsed.owner === owner && parsed.repo === repo;
+    } catch {
+      return false;
+    }
+  });
 }
 
 function unauthorized(reply: FastifyReply, message: string): FastifyReply {
@@ -183,6 +205,54 @@ async function handlePullRequestReviewComment(
   return reply.status(202).send({ status: 'enqueued', jobId: queuedId });
 }
 
+async function handleIssuesEvent(payload: GithubIssueEventPayload, reply: FastifyReply): Promise<FastifyReply> {
+  if (payload.action !== 'labeled') {
+    return reply.status(200).send({ status: 'ignored', reason: `issues action not handled: ${payload.action}` });
+  }
+
+  if (payload.label?.name !== config.github.readyLabel) {
+    return reply.status(200).send({ status: 'ignored', reason: 'Label does not match github.readyLabel' });
+  }
+
+  const { owner, repo } = splitRepoFullName(payload.repository.full_name);
+
+  if (!(await checkReviewPermission(owner, repo, payload.sender.login))) {
+    logger.info('GitHub Issue pipeline trigger rejected: insufficient permission', undefined, { owner, repo, username: payload.sender.login });
+    return reply.status(200).send({ status: 'ignored', reason: 'ok' });
+  }
+
+  if (!config.ENABLE_PIPELINE_TRIGGER) {
+    return reply.status(200).send({ status: 'disabled', reason: 'Pipeline trigger is disabled' });
+  }
+
+  const project = findProjectByGithubRepo(projectRegistry.getAll(), owner, repo);
+  if (!project) {
+    logger.error('No project registered for GitHub repo', undefined, { owner, repo });
+    return reply.status(200).send({ status: 'ignored', reason: 'No project registered for repo' });
+  }
+
+  const jobId = `github-issue-${randomUUID()}`;
+  const ticketKey = `${project.ticketPrefix}-${payload.issue.number}`;
+  const jobData: ExistingJobPayload = {
+    jobId,
+    ticketId: String(payload.issue.number),
+    ticketKey,
+    ticketTitle: payload.issue.title,
+    ticketDescription: payload.issue.body ?? '',
+    projectConfig: toJobProjectContext(project),
+    ticketSource: 'github',
+  };
+
+  const queuedId = await pipelineQueue.addJob('agent-pipeline', jobData as unknown as Record<string, unknown>);
+
+  logger.info('GitHub Issue ready-for-AI trigger enqueued', undefined, {
+    jobId: queuedId,
+    ticketKey,
+  });
+
+  return reply.status(202).send({ status: 'enqueued', jobId: queuedId });
+}
+
 export async function webhookRoutes(app: FastifyInstance): Promise<void> {
   app.post('/linear', async (request, reply) => {
     if (!verifyLinearSignature(request.rawBody, request.headers['linear-signature'] as string | undefined, config.LINEAR_WEBHOOK_SECRET)) {
@@ -310,6 +380,14 @@ export async function webhookRoutes(app: FastifyInstance): Promise<void> {
         return reply.status(200).send({ status: 'ignored', reason: 'Payload not a recognized pull_request_review_comment event' });
       }
       return handlePullRequestReviewComment(parsed.data, reply);
+    }
+
+    if (eventType === 'issues') {
+      const parsed = githubIssueEventSchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.status(200).send({ status: 'ignored', reason: 'Payload not a recognized issues event' });
+      }
+      return handleIssuesEvent(parsed.data, reply);
     }
 
     // `pull_request_review` is intentionally NOT subscribed/handled — descoped,

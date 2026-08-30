@@ -15,6 +15,10 @@ linear:
 github:
   apiUrl: https://api.github.com
   deliveryDedupeTtlSeconds: 86400
+  # Label that transitions a GitHub Issue into "Ready for AI" and triggers
+  # the full agent pipeline — the GitHub analog of linear.readyStateId.
+  # Attach it on GitHub via the `issues` webhook event (action: labeled).
+  readyLabel: ready-for-ai
 
 # Claude Code agent spawning
 claude:

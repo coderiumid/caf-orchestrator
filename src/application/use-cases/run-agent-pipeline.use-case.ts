@@ -96,6 +96,22 @@ function ms(start: bigint): number {
 export class RunAgentPipelineUseCase {
   constructor(private readonly deps: RunAgentPipelineDeps) {}
 
+  /**
+   * Posts a pipeline status comment back to wherever the ticket actually
+   * lives — a Linear ticket by default, or the originating GitHub Issue for
+   * ticketSource: 'github' jobs (owner/repo derived from the same
+   * repoCloneUrl the pipeline already cloned from; issueNumber is
+   * ticketId, e.g. "25" for CDR-25).
+   */
+  private async postTicketComment(job: ExistingJobPayload, body: string): Promise<void> {
+    if (job.ticketSource === 'github') {
+      const { owner, repo } = parseGithubRepo(job.projectConfig.repoCloneUrl);
+      await this.deps.vcsClient.postIssueComment({ owner, repo, issueNumber: Number(job.ticketId), body });
+      return;
+    }
+    await this.deps.linearClient.postComment(job.ticketId, body);
+  }
+
   async execute(job: ExistingJobPayload): Promise<void> {
     const { gitService, workspaceManager, agentRunner, linearClient, vcsClient, notifier } = this.deps;
 
@@ -117,6 +133,8 @@ export class RunAgentPipelineUseCase {
         undefined,
         { jobId: job.jobId, ticketKey: job.ticketKey },
       );
+      // Linear-only: postTicketComment's GitHub path needs projectConfig.repoCloneUrl
+      // to derive owner/repo, which is exactly what's missing here.
       await linearClient
         .postComment(
           job.ticketId,
@@ -260,8 +278,8 @@ export class RunAgentPipelineUseCase {
       }
 
       if (verifyReport.status === 'NEEDS_HUMAN') {
-        await linearClient.postComment(
-          job.ticketId,
+        await this.postTicketComment(
+          job,
           `Agent pipeline needs human review:\n\n${verifyReport.raw}`,
         );
         logger.info('Pipeline stopped: verify-report reported NEEDS_HUMAN', undefined, {
@@ -299,8 +317,8 @@ export class RunAgentPipelineUseCase {
       }
 
       if (qaReport.status === 'FAIL') {
-        await linearClient.postComment(
-          job.ticketId,
+        await this.postTicketComment(
+          job,
           `Agent pipeline needs human review (QA failed after retry):\n\n${qaReport.raw}`,
         );
         logger.info('Pipeline stopped: QA report reported FAIL after retry', undefined, {
@@ -344,8 +362,8 @@ export class RunAgentPipelineUseCase {
       }
 
       if (reviewerReport.verdict === 'CHANGES_REQUESTED') {
-        await linearClient.postComment(
-          job.ticketId,
+        await this.postTicketComment(
+          job,
           `Agent pipeline needs human review (reviewer requested changes after retry):\n\n${reviewerReport.raw}`,
         );
         logger.info('Pipeline stopped: reviewer requested changes after retry', undefined, {
@@ -443,8 +461,8 @@ export class RunAgentPipelineUseCase {
         prUrl: pullRequest.url,
       });
 
-      await linearClient.postComment(
-        job.ticketId,
+      await this.postTicketComment(
+        job,
         `Agent pipeline complete. PR: ${pullRequest.url}\n\n${docsNote}\n\n${qaReport.raw}\n\n${reviewerReport.raw}`,
       );
 
@@ -502,8 +520,8 @@ export class RunAgentPipelineUseCase {
 
     switch (apiError.status) {
       case 429: {
-        await this.deps.linearClient.postComment(
-          job.ticketId,
+        await this.postTicketComment(
+          job,
           `Agent pipeline stopped: ${agentName} agent hit API quota (429). Estimated reset: ${formatResetDelay(apiError.resetDelayMs)}.`,
         );
         logger.info('Pipeline stopped: agent hit quota-exhausted (429)', undefined, {
@@ -515,8 +533,8 @@ export class RunAgentPipelineUseCase {
         throw new NonRetryableApiError(agentName, 429);
       }
       case 404: {
-        await this.deps.linearClient.postComment(
-          job.ticketId,
+        await this.postTicketComment(
+          job,
           `Agent pipeline stopped: ${agentName} agent hit model tidak ditemukan/tidak bisa diakses (404) — cek config model routing (openai.defaultModel / agents.modelOverrides / openai.allowedModels di caf.config.yaml).`,
         );
         logger.info('Pipeline stopped: agent hit model-not-found (404)', undefined, {

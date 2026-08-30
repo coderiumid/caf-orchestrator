@@ -87,3 +87,27 @@ export const githubPullRequestReviewCommentSchema = z.object({
 }).passthrough();
 
 export type GithubPullRequestReviewCommentPayload = z.infer<typeof githubPullRequestReviewCommentSchema>;
+
+/**
+ * GitHub `issues` webhook payload — used here only for the `labeled` action,
+ * which drives the full agent-pipeline trigger for GitHub-Issue-tracked
+ * projects (the GitHub analog of a Linear ticket transitioning into "Ready
+ * for AI"). `label` is top-level on this payload (not nested under `issue`).
+ */
+export const githubIssueEventSchema = z.object({
+  action: z.string(),
+  label: z.object({ name: z.string().min(1) }).passthrough().optional(),
+  issue: z.object({
+    number: z.number(),
+    title: z.string().min(1),
+    body: z.string().nullable().optional(),
+  }).passthrough(),
+  repository: z.object({
+    full_name: z.string().min(1),
+  }).passthrough(),
+  sender: z.object({
+    login: z.string().min(1),
+  }).passthrough(),
+}).passthrough();
+
+export type GithubIssueEventPayload = z.infer<typeof githubIssueEventSchema>;

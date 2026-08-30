@@ -26,6 +26,11 @@ export interface ExistingJobPayload {
   ticketTitle: string;
   ticketDescription: string;
   projectConfig: JobProjectContext;
+  // Where this ticket lives, and therefore where pipeline status comments get
+  // posted back to. Undefined ≡ 'linear' — every pre-existing job payload
+  // (including any already queued in Redis) has no such field and must keep
+  // behaving exactly as before.
+  ticketSource?: 'linear' | 'github';
 }
 
 /**

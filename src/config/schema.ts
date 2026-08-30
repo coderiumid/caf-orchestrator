@@ -123,7 +123,10 @@ const yamlSchema = z.object({
     // provider, kept independently configurable even though the default matches
     // (CAF-PRREVIEW-01 Checkpoint B, plan-checkpoint-b.md poin 2 option (a)).
     deliveryDedupeTtlSeconds: z.coerce.number().int().positive().default(86_400),
-  }).default(() => ({ apiUrl: 'https://api.github.com', deliveryDedupeTtlSeconds: 86_400 })),
+    // GitHub analog of linear.readyStateId: the label that transitions a
+    // GitHub Issue into "Ready for AI" and triggers the full agent pipeline.
+    readyLabel: z.string().min(1, 'github.readyLabel cannot be empty').default('ready-for-ai'),
+  }).default(() => ({ apiUrl: 'https://api.github.com', deliveryDedupeTtlSeconds: 86_400, readyLabel: 'ready-for-ai' })),
 
   claude: z.object({
     command: z.string().default('claude'),

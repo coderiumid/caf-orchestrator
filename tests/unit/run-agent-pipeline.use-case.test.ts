@@ -70,7 +70,7 @@ function makeAgentResult(overrides: Partial<AgentRunResult>): AgentRunResult {
   };
 }
 
-function makeJob(): ExistingJobPayload {
+function makeJob(overrides: Partial<ExistingJobPayload> = {}): ExistingJobPayload {
   return {
     jobId: 'job-1',
     ticketId: 'ticket-uuid-1',
@@ -83,6 +83,7 @@ function makeJob(): ExistingJobPayload {
       workspaceDir: '/tmp/caf-orchestrator/workspace/umkm-pos',
       agents: { modelOverrides: {} },
     },
+    ...overrides,
   };
 }
 
@@ -124,6 +125,8 @@ describe('RunAgentPipelineUseCase', () => {
 
     vcsClient = {
       createPullRequest: vi.fn().mockResolvedValue({ url: 'https://github.com/ganjardbc/umkm-pos/pull/1', number: 1 }),
+      replyToReviewComment: vi.fn().mockResolvedValue(undefined),
+      postIssueComment: vi.fn().mockResolvedValue(undefined),
     };
 
     notifier = {
@@ -481,6 +484,32 @@ describe('RunAgentPipelineUseCase', () => {
       expect.any(String),
       expect.stringContaining('needs human review'),
     );
+  });
+
+  it('posts the NEEDS_HUMAN comment to the GitHub issue instead of Linear when ticketSource is github', async () => {
+    (agentRunner.run as ReturnType<typeof vi.fn>).mockResolvedValue(makeAgentResult({ exitCode: 0 }));
+    readVerifyReportMock.mockResolvedValue({ status: 'NEEDS_HUMAN', raw: 'NEEDS_HUMAN: manual check required' });
+
+    const useCase = new RunAgentPipelineUseCase({ gitService, workspaceManager, agentRunner, linearClient, vcsClient, notifier });
+    await useCase.execute(makeJob({
+      ticketId: '25',
+      ticketKey: 'CDR-25',
+      ticketSource: 'github',
+      projectConfig: {
+        repoCloneUrl: 'https://github.com/ganjardbc/coderium-web-v2.git',
+        baseBranch: 'main',
+        workspaceDir: '/tmp/caf-orchestrator/workspace/coderium-web-v2',
+        agents: { modelOverrides: {} },
+      },
+    }));
+
+    expect(linearClient.postComment).not.toHaveBeenCalled();
+    expect(vcsClient.postIssueComment).toHaveBeenCalledWith({
+      owner: 'ganjardbc',
+      repo: 'coderium-web-v2',
+      issueNumber: 25,
+      body: expect.stringContaining('needs human review'),
+    });
   });
 
   it('retries implementation agents once when QA fails, then completes on QA pass', async () => {
