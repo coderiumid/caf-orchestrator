@@ -302,7 +302,13 @@ describe('RunAgentPipelineUseCase', () => {
     );
     expect(notifier.notifyPipelineFailed).not.toHaveBeenCalled();
     expect(notifier.notifyPipelineComplete).not.toHaveBeenCalled();
-    expect(gitService.commitAll).not.toHaveBeenCalled();
+    // Work-in-progress is pushed before the workspace is wiped, so the code isn't lost.
+    expect(gitService.commitAll).toHaveBeenCalledWith(expect.any(String), expect.any(String), expect.any(String));
+    expect(gitService.push).toHaveBeenCalledWith(expect.any(String), 'ai-agent/CAF-123', expect.any(String));
+    expect(linearClient.postComment).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.stringContaining('ai-agent/CAF-123'),
+    );
     expect(workspaceManager.cleanupWorkspace).toHaveBeenCalledTimes(1);
     expect(notifier.notifyPipelineNeedsHuman).toHaveBeenCalledTimes(1);
   });
@@ -330,7 +336,8 @@ describe('RunAgentPipelineUseCase', () => {
       expect.stringContaining('qa agent hit API quota'),
     );
     expect(notifier.notifyPipelineFailed).not.toHaveBeenCalled();
-    expect(gitService.commitAll).not.toHaveBeenCalled();
+    expect(gitService.commitAll).toHaveBeenCalledWith(expect.any(String), expect.any(String), expect.any(String));
+    expect(gitService.push).toHaveBeenCalledWith(expect.any(String), 'ai-agent/CAF-123', expect.any(String));
     expect(notifier.notifyPipelineNeedsHuman).toHaveBeenCalledTimes(1);
   });
 
@@ -352,7 +359,8 @@ describe('RunAgentPipelineUseCase', () => {
     );
     expect(notifier.notifyPipelineFailed).not.toHaveBeenCalled();
     expect(notifier.notifyPipelineComplete).not.toHaveBeenCalled();
-    expect(gitService.commitAll).not.toHaveBeenCalled();
+    expect(gitService.commitAll).toHaveBeenCalledWith(expect.any(String), expect.any(String), expect.any(String));
+    expect(gitService.push).toHaveBeenCalledWith(expect.any(String), 'ai-agent/CAF-123', expect.any(String));
     expect(workspaceManager.cleanupWorkspace).toHaveBeenCalledTimes(1);
     expect(notifier.notifyPipelineNeedsHuman).toHaveBeenCalledTimes(1);
   });
@@ -481,14 +489,38 @@ describe('RunAgentPipelineUseCase', () => {
 
     expect(agentRunner.run).not.toHaveBeenCalledWith('caf-qa', expect.anything(), expect.anything());
     expect(readQaReportMock).not.toHaveBeenCalled();
-    expect(gitService.commitAll).not.toHaveBeenCalled();
-    expect(gitService.push).not.toHaveBeenCalled();
+    expect(gitService.commitAll).toHaveBeenCalledWith(expect.any(String), expect.any(String), expect.any(String));
+    expect(gitService.push).toHaveBeenCalledWith(expect.any(String), 'ai-agent/CAF-123', expect.any(String));
     expect(notifier.notifyPipelineComplete).not.toHaveBeenCalled();
     expect(linearClient.postComment).toHaveBeenCalledWith(
       expect.any(String),
       expect.stringContaining('needs human review'),
     );
+    expect(linearClient.postComment).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.stringContaining('ai-agent/CAF-123'),
+    );
     expect(notifier.notifyPipelineNeedsHuman).toHaveBeenCalledTimes(1);
+  });
+
+  it('still posts the NEEDS_HUMAN comment (with a warning) when pushing the work-in-progress branch fails', async () => {
+    (agentRunner.run as ReturnType<typeof vi.fn>).mockResolvedValue(makeAgentResult({ exitCode: 0 }));
+    readVerifyReportMock.mockResolvedValue({ status: 'NEEDS_HUMAN', raw: 'NEEDS_HUMAN: manual check required' });
+    (gitService.push as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('remote: permission denied'));
+
+    const useCase = new RunAgentPipelineUseCase({ gitService, workspaceManager, agentRunner, linearClient, vcsClient, notifier });
+    await useCase.execute(makeJob());
+
+    expect(linearClient.postComment).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.stringContaining('needs human review'),
+    );
+    expect(linearClient.postComment).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.stringContaining('Could not push branch'),
+    );
+    expect(notifier.notifyPipelineNeedsHuman).toHaveBeenCalledTimes(1);
+    expect(workspaceManager.cleanupWorkspace).toHaveBeenCalledTimes(1);
   });
 
   it('posts the NEEDS_HUMAN comment to the GitHub issue instead of Linear when ticketSource is github', async () => {
@@ -558,8 +590,8 @@ describe('RunAgentPipelineUseCase', () => {
     expect(backendCalls).toHaveLength(2);
     expect(qaCalls).toHaveLength(2);
     expect(docsCalls).toHaveLength(0);
-    expect(gitService.commitAll).not.toHaveBeenCalled();
-    expect(gitService.push).not.toHaveBeenCalled();
+    expect(gitService.commitAll).toHaveBeenCalledWith(expect.any(String), expect.any(String), expect.any(String));
+    expect(gitService.push).toHaveBeenCalledWith(expect.any(String), 'ai-agent/CAF-123', expect.any(String));
     expect(notifier.notifyPipelineComplete).not.toHaveBeenCalled();
     expect(linearClient.postComment).toHaveBeenCalledWith(
       expect.any(String),
@@ -662,8 +694,8 @@ describe('RunAgentPipelineUseCase', () => {
     expect(backendCalls).toHaveLength(2);
     expect(qaCalls).toHaveLength(1);
     expect(docsCalls).toHaveLength(0);
-    expect(gitService.commitAll).not.toHaveBeenCalled();
-    expect(gitService.push).not.toHaveBeenCalled();
+    expect(gitService.commitAll).toHaveBeenCalledWith(expect.any(String), expect.any(String), expect.any(String));
+    expect(gitService.push).toHaveBeenCalledWith(expect.any(String), 'ai-agent/CAF-123', expect.any(String));
     expect(notifier.notifyPipelineComplete).not.toHaveBeenCalled();
     expect(linearClient.postComment).toHaveBeenCalledWith(
       expect.any(String),

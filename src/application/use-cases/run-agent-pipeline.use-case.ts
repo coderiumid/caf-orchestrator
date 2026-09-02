@@ -112,6 +112,40 @@ export class RunAgentPipelineUseCase {
     await this.deps.linearClient.postComment(job.ticketId, body);
   }
 
+  /**
+   * Commits and pushes whatever work-in-progress exists in repoPath before a
+   * stop-and-comment gate returns. Without this, the agent's code is lost entirely —
+   * commitAll+push otherwise only happen at the very end, after Reviewer approves and
+   * right before PR creation — and execute()'s finally block wipes the disposable
+   * workspace regardless of how the pipeline ended. Never lets a push failure block
+   * the human-review comment; returns a note to append to it either way.
+   */
+  private async pushForHumanReview(
+    repoPath: string,
+    branch: string,
+    workspaceRoot: string,
+    job: ExistingJobPayload,
+    commitMessage: string,
+  ): Promise<string> {
+    try {
+      await this.deps.gitService.commitAll(repoPath, commitMessage, workspaceRoot);
+      await this.deps.gitService.push(repoPath, branch, workspaceRoot);
+      logger.info('Pushed work-in-progress branch for human review', undefined, {
+        jobId: job.jobId,
+        ticketKey: job.ticketKey,
+        branch,
+      });
+      return `\n\nBranch: \`${branch}\` (pushed, no PR opened yet — checkout manually to continue).`;
+    } catch (err) {
+      logger.error(
+        'Failed to push work-in-progress branch for human review — workspace will be cleaned up, changes may be lost',
+        err instanceof Error ? err : new Error(String(err)),
+        { jobId: job.jobId, ticketKey: job.ticketKey, branch },
+      );
+      return `\n\n⚠️ Could not push branch \`${branch}\` for review (${err instanceof Error ? err.message : String(err)}) — in-progress changes were not preserved.`;
+    }
+  }
+
   async execute(job: ExistingJobPayload): Promise<void> {
     const { gitService, workspaceManager, agentRunner, linearClient, vcsClient, notifier } = this.deps;
 
@@ -199,7 +233,7 @@ export class RunAgentPipelineUseCase {
         throw new Error(`caf-planner agent killed by signal ${plannerResult.signal}`);
       }
       if (plannerResult.exitCode !== 0) {
-        await this.stopIfNonRetryable('caf-planner', plannerResult, job);
+        await this.stopIfNonRetryable('caf-planner', plannerResult, job, repoPath, branch, workspaceRoot);
         throw new Error(`caf-planner agent exited with code ${plannerResult.exitCode}: ${plannerResult.stderr}`);
       }
 
@@ -262,7 +296,7 @@ export class RunAgentPipelineUseCase {
 
       const implementationPrompt = `Implement your assigned section of .caf/tasks/${job.ticketKey}/tasks.md for ticket ${job.ticketKey}.`;
 
-      await this.runImplementationAgents(agentsToRun, repoPath, implementationPrompt, job);
+      await this.runImplementationAgents(agentsToRun, repoPath, implementationPrompt, job, branch, workspaceRoot);
 
       const verifyReport = await readVerifyReport(repoPath, job.ticketKey);
       if (!verifyReport) {
@@ -278,9 +312,16 @@ export class RunAgentPipelineUseCase {
       }
 
       if (verifyReport.status === 'NEEDS_HUMAN') {
+        const branchNote = await this.pushForHumanReview(
+          repoPath,
+          branch,
+          workspaceRoot,
+          job,
+          `AI agent pipeline (needs human review): ${job.ticketKey}`,
+        );
         await this.postTicketComment(
           job,
-          `Agent pipeline needs human review:\n\n${verifyReport.raw}`,
+          `Agent pipeline needs human review:\n\n${verifyReport.raw}${branchNote}`,
         );
         logger.info('Pipeline stopped: verify-report reported NEEDS_HUMAN', undefined, {
           jobId: job.jobId,
@@ -305,7 +346,7 @@ export class RunAgentPipelineUseCase {
         await notifier?.notifyAgentSkipped({ jobId: job.jobId, ticketKey: job.ticketKey, agentName: 'caf-qa', reason: qaSkipReason });
         qaReport = { status: 'PASS', raw: `QA Agent: SKIPPED — ${qaSkipReason}` };
       } else {
-        qaReport = await this.runQaGate(repoPath, job);
+        qaReport = await this.runQaGate(repoPath, job, branch, workspaceRoot);
       }
 
       let qaRetryCount = 0;
@@ -317,14 +358,21 @@ export class RunAgentPipelineUseCase {
           ticketKey: job.ticketKey,
           qaRetryCount,
         });
-        await this.runImplementationAgents(agentsToRun, repoPath, implementationPrompt, job);
-        qaReport = await this.runQaGate(repoPath, job);
+        await this.runImplementationAgents(agentsToRun, repoPath, implementationPrompt, job, branch, workspaceRoot);
+        qaReport = await this.runQaGate(repoPath, job, branch, workspaceRoot);
       }
 
       if (qaReport.status === 'FAIL') {
+        const branchNote = await this.pushForHumanReview(
+          repoPath,
+          branch,
+          workspaceRoot,
+          job,
+          `AI agent pipeline (QA failed after retry): ${job.ticketKey}`,
+        );
         await this.postTicketComment(
           job,
-          `Agent pipeline needs human review (QA failed after retry):\n\n${qaReport.raw}`,
+          `Agent pipeline needs human review (QA failed after retry):\n\n${qaReport.raw}${branchNote}`,
         );
         logger.info('Pipeline stopped: QA report reported FAIL after retry', undefined, {
           jobId: job.jobId,
@@ -355,7 +403,7 @@ export class RunAgentPipelineUseCase {
         });
         reviewerReport = { verdict: 'APPROVE', raw: `Reviewer Agent: SKIPPED — ${reviewerSkipReason}` };
       } else {
-        reviewerReport = await this.runReviewerGate(repoPath, job);
+        reviewerReport = await this.runReviewerGate(repoPath, job, branch, workspaceRoot);
       }
 
       let reviewerRetryCount = 0;
@@ -367,14 +415,21 @@ export class RunAgentPipelineUseCase {
           ticketKey: job.ticketKey,
           reviewerRetryCount,
         });
-        await this.runImplementationAgents(agentsToRun, repoPath, implementationPrompt, job);
-        reviewerReport = await this.runReviewerGate(repoPath, job);
+        await this.runImplementationAgents(agentsToRun, repoPath, implementationPrompt, job, branch, workspaceRoot);
+        reviewerReport = await this.runReviewerGate(repoPath, job, branch, workspaceRoot);
       }
 
       if (reviewerReport.verdict === 'CHANGES_REQUESTED') {
+        const branchNote = await this.pushForHumanReview(
+          repoPath,
+          branch,
+          workspaceRoot,
+          job,
+          `AI agent pipeline (reviewer requested changes after retry): ${job.ticketKey}`,
+        );
         await this.postTicketComment(
           job,
-          `Agent pipeline needs human review (reviewer requested changes after retry):\n\n${reviewerReport.raw}`,
+          `Agent pipeline needs human review (reviewer requested changes after retry):\n\n${reviewerReport.raw}${branchNote}`,
         );
         logger.info('Pipeline stopped: reviewer requested changes after retry', undefined, {
           jobId: job.jobId,
@@ -529,15 +584,29 @@ export class RunAgentPipelineUseCase {
    * not generalized to "all 4xx are non-retryable" (see audit: some 4xx, e.g. a
    * malformed-prompt 400, may be transient/worth retrying).
    */
-  private async stopIfNonRetryable(agentName: string, result: AgentRunResult, job: ExistingJobPayload): Promise<void> {
+  private async stopIfNonRetryable(
+    agentName: string,
+    result: AgentRunResult,
+    job: ExistingJobPayload,
+    repoPath: string,
+    branch: string,
+    workspaceRoot: string,
+  ): Promise<void> {
     const apiError = parseApiError(result.stdout);
     if (!apiError?.status) return;
 
     switch (apiError.status) {
       case 429: {
+        const branchNote = await this.pushForHumanReview(
+          repoPath,
+          branch,
+          workspaceRoot,
+          job,
+          `AI agent pipeline (stopped: ${agentName} hit 429): ${job.ticketKey}`,
+        );
         await this.postTicketComment(
           job,
-          `Agent pipeline stopped: ${agentName} agent hit API quota (429). Estimated reset: ${formatResetDelay(apiError.resetDelayMs)}.`,
+          `Agent pipeline stopped: ${agentName} agent hit API quota (429). Estimated reset: ${formatResetDelay(apiError.resetDelayMs)}.${branchNote}`,
         );
         logger.info('Pipeline stopped: agent hit quota-exhausted (429)', undefined, {
           jobId: job.jobId,
@@ -553,9 +622,16 @@ export class RunAgentPipelineUseCase {
         throw new NonRetryableApiError(agentName, 429);
       }
       case 404: {
+        const branchNote = await this.pushForHumanReview(
+          repoPath,
+          branch,
+          workspaceRoot,
+          job,
+          `AI agent pipeline (stopped: ${agentName} hit 404): ${job.ticketKey}`,
+        );
         await this.postTicketComment(
           job,
-          `Agent pipeline stopped: ${agentName} agent hit model tidak ditemukan/tidak bisa diakses (404) — cek config model routing (openai.defaultModel / agents.modelOverrides / openai.allowedModels di caf.config.yaml).`,
+          `Agent pipeline stopped: ${agentName} agent hit model tidak ditemukan/tidak bisa diakses (404) — cek config model routing (openai.defaultModel / agents.modelOverrides / openai.allowedModels di caf.config.yaml).${branchNote}`,
         );
         logger.info('Pipeline stopped: agent hit model-not-found (404)', undefined, {
           jobId: job.jobId,
@@ -579,6 +655,8 @@ export class RunAgentPipelineUseCase {
     repoPath: string,
     implementationPrompt: string,
     job: ExistingJobPayload,
+    branch: string,
+    workspaceRoot: string,
   ): Promise<void> {
     const { agentRunner, notifier } = this.deps;
 
@@ -616,13 +694,18 @@ export class RunAgentPipelineUseCase {
         throw new Error(`${agentName} agent killed by signal ${result.signal}`);
       }
       if (result.exitCode !== 0) {
-        await this.stopIfNonRetryable(agentName, result, job);
+        await this.stopIfNonRetryable(agentName, result, job, repoPath, branch, workspaceRoot);
         throw new Error(`${agentName} agent exited with code ${result.exitCode}: ${result.stderr}`);
       }
     }
   }
 
-  private async runQaGate(repoPath: string, job: ExistingJobPayload): Promise<QaReport> {
+  private async runQaGate(
+    repoPath: string,
+    job: ExistingJobPayload,
+    branch: string,
+    workspaceRoot: string,
+  ): Promise<QaReport> {
     const { agentRunner, notifier } = this.deps;
 
     void notifier?.notifyAgentStarted({ jobId: job.jobId, ticketKey: job.ticketKey, agentName: 'caf-qa' });
@@ -659,7 +742,7 @@ export class RunAgentPipelineUseCase {
       throw new Error(`qa agent killed by signal ${qaResult.signal}`);
     }
     if (qaResult.exitCode !== 0) {
-      await this.stopIfNonRetryable('caf-qa', qaResult, job);
+      await this.stopIfNonRetryable('caf-qa', qaResult, job, repoPath, branch, workspaceRoot);
       throw new Error(`qa agent exited with code ${qaResult.exitCode}: ${qaResult.stderr}`);
     }
 
@@ -671,7 +754,12 @@ export class RunAgentPipelineUseCase {
     return qaReport;
   }
 
-  private async runReviewerGate(repoPath: string, job: ExistingJobPayload): Promise<ReviewerReport> {
+  private async runReviewerGate(
+    repoPath: string,
+    job: ExistingJobPayload,
+    branch: string,
+    workspaceRoot: string,
+  ): Promise<ReviewerReport> {
     const { agentRunner, notifier } = this.deps;
 
     void notifier?.notifyAgentStarted({ jobId: job.jobId, ticketKey: job.ticketKey, agentName: 'caf-reviewer' });
@@ -708,7 +796,7 @@ export class RunAgentPipelineUseCase {
       throw new Error(`reviewer agent killed by signal ${reviewerResult.signal}`);
     }
     if (reviewerResult.exitCode !== 0) {
-      await this.stopIfNonRetryable('caf-reviewer', reviewerResult, job);
+      await this.stopIfNonRetryable('caf-reviewer', reviewerResult, job, repoPath, branch, workspaceRoot);
       throw new Error(`reviewer agent exited with code ${reviewerResult.exitCode}: ${reviewerResult.stderr}`);
     }
 
