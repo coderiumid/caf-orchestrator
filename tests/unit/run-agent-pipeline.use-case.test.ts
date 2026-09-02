@@ -133,6 +133,7 @@ describe('RunAgentPipelineUseCase', () => {
       notifyPipelineStarted: vi.fn().mockResolvedValue(undefined),
       notifyPipelineComplete: vi.fn().mockResolvedValue(undefined),
       notifyPipelineFailed: vi.fn().mockResolvedValue(undefined),
+      notifyPipelineNeedsHuman: vi.fn().mockResolvedValue(undefined),
       notifyAgentSkipped: vi.fn().mockResolvedValue(undefined),
       notifyAgentStarted: vi.fn().mockResolvedValue(undefined),
     };
@@ -303,6 +304,7 @@ describe('RunAgentPipelineUseCase', () => {
     expect(notifier.notifyPipelineComplete).not.toHaveBeenCalled();
     expect(gitService.commitAll).not.toHaveBeenCalled();
     expect(workspaceManager.cleanupWorkspace).toHaveBeenCalledTimes(1);
+    expect(notifier.notifyPipelineNeedsHuman).toHaveBeenCalledTimes(1);
   });
 
   it('stops cleanly on a 429 from the QA gate instead of retrying implementation agents', async () => {
@@ -329,6 +331,7 @@ describe('RunAgentPipelineUseCase', () => {
     );
     expect(notifier.notifyPipelineFailed).not.toHaveBeenCalled();
     expect(gitService.commitAll).not.toHaveBeenCalled();
+    expect(notifier.notifyPipelineNeedsHuman).toHaveBeenCalledTimes(1);
   });
 
   it('stops cleanly (no throw, comment posted) when the planner hits a 404 model-not-found error', async () => {
@@ -351,6 +354,7 @@ describe('RunAgentPipelineUseCase', () => {
     expect(notifier.notifyPipelineComplete).not.toHaveBeenCalled();
     expect(gitService.commitAll).not.toHaveBeenCalled();
     expect(workspaceManager.cleanupWorkspace).toHaveBeenCalledTimes(1);
+    expect(notifier.notifyPipelineNeedsHuman).toHaveBeenCalledTimes(1);
   });
 
   it('falls back to the generic throw (BullMQ retry) on an unrecognized status like 500 — not treated as non-retryable', async () => {
@@ -484,6 +488,7 @@ describe('RunAgentPipelineUseCase', () => {
       expect.any(String),
       expect.stringContaining('needs human review'),
     );
+    expect(notifier.notifyPipelineNeedsHuman).toHaveBeenCalledTimes(1);
   });
 
   it('posts the NEEDS_HUMAN comment to the GitHub issue instead of Linear when ticketSource is github', async () => {
@@ -560,6 +565,7 @@ describe('RunAgentPipelineUseCase', () => {
       expect.any(String),
       expect.stringContaining('needs human review (QA failed after retry)'),
     );
+    expect(notifier.notifyPipelineNeedsHuman).toHaveBeenCalledTimes(1);
   });
 
   it('throws when qa-report.md is not produced', async () => {
@@ -663,6 +669,7 @@ describe('RunAgentPipelineUseCase', () => {
       expect.any(String),
       expect.stringContaining('needs human review (reviewer requested changes after retry)'),
     );
+    expect(notifier.notifyPipelineNeedsHuman).toHaveBeenCalledTimes(1);
   });
 
   it('throws when review-notes.md is not produced', async () => {

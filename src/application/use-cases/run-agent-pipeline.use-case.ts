@@ -286,6 +286,11 @@ export class RunAgentPipelineUseCase {
           jobId: job.jobId,
           ticketKey: job.ticketKey,
         });
+        await notifier?.notifyPipelineNeedsHuman({
+          jobId: job.jobId,
+          ticketKey: job.ticketKey,
+          reason: 'verify-report.md reported NEEDS_HUMAN (implementation agent)',
+        });
         return;
       }
 
@@ -325,6 +330,11 @@ export class RunAgentPipelineUseCase {
           jobId: job.jobId,
           ticketKey: job.ticketKey,
           qaRetryCount,
+        });
+        await notifier?.notifyPipelineNeedsHuman({
+          jobId: job.jobId,
+          ticketKey: job.ticketKey,
+          reason: `QA failed after ${qaRetryCount} retry`,
         });
         return;
       }
@@ -370,6 +380,11 @@ export class RunAgentPipelineUseCase {
           jobId: job.jobId,
           ticketKey: job.ticketKey,
           reviewerRetryCount,
+        });
+        await notifier?.notifyPipelineNeedsHuman({
+          jobId: job.jobId,
+          ticketKey: job.ticketKey,
+          reason: `Reviewer requested changes after ${reviewerRetryCount} retry`,
         });
         return;
       }
@@ -530,6 +545,11 @@ export class RunAgentPipelineUseCase {
           agentName,
           resetDelayMs: apiError.resetDelayMs,
         });
+        await this.deps.notifier?.notifyPipelineNeedsHuman({
+          jobId: job.jobId,
+          ticketKey: job.ticketKey,
+          reason: `${agentName} agent hit API quota (429), reset: ${formatResetDelay(apiError.resetDelayMs)}`,
+        });
         throw new NonRetryableApiError(agentName, 429);
       }
       case 404: {
@@ -541,6 +561,11 @@ export class RunAgentPipelineUseCase {
           jobId: job.jobId,
           ticketKey: job.ticketKey,
           agentName,
+        });
+        await this.deps.notifier?.notifyPipelineNeedsHuman({
+          jobId: job.jobId,
+          ticketKey: job.ticketKey,
+          reason: `${agentName} agent hit model-not-found (404) — check model routing config`,
         });
         throw new NonRetryableApiError(agentName, 404);
       }
