@@ -2,6 +2,7 @@ import type {
   INotifier,
   PipelineNotification,
   PipelineFailureNotification,
+  PipelineNeedsHumanNotification,
   PipelineStartedNotification,
   AgentSkippedNotification,
   AgentStartedNotification,
@@ -73,6 +74,19 @@ export class TelegramNotifier implements INotifier {
       ``,
       `🎫 ${esc(info.ticketKey)}`,
       `🤖 Agent: ${esc(info.agentName)}`,
+    ];
+    await this.send(lines.join('\n'));
+  }
+
+  async notifyPipelineNeedsHuman(info: PipelineNeedsHumanNotification): Promise<void> {
+    this.clearAnnouncedAgents(info.jobId);
+    const lines = [
+      `🟡 <b>Pipeline Stopped — Needs Human Review</b>`,
+      ``,
+      `🎫 ${esc(info.ticketKey)}`,
+      `📝 ${esc(info.reason)}`,
+      ``,
+      `Lihat komentar di ticket/issue untuk detail lengkap.`,
     ];
     await this.send(lines.join('\n'));
   }

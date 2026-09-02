@@ -11,6 +11,12 @@ export interface PipelineFailureNotification {
   errorMessage: string;
 }
 
+export interface PipelineNeedsHumanNotification {
+  jobId: string;
+  ticketKey: string;
+  reason: string;
+}
+
 export interface PipelineStartedNotification {
   jobId: string;
   ticketKey: string;
@@ -34,6 +40,7 @@ export interface INotifier {
   notifyPipelineStarted(info: PipelineStartedNotification): Promise<void>;
   notifyPipelineComplete(info: PipelineNotification): Promise<void>;
   notifyPipelineFailed(info: PipelineFailureNotification): Promise<void>;
+  notifyPipelineNeedsHuman(info: PipelineNeedsHumanNotification): Promise<void>;
   notifyAgentSkipped(info: AgentSkippedNotification): Promise<void>;
   notifyAgentStarted(info: AgentStartedNotification): Promise<void>;
 }
