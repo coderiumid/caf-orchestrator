@@ -163,9 +163,18 @@ export class RunPrReviewUseCase {
         if (entry.label !== 'INLINE') continue;
         const commentId = Number(entry.commentRef);
         if (!Number.isFinite(commentId)) {
-          logger.warn('fix-review-log entry has non-numeric commentRef, skipping reply', undefined, {
+          // Mode 'initial' sends the reviewer no real Comment IDs to echo
+          // (webhooks.ts empties commentContext for "/caf-review" — see
+          // buildReviewerPrompt's full-review branch), so a non-numeric
+          // commentRef here is the reviewer logging a self-found finding, not
+          // an error — log at info instead of warn to avoid false-alarming
+          // on the expected case. Any other mode DOES supply real IDs, so a
+          // non-numeric commentRef there is unexpected and stays a warning.
+          const log = job.mode === 'initial' ? logger.info : logger.warn;
+          log('fix-review-log entry has non-numeric commentRef, skipping reply', undefined, {
             jobId: job.jobId,
             ticketKey,
+            mode: job.mode,
             commentRef: entry.commentRef,
           });
           continue;
