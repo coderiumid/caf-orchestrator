@@ -30,6 +30,7 @@ const prReviewUseCase = new RunPrReviewUseCase({
   workspaceManager: new WorkspaceManager(),
   agentRunner: spawnAgentService,
   vcsClient: githubService,
+  notifier,
 });
 
 const worker = new QueueWorker(async (job) => {

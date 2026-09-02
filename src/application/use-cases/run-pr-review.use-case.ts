@@ -2,6 +2,7 @@ import type { IGitService, IWorkspaceManager } from '../../domain/interfaces/git
 import type { IAgentRunner } from '../../domain/interfaces/agent-runner.interface.js';
 import type { IVcsClient } from '../../domain/interfaces/vcs-client.interface.js';
 import type { PrReviewCommentContext, PrReviewJobPayload } from '../../domain/interfaces/queue.interface.js';
+import type { INotifier } from '../../domain/interfaces/notifier.interface.js';
 import { readFixReviewLog, type FixReviewLogEntry } from '../../infrastructure/reports/report-reader.js';
 import { logger } from '../../infrastructure/logging/logger.js';
 
@@ -10,6 +11,7 @@ export interface RunPrReviewDeps {
   workspaceManager: IWorkspaceManager;
   agentRunner: IAgentRunner;
   vcsClient: IVcsClient;
+  notifier?: INotifier;
 }
 
 // Same branch naming convention run-agent-pipeline.use-case.ts writes
@@ -103,7 +105,7 @@ export class RunPrReviewUseCase {
   constructor(private readonly deps: RunPrReviewDeps) {}
 
   async execute(job: PrReviewJobPayload): Promise<void> {
-    const { gitService, workspaceManager, agentRunner, vcsClient } = this.deps;
+    const { gitService, workspaceManager, agentRunner, vcsClient, notifier } = this.deps;
 
     // Validate before creating a workspace — a throw here must not leave an
     // orphaned workspace dir behind (this line runs outside the try/finally).
@@ -117,6 +119,14 @@ export class RunPrReviewUseCase {
       jobId: job.jobId,
       prNumber: job.prNumber,
       ticketKey,
+      mode: job.mode,
+    });
+
+    void notifier?.notifyPrReviewStarted({
+      jobId: job.jobId,
+      ticketKey,
+      prNumber: job.prNumber,
+      repoFullName: job.repoFullName,
       mode: job.mode,
     });
 
@@ -195,6 +205,24 @@ export class RunPrReviewUseCase {
         prNumber: job.prNumber,
         entryCount: fixReviewLog.entries.length,
       });
+
+      void notifier?.notifyPrReviewCompleted({
+        jobId: job.jobId,
+        ticketKey,
+        prNumber: job.prNumber,
+        repoFullName: job.repoFullName,
+        mode: job.mode,
+        entryCount: fixReviewLog.entries.length,
+      });
+    } catch (err) {
+      void notifier?.notifyPrReviewFailed({
+        jobId: job.jobId,
+        ticketKey,
+        prNumber: job.prNumber,
+        repoFullName: job.repoFullName,
+        errorMessage: err instanceof Error ? err.message : String(err),
+      });
+      throw err;
     } finally {
       await workspaceManager.cleanupWorkspace(workspacePath);
     }

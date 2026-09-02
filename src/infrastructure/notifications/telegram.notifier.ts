@@ -6,6 +6,9 @@ import type {
   PipelineStartedNotification,
   AgentSkippedNotification,
   AgentStartedNotification,
+  PrReviewStartedNotification,
+  PrReviewCompletedNotification,
+  PrReviewFailedNotification,
 } from '../../domain/interfaces/notifier.interface.js';
 import { logger } from '../logging/logger.js';
 
@@ -98,6 +101,40 @@ export class TelegramNotifier implements INotifier {
       `🎫 ${esc(info.ticketKey)}`,
       `🤖 Agent: ${esc(info.agentName)}`,
       `📝 Alasan: ${esc(info.reason)}`,
+    ];
+    await this.send(lines.join('\n'));
+  }
+
+  async notifyPrReviewStarted(info: PrReviewStartedNotification): Promise<void> {
+    const lines = [
+      `🔎 <b>PR Review Started</b>`,
+      ``,
+      `🎫 ${esc(info.ticketKey)}`,
+      `🔀 ${esc(info.repoFullName)}#${info.prNumber}`,
+      `Mode: ${esc(info.mode)}`,
+    ];
+    await this.send(lines.join('\n'));
+  }
+
+  async notifyPrReviewCompleted(info: PrReviewCompletedNotification): Promise<void> {
+    const lines = [
+      `✅ <b>PR Review Completed</b>`,
+      ``,
+      `🎫 ${esc(info.ticketKey)}`,
+      `🔀 ${esc(info.repoFullName)}#${info.prNumber}`,
+      `Mode: ${esc(info.mode)}`,
+      `📋 ${info.entryCount} entri diproses`,
+    ];
+    await this.send(lines.join('\n'));
+  }
+
+  async notifyPrReviewFailed(info: PrReviewFailedNotification): Promise<void> {
+    const lines = [
+      `❌ <b>PR Review Failed</b>`,
+      ``,
+      `🎫 ${esc(info.ticketKey)}`,
+      `🔀 ${esc(info.repoFullName)}#${info.prNumber}`,
+      `⚠️ ${esc(info.errorMessage)}`,
     ];
     await this.send(lines.join('\n'));
   }
