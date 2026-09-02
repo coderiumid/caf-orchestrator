@@ -52,6 +52,30 @@ export function buildApp() {
     },
   );
 
+  // GitHub webhooks can be configured to send "application/x-www-form-urlencoded"
+  // instead of JSON — the actual JSON payload is then URL-encoded under a
+  // single "payload" form field. Unwrap it to the same parsed shape the JSON
+  // parser above produces, so downstream route handlers don't need to care.
+  app.addContentTypeParser(
+    'application/x-www-form-urlencoded',
+    { parseAs: 'buffer' },
+    (req, body, done) => {
+      req.rawBody = body as Buffer;
+      try {
+        const form = new URLSearchParams((body as Buffer).toString('utf-8'));
+        const payload = form.get('payload');
+        if (payload === null) {
+          done(new Error('Missing "payload" field in form-urlencoded body'));
+          return;
+        }
+        const parsed = JSON.parse(payload) as unknown;
+        done(null, parsed);
+      } catch {
+        done(new Error('Invalid form-urlencoded body'));
+      }
+    },
+  );
+
   app.setErrorHandler((error: FastifyError, _request, reply) => {
     const statusCode = error.statusCode ?? 500;
     const isServerError = statusCode >= 500;
