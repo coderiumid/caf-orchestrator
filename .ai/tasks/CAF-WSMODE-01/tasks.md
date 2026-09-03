@@ -36,11 +36,71 @@
 - [ ] Unit test: workspace bersih (tidak ada uncommitted changes) → cleanup jalan
       tanpa log audit trail yang tidak perlu (jangan spam log untuk kasus normal)
 
-## Task 4 — Percabangan Ephemeral vs Persistent di `workspace.manager.ts`
-- [ ] Baca `workspace.mode` dari config
-- [ ] `ephemeral` → behavior identik dengan sekarang, tidak ada jalur baru dieksekusi
-- [ ] `persistent` → resolve path sesuai keputusan Task 0, acquire lock, jalankan
-      pre-flight cleanup, baru checkout branch baru untuk ticket
+## Task 4 — Percabangan Ephemeral vs Persistent (REVISI setelah Attempt 1 / NEEDS_HUMAN)
+
+> Attempt 1 STOP di sini karena integrasi penuh butuh sentuhan ke 2 file yang saat
+> itu masih out-of-scope. Scope sudah resmi diperluas (lihat `requirements.md`
+> bagian "Scope Resmi Diperluas") — sub-task di bawah ini gantikan task asli.
+> Task 1–3 dari attempt sebelumnya SUDAH SELESAI dan tidak perlu diulang — cek
+> `verify-report.md` attempt 1 untuk lokasi kode yang sudah ada:
+> `src/infrastructure/git/workspace-lock.ts`, `GitService.preflightCleanup()`,
+> `WorkspaceLockError`.
+
+### Task 4a — Tambah parameter `workspacePurpose` di layer domain
+- [ ] Tambah type `WorkspacePurpose = 'ticket-pipeline' | 'pr-review'` (lokasi:
+      `src/domain/interfaces/git.interface.ts`, dekat interface lain yang sudah
+      ditambah di attempt 1)
+- [ ] `WorkspaceManager`/`GitService` — fungsi yang relevan (`createWorkspace`,
+      `cleanupWorkspace`, `clone`) menerima `workspacePurpose` sebagai parameter
+      (BUKAN baca `config.workspace.mode` secara internal — ini sengaja eksplisit
+      per-call supaya jelas kelihatan di call-site, bukan behavior tersembunyi)
+- [ ] Logic: `persistent` behavior (skip cleanup, reuse folder, acquire lock) HANYA
+      aktif kalau `workspacePurpose === 'ticket-pipeline'` DAN
+      `config.workspace.mode === 'persistent'`. Kombinasi lain → behavior ephemeral
+      seperti sekarang.
+- [ ] Unit test: `workspacePurpose: 'pr-review'` + `config.workspace.mode:
+      'persistent'` → tetap ephemeral (test ini yang membuktikan acceptance
+      criteria baru soal PR-review tidak terpengaruh)
+
+### Task 4b — Wiring di `run-agent-pipeline.use-case.ts` (4 perubahan, TERBATAS)
+
+> Direvisi (semula 3 poin) — ditemukan saat implementasi Task 4a/4b bahwa clone
+> call juga perlu jadi kondisional, bukan cuma cleanup. Konsekuensi logis langsung
+> dari keputusan "workspace direuse saat persistent", bukan keputusan desain baru.
+
+- [ ] Baris ~149: pass `workspacePurpose: 'ticket-pipeline'` di pemanggilan
+      `createWorkspace()`
+- [ ] Bungkus pemanggilan `createWorkspace()` dengan `try/catch` khusus
+      `WorkspaceLockError` (saat ini di luar blok `try` utama baris 159) →
+      `postComment` ke Linear ("workspace busy") lalu `return` (bukan `throw`)
+- [ ] Baris ~515 (blok `finally`): panggilan `cleanupWorkspace()` jadi conditional,
+      skip kalau `workspacePurpose === 'ticket-pipeline'` DAN mode `persistent`
+- [ ] **[BARU]** Baris ~160: clone call jadi conditional — kalau
+      `workspacePurpose === 'ticket-pipeline'`, mode `persistent`, DAN workspace
+      untuk repo ini sudah pernah di-clone sebelumnya (folder ada) → skip clone,
+      panggil `gitService.preflightCleanup()` sebagai gantinya. Selain kombinasi
+      itu (termasuk persistent tapi belum pernah di-clone/first-run) → clone
+      seperti biasa.
+- [ ] **Checkpoint wajib**: tampilkan FULL diff file ini sebelum lanjut, user
+      review manual line-by-line (bukan cuma `--stat`) — pastikan TIDAK ada
+      perubahan di luar 4 poin di atas, terutama tidak menyentuh retry logic
+      (`qaRetryCount`/`reviewerRetryCount`) yang ada di file yang sama
+
+### Task 4c — Wiring di `run-pr-review.use-case.ts` (1 perubahan, TERBATAS)
+- [ ] Pass `workspacePurpose: 'pr-review'` di titik pemanggilan
+      `WorkspaceManager`/`GitService` yang sesuai
+- [ ] **Checkpoint wajib**: tampilkan FULL diff file ini sebelum lanjut, user
+      review manual — pastikan hanya 1 baris/parameter ini yang berubah, tidak ada
+      logic review lain tersentuh
+
+### Task 4d — Test Integrasi Lintas-Purpose
+- [ ] Jalankan skenario: `workspace.mode: persistent`, lalu trigger 1 ticket-
+      pipeline job + 1 PR-review job untuk repo yang sama secara berurutan.
+      Verifikasi: ticket-pipeline job reuse folder (tidak clone ulang), PR-review
+      job tetap clone fresh + cleanup seperti biasa
+- [ ] Verifikasi comment "workspace busy" benar-benar terkirim ke Linear saat lock
+      ditolak (bukan cuma unit test lock-nya sendiri, tapi end-to-end sampai
+      comment API call)
 
 ## Task 5 — Verifikasi Regresi
 - [ ] Jalankan `pnpm typecheck`, `pnpm lint`, `pnpm test`
@@ -60,10 +120,16 @@
 
 ## Definition of Done
 - Semua quality gate (Task 5) PASS
-- Ketiga STOP item di Task 0 terjawab dan terekam (di `requirements.md` atau
-  komentar ticket)
+- Ketiga STOP item di Task 0 terjawab dan terekam (sudah selesai di attempt 1)
 - `caf-initiator` tidak tersentuh sama sekali — verifikasi dengan `git diff --stat`
-  di akhir untuk memastikan tidak ada file `caf-initiator` yang ikut berubah
-  (task ini hanya menyentuh repo `caf-orchestrator`)
-- Tidak ada perubahan di `report-reader.ts`, `run-agent-pipeline.use-case.ts`,
-  `RunPrReviewUseCase` (verifikasi via `git diff --stat`)
+- Tidak ada perubahan di `report-reader.ts` atau retry logic
+  (`qaRetryCount`/`reviewerRetryCount`) di `run-agent-pipeline.use-case.ts` —
+  verifikasi via `git diff` FULL (bukan cuma `--stat`, karena file ini memang
+  berubah sekarang — yang dicek adalah bagian mana yang berubah, bukan apakah
+  file ini muncul di daftar)
+- Perubahan di `run-agent-pipeline.use-case.ts` PERSIS 4 poin di Task 4b, tidak
+  lebih — dikonfirmasi via review manual (Task 4b checkpoint)
+- Perubahan di `run-pr-review.use-case.ts` PERSIS 1 poin di Task 4c, tidak lebih —
+  dikonfirmasi via review manual (Task 4c checkpoint)
+- Acceptance criteria baru soal `workspacePurpose` (PR-review tetap ephemeral) dan
+  comment saat lock busy — keduanya PASS dengan bukti test (Task 4a & 4d)

@@ -47,6 +47,41 @@ Ketika `mode: persistent`:
       orchestrator bersifat statis, tidak di-generate oleh `caf-initiator`)
 - [ ] Dokumentasi: `caf.config.yaml` contoh/template (kalau ada) diupdate untuk
       menjelaskan `workspace.mode` dan kapan pakai yang mana
+- [ ] **[BARU]** `workspace.mode: persistent` di config global TIDAK mengubah
+      behavior `RunPrReviewUseCase` — PR-review job tetap ephemeral, dibuktikan
+      dengan test yang menjalankan PR-review job saat `workspace.mode: persistent`
+      di-set dan memverifikasi cleanup tetap terjadi seperti biasa
+- [ ] **[BARU]** Saat lock ditolak (`WorkspaceLockError`) untuk ticket-pipeline job:
+      comment "workspace busy" benar-benar terkirim ke Linear, job berhenti bersih
+      (`return`, bukan `throw`/propagate ke retry BullMQ generik)
+- [ ] **[BARU]** Perubahan di `run-agent-pipeline.use-case.ts` dan
+      `run-pr-review.use-case.ts` terbatas PERSIS sesuai daftar di bagian "Scope
+      Resmi Diperluas" — dibuktikan dengan `git diff` yang direview manual, bukan
+      cuma `git diff --stat`
+
+## Update Pasca-Attempt 1 (2026-09-03) — Keputusan Scope `workspacePurpose`
+
+Attempt pertama (Task 0–3 sukses, Task 4 STOP di `NEEDS_HUMAN`) menemukan gap desain
+yang tidak terlihat di penulisan requirement awal: `WorkspaceManager` dan `GitService`
+adalah singleton yang dipakai bersama oleh dua use case berbeda —
+`run-agent-pipeline.use-case.ts` (ticket-pipeline) DAN `run-pr-review.use-case.ts`
+(`RunPrReviewUseCase`, PR-review job). Requirement awal cuma menyebut "single-repo-
+per-instance" tapi tidak membahas bahwa `workspace.mode: persistent` akan otomatis
+bocor ke PR-review job juga kalau tidak di-scope secara eksplisit.
+
+**Keputusan (diambil user setelah laporan NEEDS_HUMAN):**
+`workspace.mode: persistent` **HANYA berlaku untuk ticket-pipeline job**. PR-review
+job (`RunPrReviewUseCase`) TETAP `ephemeral` selalu, tidak peduli nilai
+`workspace.mode` di config global.
+
+Mekanisme: tambah parameter eksplisit `workspacePurpose: 'ticket-pipeline' |
+'pr-review'` di titik pemanggilan `WorkspaceManager`/`GitService`. Behavior
+persistent (skip cleanup, reuse folder, lock) hanya aktif kalau
+`workspacePurpose === 'ticket-pipeline'` DAN `config.workspace.mode === 'persistent'`.
+Kalau `workspacePurpose === 'pr-review'` → selalu ephemeral, terlepas dari config.
+
+**Konsekuensi pada scope:** dua file yang sebelumnya eksplisit out-of-scope sekarang
+resmi masuk scope, dengan perubahan yang diizinkan dibatasi ketat (lihat bawah).
 
 ## Eksplisit Out of Scope (Jangan Dikerjakan)
 - Mode ketiga (mis. "persistent-recycled" / auto-reset tiap N run) — masih spekulasi,
@@ -58,14 +93,45 @@ Ketika `mode: persistent`:
   perlu direvisit untuk digabung dengan `repoId` config
 - Fix untuk `DASHBOARD_BASIC_AUTH_PASSWORD` — item terpisah, tidak terkait, jangan
   digabung ke ticket ini
-- Perubahan pada `RunPrReviewUseCase`, `report-reader.ts`, atau retry logic di
-  `run-agent-pipeline.use-case.ts` — area stabil, tidak boleh tersentuh oleh fitur ini
+- `report-reader.ts` dan retry logic (`qaRetryCount`/`reviewerRetryCount`,
+  `MAX_QA_RETRIES`/`MAX_REVIEWER_RETRIES`) di `run-agent-pipeline.use-case.ts` — area
+  stabil, tidak boleh tersentuh oleh fitur ini
+
+## Scope Resmi Diperluas (Diizinkan, Terbatas) — sejak Update Pasca-Attempt 1
+- **`run-agent-pipeline.use-case.ts`** — HANYA 4 perubahan berikut yang diizinkan
+  (poin 4 ditambah saat implementasi Task 4b menemukan clone call juga perlu
+  kondisional, bukan cuma cleanup — konsekuensi logis langsung dari desain reuse,
+  bukan keputusan baru):
+  1. Pass `workspacePurpose: 'ticket-pipeline'` di pemanggilan `createWorkspace()`
+     (baris ~149)
+  2. Tambah `try/catch` di sekitar `createWorkspace()` (yang saat ini SEBELUM blok
+     `try` utama di baris 159) khusus untuk menangkap `WorkspaceLockError` → post
+     comment ke Linear ("workspace busy, coba lagi nanti") lalu `return` bersih
+     (BUKAN `throw` — konsisten dengan prinsip "return vs throw" project ini: ini
+     bukan infrastructure exception, jangan biarkan numpang ke retry BullMQ generik)
+  3. Di blok `finally` (baris ~515): panggilan `cleanupWorkspace()` jadi conditional
+     — skip kalau `workspacePurpose === 'ticket-pipeline'` DAN
+     `config.workspace.mode === 'persistent'`
+  4. Baris ~160: clone call jadi conditional — skip clone (panggil
+     `gitService.preflightCleanup()` sebagai gantinya) HANYA kalau
+     `workspacePurpose === 'ticket-pipeline'`, mode `persistent`, DAN workspace
+     untuk repo ini sudah pernah di-clone sebelumnya. Selain itu (termasuk
+     first-run persistent) → clone seperti biasa.
+  - **DILARANG**: mengubah apapun di luar 4 poin ini pada file tersebut — termasuk
+    retry logic, struktur try/catch yang sudah ada untuk keperluan lain, atau urutan
+    step lain di pipeline
+- **`run-pr-review.use-case.ts`** (`RunPrReviewUseCase`) — HANYA 1 perubahan:
+  1. Pass `workspacePurpose: 'pr-review'` secara eksplisit di titik pemanggilan
+     `WorkspaceManager`/`GitService` yang sama
+  - **DILARANG**: mengubah logic review lainnya di file ini sama sekali
 
 ## Pertanyaan Terbuka (STOP items — jangan diputuskan sendiri oleh agent)
-
-**DIJAWAB USER (2026-09-03):**
-1. Skema path: **Opsi B** — `{workspace.dir}/{githubRepoName}`.
-2. Deployment topology: **single VPS instance** → lock **in-memory** per-process
-   (`Map`/semaphore), tidak perlu Redis-based lock.
-3. Behavior saat lock terpegang: **reject langsung** + comment ke ticket
-   "workspace busy, coba lagi nanti" (bukan queue-with-timeout).
+1. Skema path subfolder persistent di bawah `workspace.dir` — per `repoId`? Per nama
+   repo GitHub? Ini perlu dipastikan konsisten dengan struktur `workspace.manager.ts`
+   yang sudah ada.
+2. Lock mechanism: in-memory per-process cukup, atau perlu file lock (kalau ada
+   kemungkinan lebih dari satu instance orchestrator jalan)? Tentukan di fase design
+   berdasarkan deployment topology aktual (single VPS instance atau bisa scale out?).
+3. Kalau lock sedang dipegang dan job baru masuk — job itu di-reject langsung, atau
+   di-queue nunggu lock lepas (dengan timeout)? Ini keputusan behavior yang perlu
+   dikonfirmasi user sebelum implement.
