@@ -27,6 +27,24 @@ claude:
 
 workspace:
   dir: /tmp/caf-orchestrator/workspace
+  # 'ephemeral' (default): every job clones the target repo to a fresh
+  # job-<uuid> dir and removes it after — no config changes needed, this is
+  # the pre-existing behavior. Use this unless you have a specific reason
+  # not to.
+  # 'persistent': a ticket-pipeline job reuses a per-repo
+  # `persistent-<repoName>` subfolder under workspace.dir across runs
+  # (fetch + reset instead of a fresh clone). Use only for large repos where
+  # a full clone per job is genuinely expensive — it adds real operational
+  # risk (destructive `git reset --hard`/`clean -fd` on every reuse; a
+  # second job for the same repo is rejected outright, not queued, while the
+  # first still holds the workspace).
+  # Applies ONLY to the ticket pipeline. PR-review jobs always clone fresh
+  # into an ephemeral dir and clean up after, regardless of this setting —
+  # they never reuse or lock a persistent workspace.
+  # The destructive reset/clean here only ever runs inside this
+  # orchestrator's own scratch dir (workspace.dir), never a human's working
+  # directory — see design.md for the full audit-trail/locking mechanics.
+  mode: ephemeral
 
 # Per-project registry — every ticket-triggering project must be listed here.
 # Key is a project name of your choosing; ticketPrefix is what the registry

@@ -1,4 +1,6 @@
-import type { IGitService, IWorkspaceManager } from '../../domain/interfaces/git.interface.js';
+import { existsSync } from 'node:fs';
+import type { IGitService, IWorkspaceManager, WorkspacePurpose } from '../../domain/interfaces/git.interface.js';
+import { WorkspaceLockError } from '../../domain/errors/app-errors.js';
 import type { IAgentRunner } from '../../domain/interfaces/agent-runner.interface.js';
 import type { ILinearClient } from '../../domain/interfaces/linear-client.interface.js';
 import type { INotifier } from '../../domain/interfaces/notifier.interface.js';
@@ -146,7 +148,31 @@ export class RunAgentPipelineUseCase {
 
     const jobStart = process.hrtime.bigint();
     const workspaceRoot = job.projectConfig.workspaceDir;
-    const workspacePath = await workspaceManager.createWorkspace(workspaceRoot);
+    // CAF-WSMODE-01: explicit per-call purpose — persistent-mode reuse must
+    // never apply to RunPrReviewUseCase just because config.workspace.mode
+    // is set globally (see WorkspacePurpose doc comment).
+    const workspacePurpose: WorkspacePurpose = 'ticket-pipeline';
+    const { repo: repoIdentifier } = parseGithubRepo(job.projectConfig.repoCloneUrl);
+
+    let workspacePath: string;
+    try {
+      workspacePath = await workspaceManager.createWorkspace(workspaceRoot, workspacePurpose, repoIdentifier);
+    } catch (err) {
+      if (err instanceof WorkspaceLockError) {
+        logger.info('Workspace busy, stopping pipeline for human retry', undefined, {
+          jobId: job.jobId,
+          ticketKey: job.ticketKey,
+          repoIdentifier,
+        });
+        await this.postTicketComment(
+          job,
+          `Agent pipeline could not start: this repo's persistent workspace is busy with another job. Please retry once that job finishes.`,
+        );
+        return;
+      }
+      throw err;
+    }
+
     const repoPath = `${workspacePath}/repo`;
     const branch = `ai-agent/${job.ticketKey}`;
 
@@ -157,7 +183,15 @@ export class RunAgentPipelineUseCase {
     });
 
     try {
-      await gitService.clone(job.projectConfig.repoCloneUrl, job.projectConfig.baseBranch, repoPath, workspaceRoot);
+      // CAF-WSMODE-01: a persistent workspace already holding a prior job's
+      // clone (existsSync check, not a hidden mode branch) gets fetched +
+      // reset instead of cloned fresh; first run / ephemeral mode clones as
+      // before.
+      if (existsSync(`${repoPath}/.git`)) {
+        await gitService.preflightCleanup(repoPath, job.projectConfig.baseBranch, workspaceRoot);
+      } else {
+        await gitService.clone(job.projectConfig.repoCloneUrl, job.projectConfig.baseBranch, repoPath, workspaceRoot);
+      }
       await gitService.createBranch(repoPath, branch, workspaceRoot);
 
       const plannerPrompt = [
@@ -512,7 +546,7 @@ export class RunAgentPipelineUseCase {
 
       throw err;
     } finally {
-      await workspaceManager.cleanupWorkspace(workspacePath, workspaceRoot);
+      await workspaceManager.cleanupWorkspace(workspacePath, workspaceRoot, workspacePurpose);
     }
   }
 

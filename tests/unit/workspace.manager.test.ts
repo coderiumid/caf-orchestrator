@@ -6,11 +6,15 @@ import { tmpdir } from 'node:os';
 const defaultRoot = mkdtempSync(join(tmpdir(), 'caf-orchestrator-default-'));
 const projectRoot = mkdtempSync(join(tmpdir(), 'caf-orchestrator-project-'));
 
+// Mutable so individual tests can flip workspace.mode between 'ephemeral'/'persistent'.
+const mockConfig = { workspace: { dir: defaultRoot, mode: 'ephemeral' as 'ephemeral' | 'persistent' } };
+
 vi.mock('../../src/config/index.js', () => ({
-  config: { workspace: { dir: defaultRoot } },
+  config: mockConfig,
 }));
 
 const { WorkspaceManager } = await import('../../src/infrastructure/git/workspace.manager.js');
+const { WorkspaceLockError } = await import('../../src/domain/errors/app-errors.js');
 
 describe('WorkspaceManager', () => {
   afterAll(() => {
@@ -63,5 +67,70 @@ describe('WorkspaceManager', () => {
     await manager.cleanupWorkspace(path, projectRoot);
 
     expect(existsSync(path)).toBe(false);
+  });
+
+  describe('persistent mode (workspacePurpose: ticket-pipeline)', () => {
+    afterAll(() => {
+      mockConfig.workspace.mode = 'ephemeral';
+    });
+
+    it('ephemeral job-<uuid> dir when workspace.mode is persistent but workspacePurpose is pr-review', async () => {
+      mockConfig.workspace.mode = 'persistent';
+      const manager = new WorkspaceManager();
+
+      const path = await manager.createWorkspace(projectRoot, 'pr-review', 'some-repo');
+
+      expect(path).toMatch(/job-/);
+      await manager.cleanupWorkspace(path, projectRoot, 'pr-review');
+      expect(existsSync(path)).toBe(false);
+    });
+
+    it('ephemeral job-<uuid> dir when workspacePurpose is ticket-pipeline but workspace.mode is ephemeral', async () => {
+      mockConfig.workspace.mode = 'ephemeral';
+      const manager = new WorkspaceManager();
+
+      const path = await manager.createWorkspace(projectRoot, 'ticket-pipeline', 'some-repo');
+
+      expect(path).toMatch(/job-/);
+      await manager.cleanupWorkspace(path, projectRoot, 'ticket-pipeline');
+      expect(existsSync(path)).toBe(false);
+    });
+
+    it('reuses a stable persistent-<repo> dir and does not remove it on cleanup', async () => {
+      mockConfig.workspace.mode = 'persistent';
+      const manager = new WorkspaceManager();
+
+      const firstPath = await manager.createWorkspace(projectRoot, 'ticket-pipeline', 'repo-reuse');
+      expect(firstPath).toBe(join(projectRoot, 'persistent-repo-reuse'));
+      expect(existsSync(firstPath)).toBe(true);
+
+      await manager.cleanupWorkspace(firstPath, projectRoot, 'ticket-pipeline');
+      expect(existsSync(firstPath)).toBe(true);
+
+      const secondPath = await manager.createWorkspace(projectRoot, 'ticket-pipeline', 'repo-reuse');
+      expect(secondPath).toBe(firstPath);
+
+      await manager.cleanupWorkspace(secondPath, projectRoot, 'ticket-pipeline');
+    });
+
+    it('rejects a second createWorkspace for the same repo while the first job still holds the lock', async () => {
+      mockConfig.workspace.mode = 'persistent';
+      const manager = new WorkspaceManager();
+
+      const path = await manager.createWorkspace(projectRoot, 'ticket-pipeline', 'repo-lock');
+
+      await expect(manager.createWorkspace(projectRoot, 'ticket-pipeline', 'repo-lock')).rejects.toThrow(WorkspaceLockError);
+
+      await manager.cleanupWorkspace(path, projectRoot, 'ticket-pipeline');
+      await expect(manager.createWorkspace(projectRoot, 'ticket-pipeline', 'repo-lock')).resolves.toBe(path);
+      await manager.cleanupWorkspace(path, projectRoot, 'ticket-pipeline');
+    });
+
+    it('throws when workspacePurpose is ticket-pipeline + persistent mode but repoIdentifier is missing', async () => {
+      mockConfig.workspace.mode = 'persistent';
+      const manager = new WorkspaceManager();
+
+      await expect(manager.createWorkspace(projectRoot, 'ticket-pipeline')).rejects.toThrow(/repoIdentifier/);
+    });
   });
 });
