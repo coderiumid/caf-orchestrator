@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { resolve } from 'node:path';
-import type { IGitService } from '../../domain/interfaces/git.interface.js';
+import type { IGitService, PreflightCleanupResult } from '../../domain/interfaces/git.interface.js';
 import { config } from '../../config/index.js';
 import { GitError, ValidationError } from '../../domain/errors/app-errors.js';
 import { logger } from '../logging/logger.js';
@@ -116,5 +116,38 @@ export class GitService implements IGitService {
 
     logger.info('Pushing branch', undefined, { branch });
     await runGit(['push', '--set-upstream', 'origin', '--', branch], targetDir);
+  }
+
+  async preflightCleanup(targetDir: string, baseBranch: string, workspaceRoot?: string): Promise<PreflightCleanupResult> {
+    assertInsideWorkspace(targetDir, workspaceRoot);
+    assertSafeBranchName(baseBranch);
+
+    logger.debug('Preflight cleanup: fetching', undefined, { targetDir });
+    await runGit(['fetch', 'origin'], targetDir);
+
+    const branchBeforeReset = (await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], targetDir)).trim();
+    const headCommitBeforeReset = (await runGit(['rev-parse', 'HEAD'], targetDir)).trim();
+    const statusBeforeReset = (await runGit(['status', '--short'], targetDir)).trim();
+    const hadUncommittedChanges = statusBeforeReset.length > 0;
+
+    // Audit trail required before the destructive reset below discards this
+    // state — logged only when there's actually something to lose, so a
+    // routine clean-workspace cleanup doesn't spam the log (CAF-WSMODE-01).
+    if (hadUncommittedChanges) {
+      logger.warn('Preflight cleanup: discarding uncommitted changes before reset', undefined, {
+        targetDir,
+        branch: branchBeforeReset,
+        headCommit: headCommitBeforeReset,
+        status: statusBeforeReset,
+      });
+    }
+
+    await runGit(['checkout', baseBranch, '--'], targetDir);
+    await runGit(['reset', '--hard', `origin/${baseBranch}`], targetDir);
+    await runGit(['clean', '-fd'], targetDir);
+
+    logger.info('Preflight cleanup complete', undefined, { targetDir, baseBranch, hadUncommittedChanges });
+
+    return { hadUncommittedChanges, branchBeforeReset, headCommitBeforeReset, statusBeforeReset };
   }
 }

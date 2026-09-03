@@ -135,7 +135,12 @@ const yamlSchema = z.object({
 
   workspace: z.object({
     dir: z.string().default('/tmp/caf-orchestrator/workspace'),
-  }).default(() => ({ dir: '/tmp/caf-orchestrator/workspace' })),
+    // 'ephemeral' (default): behavior unchanged — every job clones to a fresh
+    // job-<uuid> dir under workspace.dir and removes it after. 'persistent':
+    // a job reuses a per-repo subfolder under workspace.dir across runs
+    // instead of cloning fresh each time (CAF-WSMODE-01).
+    mode: z.enum(['ephemeral', 'persistent']).default('ephemeral'),
+  }).default(() => ({ dir: '/tmp/caf-orchestrator/workspace', mode: 'ephemeral' as const })),
 
   queue: z.object({
     jobTtlSeconds: z.coerce.number().int().positive().default(86_400),

@@ -43,3 +43,10 @@ export class GithubApiError extends AppError {
   readonly code = 'GITHUB_API_ERROR';
   readonly statusCode = 502;
 }
+
+// Thrown when a persistent-mode workspace is already locked by another
+// in-flight job (CAF-WSMODE-01) — reject-immediately behavior, not queued.
+export class WorkspaceLockError extends AppError {
+  readonly code = 'WORKSPACE_LOCK_ERROR';
+  readonly statusCode = 409;
+}
