@@ -27,6 +27,14 @@ claude:
 
 workspace:
   dir: /tmp/caf-orchestrator/workspace
+  # 'ephemeral' (default): every job clones the target repo to a fresh
+  # job-<uuid> dir and removes it after — no config changes needed, this is
+  # the pre-existing behavior. 'persistent': a job reuses a per-repo
+  # subfolder under workspace.dir across runs (fetch + checkout instead of a
+  # fresh clone) — use for large repos where a full clone per job is
+  # expensive. Requires no concurrent job on the same repo (see workspace
+  # lock in README/design docs).
+  mode: ephemeral
 
 # Per-project registry — every ticket-triggering project must be listed here.
 # Key is a project name of your choosing; ticketPrefix is what the registry
