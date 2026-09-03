@@ -112,7 +112,9 @@ export class RunPrReviewUseCase {
     const ticketKey = extractTicketKey(job.prHeadBranch);
     const [owner, repo] = job.repoFullName.split('/');
 
-    const workspacePath = await workspaceManager.createWorkspace();
+    // CAF-WSMODE-01: explicit purpose — PR-review jobs stay ephemeral always,
+    // regardless of config.workspace.mode (see WorkspacePurpose doc comment).
+    const workspacePath = await workspaceManager.createWorkspace(undefined, 'pr-review');
     const repoPath = `${workspacePath}/repo`;
 
     logger.info('PR review job started', undefined, {
@@ -224,7 +226,7 @@ export class RunPrReviewUseCase {
       });
       throw err;
     } finally {
-      await workspaceManager.cleanupWorkspace(workspacePath);
+      await workspaceManager.cleanupWorkspace(workspacePath, undefined, 'pr-review');
     }
   }
 }
