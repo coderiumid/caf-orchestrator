@@ -103,6 +103,10 @@ describe('RunPrReviewUseCase', () => {
     const useCase = new RunPrReviewUseCase({ gitService, workspaceManager, agentRunner, vcsClient });
     await useCase.execute(makeJob());
 
+    // CAF-WSMODE-01: PR-review jobs always pass workspacePurpose: 'pr-review',
+    // so persistent-mode reuse (config.workspace.mode: 'persistent') never
+    // applies here regardless of the global config value.
+    expect(workspaceManager.createWorkspace).toHaveBeenCalledWith(undefined, 'pr-review');
     expect(gitService.clone).toHaveBeenCalledWith(
       'https://github.com/ganjardbc/umkm-pos.git',
       'ai-agent/CAF-123',
@@ -118,7 +122,7 @@ describe('RunPrReviewUseCase', () => {
       body: 'FIXED — done',
     });
     expect(vcsClient.postIssueComment).toHaveBeenCalledTimes(1);
-    expect(workspaceManager.cleanupWorkspace).toHaveBeenCalledWith('/tmp/workspace-1');
+    expect(workspaceManager.cleanupWorkspace).toHaveBeenCalledWith('/tmp/workspace-1', undefined, 'pr-review');
   });
 
   it('skips replying to a GENERAL entry (no comment to reply to)', async () => {
