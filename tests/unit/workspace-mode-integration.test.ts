@@ -52,6 +52,7 @@ const readQaReportMock = vi.fn().mockResolvedValue({ status: 'PASS', raw: 'PASS:
 const readReviewerReportMock = vi.fn().mockResolvedValue({ verdict: 'APPROVE', raw: '## Verdict: APPROVE' });
 const appendSkipNoteMock = vi.fn().mockResolvedValue(undefined);
 const readFixReviewLogMock = vi.fn().mockResolvedValue({ mode: undefined, entries: [], raw: '' });
+const readInitialReviewReportMock = vi.fn().mockResolvedValue({ verdict: 'APPROVE', raw: 'Verdict: APPROVE' });
 vi.mock('../../src/infrastructure/reports/report-reader.js', () => ({
   readTasks: readTasksMock,
   readVerifyReport: readVerifyReportMock,
@@ -59,6 +60,7 @@ vi.mock('../../src/infrastructure/reports/report-reader.js', () => ({
   readReviewerReport: readReviewerReportMock,
   appendSkipNote: appendSkipNoteMock,
   readFixReviewLog: readFixReviewLogMock,
+  readInitialReviewReport: readInitialReviewReportMock,
 }));
 
 const { GitService } = await import('../../src/infrastructure/git/git.service.js');
@@ -166,6 +168,7 @@ describe('CAF-WSMODE-01 Task 4d — cross-purpose persistent/ephemeral integrati
       createPullRequest: vi.fn().mockResolvedValue({ url: 'https://github.com/testorg/testrepo/pull/1', number: 1 }),
       replyToReviewComment: vi.fn().mockResolvedValue(undefined),
       postIssueComment: vi.fn().mockResolvedValue(undefined),
+      createPullRequestReview: vi.fn().mockResolvedValue({ url: 'https://github.com/testorg/testrepo/pull/1#review-1', id: 1 }),
     };
   });
 
