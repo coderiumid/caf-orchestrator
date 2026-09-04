@@ -75,6 +75,57 @@ export async function readReviewerReport(workspacePath: string, ticketKey: strin
 }
 
 /**
+ * Strict counterpart to readReviewerReport() — for the webhook mode `initial`
+ * Verdict→event mapping (run-pr-review.use-case.ts), which per review-command.js
+ * (caf-initiator) MUST STOP on an unrecognized/missing Verdict rather than default
+ * silently to any event. Deliberately NOT used by run-agent-pipeline.use-case.ts's
+ * pre-PR reviewer gate — that call site's existing default-to-CHANGES_REQUESTED
+ * behavior is untouched, out of scope for this change.
+ */
+export type InitialReviewVerdict = 'APPROVE' | 'CHANGES_REQUESTED' | 'DEFER';
+
+export interface InitialReviewReport {
+  verdict: InitialReviewVerdict;
+  raw: string;
+}
+
+export class UnrecognizedVerdictError extends Error {
+  constructor(readonly rawVerdictLine: string | undefined) {
+    super(
+      rawVerdictLine === undefined
+        ? 'review-notes.md has no Verdict line'
+        : `review-notes.md has an unrecognized Verdict: "${rawVerdictLine}"`,
+    );
+    this.name = 'UnrecognizedVerdictError';
+  }
+}
+
+export async function readInitialReviewReport(
+  workspacePath: string,
+  ticketKey: string,
+): Promise<InitialReviewReport | undefined> {
+  const raw = await readIfExists(join(taskDir(workspacePath, ticketKey), 'review-notes.md'));
+  if (raw === undefined) return undefined;
+
+  const verdictLine = VERDICT_LINE.exec(raw)?.[1]?.trim();
+  if (!verdictLine) {
+    throw new UnrecognizedVerdictError(undefined);
+  }
+
+  // Exact match after stripping markdown emphasis/backticks, per review-command.js:
+  // "capitalization/spelling yang tidak match persis" → STOP, don't guess.
+  const cleaned = verdictLine.replace(/^[*_`]+|[*_`]+$/g, '').trim().toUpperCase();
+
+  let verdict: InitialReviewVerdict;
+  if (cleaned === 'APPROVE') verdict = 'APPROVE';
+  else if (cleaned === 'CHANGES REQUESTED') verdict = 'CHANGES_REQUESTED';
+  else if (cleaned === 'DEFER') verdict = 'DEFER';
+  else throw new UnrecognizedVerdictError(verdictLine);
+
+  return { verdict, raw };
+}
+
+/**
  * Appends a "## Skipped Agents" note to verify-report.md, for agents the
  * orchestrator itself decided not to spawn (AGENT_SKIP_ENABLED path — see
  * run-agent-pipeline.use-case.ts). Only ever called after any implementation

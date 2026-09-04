@@ -4,8 +4,10 @@ import type {
   CreatePullRequestResult,
   ReplyToReviewCommentInput,
   PostIssueCommentInput,
+  CreatePullRequestReviewInput,
+  CreatePullRequestReviewResult,
 } from '../../domain/interfaces/vcs-client.interface.js';
-import { GithubApiError } from '../../domain/errors/app-errors.js';
+import { GithubApiError, SelfReviewRejectedError } from '../../domain/errors/app-errors.js';
 import { config } from '../../config/index.js';
 import { logger } from '../logging/logger.js';
 
@@ -29,6 +31,18 @@ interface GithubPullRequestDetailResponse {
   number: number;
   head: { ref: string };
 }
+
+interface GithubPullRequestReviewResponse {
+  id: number;
+  html_url: string;
+}
+
+// Exact substrings GitHub returns in the 422 `errors[].message` field for a
+// self-review rejection — confirmed empirically per caf-initiator's
+// review-command.js (PR #83/GAN-114, 2026-08-22), one message per event.
+// Checked against the raw response text (not a strict JSON path) so a minor
+// shape difference in the errors[] array doesn't silently miss the match.
+const SELF_REVIEW_REJECTION_PATTERNS = [/Can not approve your own pull request/i, /Can not request changes on your own pull request/i];
 
 export interface GithubReviewComment {
   id: number;
@@ -148,6 +162,39 @@ export class GithubService implements IVcsClient {
     }
 
     logger.info('Posted GitHub issue comment', undefined, { owner, repo, issueNumber });
+  }
+
+  // Official PR Review object (Files-changed-tab-level, distinct from a plain
+  // issue/conversation comment) — POST pulls/{number}/reviews, event
+  // APPROVE/REQUEST_CHANGES/COMMENT. Used by run-pr-review.use-case.ts mode
+  // `initial` only (CAF-ORCH-PRREVIEW-03).
+  async createPullRequestReview(input: CreatePullRequestReviewInput): Promise<CreatePullRequestReviewResult> {
+    const { owner, repo, prNumber, event, body } = input;
+
+    const res = await fetch(`${config.github.apiUrl}/repos/${owner}/${repo}/pulls/${prNumber}/reviews`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${config.GITHUB_TOKEN}`,
+        Accept: 'application/vnd.github+json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ event, body }),
+    });
+
+    if (!res.ok) {
+      const responseBody = await res.text();
+      if (res.status === 422 && SELF_REVIEW_REJECTION_PATTERNS.some((p) => p.test(responseBody))) {
+        throw new SelfReviewRejectedError(
+          `GitHub rejected self-review for event "${event}" (422): ${responseBody}`,
+        );
+      }
+      throw new GithubApiError(`GitHub API request failed (${res.status}): ${responseBody}`);
+    }
+
+    const json = (await res.json()) as GithubPullRequestReviewResponse;
+    logger.info('Created GitHub pull request review', undefined, { owner, repo, prNumber, event, reviewId: json.id });
+
+    return { url: json.html_url, id: json.id };
   }
 
   // Needed by the /github route (CAF-PRREVIEW-01 Checkpoint B, Task E) to resolve
