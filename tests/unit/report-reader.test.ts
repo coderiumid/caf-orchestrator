@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readFixReviewLog } from '../../src/infrastructure/reports/report-reader.js';
+import { readFixReviewLog, readInitialReviewReport, UnrecognizedVerdictError } from '../../src/infrastructure/reports/report-reader.js';
 
 const dirs: string[] = [];
 
@@ -12,6 +12,15 @@ function writeFixReviewLog(ticketKey: string, content: string): string {
   const taskDir = join(workspacePath, '.caf', 'tasks', ticketKey);
   mkdirSync(taskDir, { recursive: true });
   writeFileSync(join(taskDir, 'fix-review-log.md'), content);
+  return workspacePath;
+}
+
+function writeReviewNotes(ticketKey: string, content: string): string {
+  const workspacePath = mkdtempSync(join(tmpdir(), 'caf-orchestrator-report-reader-test-'));
+  dirs.push(workspacePath);
+  const taskDir = join(workspacePath, '.caf', 'tasks', ticketKey);
+  mkdirSync(taskDir, { recursive: true });
+  writeFileSync(join(taskDir, 'review-notes.md'), content);
   return workspacePath;
 }
 
@@ -131,5 +140,52 @@ describe('readFixReviewLog', () => {
 
     expect(result?.entries).toHaveLength(1);
     expect(result?.entries[0].note).toBe('catatan yang berlanjut lalu berhenti.');
+  });
+});
+
+describe('readInitialReviewReport', () => {
+  it.each([
+    ['APPROVE', 'Verdict: APPROVE'],
+    ['CHANGES_REQUESTED', 'Verdict: CHANGES REQUESTED'],
+    ['DEFER', 'Verdict: DEFER'],
+  ] as const)('extracts Verdict %s', async (expected, verdictLine) => {
+    const md = ['## Review Notes — GAN-114', `Ticket: GAN-114`, 'Agent: caf-reviewer', verdictLine].join('\n');
+    const workspacePath = writeReviewNotes('GAN-114', md);
+
+    const result = await readInitialReviewReport(workspacePath, 'GAN-114');
+
+    expect(result?.verdict).toBe(expected);
+  });
+
+  it('tolerates markdown emphasis around the verdict value', async () => {
+    const md = ['## Review Notes — GAN-114', 'Verdict: **APPROVE**'].join('\n');
+    const workspacePath = writeReviewNotes('GAN-114', md);
+
+    const result = await readInitialReviewReport(workspacePath, 'GAN-114');
+
+    expect(result?.verdict).toBe('APPROVE');
+  });
+
+  it('returns undefined when review-notes.md does not exist', async () => {
+    const workspacePath = mkdtempSync(join(tmpdir(), 'caf-orchestrator-report-reader-test-'));
+    dirs.push(workspacePath);
+
+    const result = await readInitialReviewReport(workspacePath, 'GAN-114');
+
+    expect(result).toBeUndefined();
+  });
+
+  it('STOPs (throws UnrecognizedVerdictError) on an unrecognized Verdict value, does not default', async () => {
+    const md = ['## Review Notes — GAN-114', 'Verdict: NEEDS_HUMAN'].join('\n');
+    const workspacePath = writeReviewNotes('GAN-114', md);
+
+    await expect(readInitialReviewReport(workspacePath, 'GAN-114')).rejects.toBeInstanceOf(UnrecognizedVerdictError);
+  });
+
+  it('STOPs (throws UnrecognizedVerdictError) when there is no Verdict line at all, does not default', async () => {
+    const md = ['## Review Notes — GAN-114', 'Security Audit: none'].join('\n');
+    const workspacePath = writeReviewNotes('GAN-114', md);
+
+    await expect(readInitialReviewReport(workspacePath, 'GAN-114')).rejects.toBeInstanceOf(UnrecognizedVerdictError);
   });
 });

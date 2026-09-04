@@ -1,10 +1,29 @@
 import type { IGitService, IWorkspaceManager } from '../../domain/interfaces/git.interface.js';
 import type { IAgentRunner } from '../../domain/interfaces/agent-runner.interface.js';
-import type { IVcsClient } from '../../domain/interfaces/vcs-client.interface.js';
+import type { IVcsClient, PullRequestReviewEvent } from '../../domain/interfaces/vcs-client.interface.js';
 import type { PrReviewCommentContext, PrReviewJobPayload } from '../../domain/interfaces/queue.interface.js';
 import type { INotifier } from '../../domain/interfaces/notifier.interface.js';
-import { readFixReviewLog, type FixReviewLogEntry } from '../../infrastructure/reports/report-reader.js';
+import {
+  readFixReviewLog,
+  readInitialReviewReport,
+  type FixReviewLogEntry,
+  type InitialReviewVerdict,
+} from '../../infrastructure/reports/report-reader.js';
+import { SelfReviewRejectedError } from '../../domain/errors/app-errors.js';
 import { logger } from '../../infrastructure/logging/logger.js';
+
+// Identical to review-command.js's (caf-initiator) mapping table —
+// APPROVE→APPROVE, CHANGES REQUESTED→REQUEST_CHANGES, DEFER→COMMENT. Not
+// reinterpreted here, just mirrored (CAF-ORCH-PRREVIEW-03 non-negotiable).
+const VERDICT_TO_EVENT: Record<InitialReviewVerdict, PullRequestReviewEvent> = {
+  APPROVE: 'APPROVE',
+  CHANGES_REQUESTED: 'REQUEST_CHANGES',
+  DEFER: 'COMMENT',
+};
+
+function verdictLabel(verdict: InitialReviewVerdict): string {
+  return verdict === 'CHANGES_REQUESTED' ? 'CHANGES REQUESTED' : verdict;
+}
 
 export interface RunPrReviewDeps {
   gitService: IGitService;
@@ -41,7 +60,13 @@ function commentLabel(entry: { label: 'INLINE' | 'GENERAL'; path?: string; line?
 // path:line / GENERAL, same scoped/global mode, same fix-review-log.md block
 // format instruction — so caf-reviewer.md behaves identically whether spawned
 // by the interactive command or this webhook-driven use-case.
-function buildReviewerPrompt(ticketKey: string, mode: PrReviewJobPayload['mode'], commentContext: PrReviewCommentContext[]): string {
+//
+// CAF-ORCH-PRREVIEW-03: unchanged, kept byte-for-byte — only reachable for
+// mode `scoped`/`global` now (see buildReviewerPrompt below). Mode `initial`
+// moved to buildInitialReviewPrompt(), a real INITIAL-mode (Verdict-producing)
+// prompt equivalent to caf-initiator's `/caf-review` (review-command.js
+// spawnSection()), not this fix-review-log contract.
+function buildFixReviewPrompt(ticketKey: string, mode: PrReviewJobPayload['mode'], commentContext: PrReviewCommentContext[]): string {
   // mode 'initial' carries no comments (webhooks.ts empties commentContext for
   // the "/caf-review" trigger — it's a command, not feedback) — swap the
   // per-comment block for an explicit full-review instruction instead of
@@ -86,8 +111,77 @@ function buildReviewerPrompt(ticketKey: string, mode: PrReviewJobPayload['mode']
   ].join('\n');
 }
 
+// INITIAL mode — mirrors caf-initiator's `/caf-review` spawnSection()
+// (caf-initiator/src/templates/review-command.js) contract: a full review of
+// this PR's diff from scratch, `commentContext = []`, writing
+// `review-notes.md` (Ticket, Agent, Verdict, Security Audit, Qualitative
+// Review, Verdict Rationale, For Developer) — NOT the fix-review-log.md
+// contract above. mode is always 'initial' here (only call site), kept as a
+// param for symmetry with buildFixReviewPrompt/logging.
+function buildInitialReviewPrompt(ticketKey: string, mode: PrReviewJobPayload['mode']): string {
+  return [
+    'Mode INITIAL (bukan fix-review post-PR) — full review dari awal terhadap seluruh',
+    'perubahan PR ini, setara kontrak `/caf-review` interaktif. Tidak ada comment reviewer',
+    'manusia yang perlu ditanggapi (commentContext kosong) — bukan respons ke comment tertentu.',
+    '',
+    `TICKET-ID: ${ticketKey}`,
+    `Mode: ${mode}`,
+    '',
+    'Jangan `git push`, jangan panggil API GitHub apapun, jangan ubah status ticket di tracker,',
+    'jangan fix kode apapun — tulis `review-notes.md` saja, format seperti biasa (Verdict,',
+    'Security Audit, Qualitative Review, dll). Komunikasi balik ke GitHub (posting PR Review)',
+    'adalah tugas caller, dilakukan setelah kamu selesai.',
+    '',
+    `Tulis \`.caf/tasks/${ticketKey}/review-notes.md\` dengan format standar caf-reviewer.md:`,
+    '```',
+    `## Review Notes — ${ticketKey}`,
+    'Ticket: {TICKET-ID}',
+    'Agent: caf-reviewer',
+    'Verdict: APPROVE | CHANGES REQUESTED | DEFER',
+    '',
+    '### Security Audit',
+    '{temuan keamanan, atau "None" kalau tidak ada}',
+    '',
+    '### Qualitative Review',
+    '{catatan kualitas kode}',
+    '',
+    '### Verdict Rationale',
+    '{alasan verdict di atas}',
+    '',
+    '### For Developer',
+    '{catatan untuk developer, kalau relevan}',
+    '```',
+    'Verdict HARUS persis salah satu dari tiga nilai di atas (APPROVE / CHANGES REQUESTED /',
+    'DEFER) — jangan pakai nilai lain (mis. NEEDS_HUMAN dipakai untuk siklus retry pipeline',
+    'otomatis, bukan untuk mode INITIAL single-run ini).',
+  ].join('\n');
+}
+
+function buildReviewerPrompt(ticketKey: string, mode: PrReviewJobPayload['mode'], commentContext: PrReviewCommentContext[]): string {
+  return mode === 'initial' ? buildInitialReviewPrompt(ticketKey, mode) : buildFixReviewPrompt(ticketKey, mode, commentContext);
+}
+
 function replyBody(entry: FixReviewLogEntry): string {
   return entry.note ? `${entry.status} — ${entry.note}` : entry.status;
+}
+
+function buildInitialReviewBody(verdict: InitialReviewVerdict, raw: string): string {
+  return [`Verdict: ${verdictLabel(verdict)}`, '', raw.trim()].join('\n');
+}
+
+// Self-review 422 fallback — per requirements.md "Keputusan Final" (2026-09-04):
+// auto-fallback to event COMMENT, real Verdict stated explicitly on the first
+// line of the body. No interactive choice (unlike review-command.js) — there's
+// no human to ask in a webhook context.
+function buildSelfReviewFallbackBody(verdict: InitialReviewVerdict, raw: string): string {
+  const event = VERDICT_TO_EVENT[verdict];
+  return [
+    `Verdict: ${verdictLabel(verdict)} (posted as COMMENT — GitHub does not allow self-review ${
+      event === 'APPROVE' ? 'approval' : 'rejection'
+    })`,
+    '',
+    raw.trim(),
+  ].join('\n');
 }
 
 function buildSummaryBody(ticketKey: string, mode: PrReviewJobPayload['mode'], entries: FixReviewLogEntry[]): string {
@@ -105,7 +199,7 @@ export class RunPrReviewUseCase {
   constructor(private readonly deps: RunPrReviewDeps) {}
 
   async execute(job: PrReviewJobPayload): Promise<void> {
-    const { gitService, workspaceManager, agentRunner, vcsClient, notifier } = this.deps;
+    const { gitService, workspaceManager, agentRunner, notifier } = this.deps;
 
     // Validate before creating a workspace — a throw here must not leave an
     // orphaned workspace dir behind (this line runs outside the try/finally).
@@ -166,46 +260,21 @@ export class RunPrReviewUseCase {
         throw new Error(`caf-reviewer agent exited with code ${result.exitCode}: ${result.stderr}`);
       }
 
-      const fixReviewLog = await readFixReviewLog(repoPath, ticketKey);
-      if (!fixReviewLog) {
-        throw new Error('No fix-review-log.md produced');
-      }
-
-      for (const entry of fixReviewLog.entries) {
-        if (entry.label !== 'INLINE') continue;
-        const commentId = Number(entry.commentRef);
-        if (!Number.isFinite(commentId)) {
-          // Mode 'initial' sends the reviewer no real Comment IDs to echo
-          // (webhooks.ts empties commentContext for "/caf-review" — see
-          // buildReviewerPrompt's full-review branch), so a non-numeric
-          // commentRef here is the reviewer logging a self-found finding, not
-          // an error — log at info instead of warn to avoid false-alarming
-          // on the expected case. Any other mode DOES supply real IDs, so a
-          // non-numeric commentRef there is unexpected and stays a warning.
-          const log = job.mode === 'initial' ? logger.info : logger.warn;
-          log('fix-review-log entry has non-numeric commentRef, skipping reply', undefined, {
-            jobId: job.jobId,
-            ticketKey,
-            mode: job.mode,
-            commentRef: entry.commentRef,
-          });
-          continue;
-        }
-        await vcsClient.replyToReviewComment({ owner, repo, prNumber: job.prNumber, commentId, body: replyBody(entry) });
-      }
-
-      await vcsClient.postIssueComment({
-        owner,
-        repo,
-        issueNumber: job.prNumber,
-        body: buildSummaryBody(ticketKey, job.mode, fixReviewLog.entries),
-      });
+      // Mode `initial` now runs the real INITIAL (Verdict-producing) contract —
+      // a PR Review object via pulls/{number}/reviews, not a fix-review-log
+      // reply cycle. `scoped`/`global` are untouched (CAF-ORCH-PRREVIEW-03
+      // non-negotiable) — same readFixReviewLog + reply + postIssueComment
+      // path as before this change.
+      const entryCount =
+        job.mode === 'initial'
+          ? await this.postInitialReview(repoPath, ticketKey, owner, repo, job)
+          : await this.postFixReview(repoPath, ticketKey, owner, repo, job);
 
       logger.info('PR review job completed', undefined, {
         jobId: job.jobId,
         ticketKey,
         prNumber: job.prNumber,
-        entryCount: fixReviewLog.entries.length,
+        entryCount,
       });
 
       void notifier?.notifyPrReviewCompleted({
@@ -214,7 +283,7 @@ export class RunPrReviewUseCase {
         prNumber: job.prNumber,
         repoFullName: job.repoFullName,
         mode: job.mode,
-        entryCount: fixReviewLog.entries.length,
+        entryCount,
       });
     } catch (err) {
       void notifier?.notifyPrReviewFailed({
@@ -228,5 +297,100 @@ export class RunPrReviewUseCase {
     } finally {
       await workspaceManager.cleanupWorkspace(workspacePath, undefined, 'pr-review');
     }
+  }
+
+  // Unchanged from before CAF-ORCH-PRREVIEW-03 — moved into its own method
+  // only to make room for the mode `initial` branch in execute(). Reply +
+  // summary-comment behavior for mode `scoped`/`global` is byte-for-byte
+  // identical to before this change.
+  private async postFixReview(
+    repoPath: string,
+    ticketKey: string,
+    owner: string,
+    repo: string,
+    job: PrReviewJobPayload,
+  ): Promise<number> {
+    const { vcsClient } = this.deps;
+
+    const fixReviewLog = await readFixReviewLog(repoPath, ticketKey);
+    if (!fixReviewLog) {
+      throw new Error('No fix-review-log.md produced');
+    }
+
+    for (const entry of fixReviewLog.entries) {
+      if (entry.label !== 'INLINE') continue;
+      const commentId = Number(entry.commentRef);
+      if (!Number.isFinite(commentId)) {
+        logger.warn('fix-review-log entry has non-numeric commentRef, skipping reply', undefined, {
+          jobId: job.jobId,
+          ticketKey,
+          mode: job.mode,
+          commentRef: entry.commentRef,
+        });
+        continue;
+      }
+      await vcsClient.replyToReviewComment({ owner, repo, prNumber: job.prNumber, commentId, body: replyBody(entry) });
+    }
+
+    await vcsClient.postIssueComment({
+      owner,
+      repo,
+      issueNumber: job.prNumber,
+      body: buildSummaryBody(ticketKey, job.mode, fixReviewLog.entries),
+    });
+
+    return fixReviewLog.entries.length;
+  }
+
+  // Real INITIAL mode (CAF-ORCH-PRREVIEW-03) — posts an official GitHub PR
+  // Review object (pulls/{number}/reviews), equivalent to caf-initiator's
+  // `/caf-review`. An unrecognized/missing Verdict propagates
+  // UnrecognizedVerdictError up through execute()'s catch (→ notifyPrReviewFailed
+  // + rethrow, same STOP-on-crash path as any other agent contract violation
+  // in this file) — deliberately NOT the same handling as the self-review 422
+  // case below, per the ticket's non-negotiable: don't unify the two.
+  private async postInitialReview(
+    repoPath: string,
+    ticketKey: string,
+    owner: string,
+    repo: string,
+    job: PrReviewJobPayload,
+  ): Promise<number> {
+    const { vcsClient } = this.deps;
+
+    const report = await readInitialReviewReport(repoPath, ticketKey);
+    if (!report) {
+      throw new Error('No review-notes.md produced');
+    }
+
+    const event = VERDICT_TO_EVENT[report.verdict];
+    const body = buildInitialReviewBody(report.verdict, report.raw);
+
+    try {
+      await vcsClient.createPullRequestReview({ owner, repo, prNumber: job.prNumber, event, body });
+    } catch (err) {
+      if (!(err instanceof SelfReviewRejectedError)) {
+        throw err;
+      }
+      // STOP item, decided (requirements.md "Keputusan Final", 2026-09-04):
+      // auto-fallback to COMMENT, real Verdict stated explicitly in the body —
+      // no interactive choice, there's no human to ask in a webhook context.
+      logger.info('Self-review rejected by GitHub (422), auto-falling back to COMMENT', undefined, {
+        jobId: job.jobId,
+        ticketKey,
+        prNumber: job.prNumber,
+        originalEvent: event,
+        verdict: report.verdict,
+      });
+      await vcsClient.createPullRequestReview({
+        owner,
+        repo,
+        prNumber: job.prNumber,
+        event: 'COMMENT',
+        body: buildSelfReviewFallbackBody(report.verdict, report.raw),
+      });
+    }
+
+    return 1;
   }
 }

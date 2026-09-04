@@ -44,6 +44,19 @@ export class GithubApiError extends AppError {
   readonly statusCode = 502;
 }
 
+// Thrown by GithubService.createPullRequestReview() when the GitHub API
+// rejects an APPROVE/REQUEST_CHANGES review with 422 because the reviewing
+// actor (this pipeline's token) is also the PR author — confirmed empirically
+// per caf-initiator's review-command.js (PR #83/GAN-114, 2026-08-22), distinct
+// message per event. CAF-ORCH-PRREVIEW-03: caught by run-pr-review.use-case.ts
+// to auto-fallback to event COMMENT with the real verdict stated in the body —
+// NOT the same handling as an unrecognized/missing Verdict (that's a STOP, no
+// fallback; this is the one case with a deliberate, decided fallback).
+export class SelfReviewRejectedError extends AppError {
+  readonly code = 'GITHUB_SELF_REVIEW_REJECTED';
+  readonly statusCode = 422;
+}
+
 // Thrown when a persistent-mode workspace is already locked by another
 // in-flight job (CAF-WSMODE-01) — reject-immediately behavior, not queued.
 export class WorkspaceLockError extends AppError {
