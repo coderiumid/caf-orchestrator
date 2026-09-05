@@ -147,6 +147,36 @@ describe('projectsSchema — ticketPrefix format', () => {
   });
 });
 
+describe('projectsSchema — orchestration.maxOrchestrationRetries', () => {
+  it('parses a project without orchestration set at all, leaving maxOrchestrationRetries undefined (caller falls back to global default)', () => {
+    const result = projectsSchema.safeParse({ 'project-a': validA });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data['project-a'].orchestration.maxOrchestrationRetries).toBeUndefined();
+    }
+  });
+
+  it('parses 2 projects with different maxOrchestrationRetries values without cross-project leakage', () => {
+    const result = projectsSchema.safeParse({
+      'project-a': { ...validA, orchestration: { maxOrchestrationRetries: 5 } },
+      'project-b': { ...validB, orchestration: { maxOrchestrationRetries: 1 } },
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data['project-a'].orchestration.maxOrchestrationRetries).toBe(5);
+      expect(result.data['project-b'].orchestration.maxOrchestrationRetries).toBe(1);
+    }
+  });
+
+  it('rejects a negative maxOrchestrationRetries', () => {
+    const result = projectsSchema.safeParse({
+      'project-a': { ...validA, orchestration: { maxOrchestrationRetries: -1 } },
+    });
+    expect(result.success).toBe(false);
+    expect(issuePaths(result)).toContain('project-a.orchestration.maxOrchestrationRetries');
+  });
+});
+
 describe('projectsSchema — combined errors, not stop-at-first', () => {
   it('collects a per-field error and a cross-project error together in one pass', () => {
     const result = projectsSchema.safeParse({

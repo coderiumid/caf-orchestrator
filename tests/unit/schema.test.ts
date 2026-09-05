@@ -31,6 +31,15 @@ describe('configSchema — required structural fields', () => {
       expect(result.data.queue.jobAttempts).toBe(3);
       expect(result.data.agents.qa.maxRetries).toBe(1);
       expect(result.data.agents.reviewer.maxRetries).toBe(1);
+      expect(result.data.orchestration.maxOrchestrationRetries).toBe(2);
+    }
+  });
+
+  it('overrides orchestration.maxOrchestrationRetries when set', () => {
+    const result = configSchema.safeParse({ ...baseEnv, orchestration: { maxOrchestrationRetries: 5 } });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.orchestration.maxOrchestrationRetries).toBe(5);
     }
   });
 });
