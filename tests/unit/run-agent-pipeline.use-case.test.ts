@@ -1,4 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { IGitService, IWorkspaceManager } from '../../src/domain/interfaces/git.interface.js';
 import type { IAgentRunner, AgentRunResult } from '../../src/domain/interfaces/agent-runner.interface.js';
 import type { ILinearClient } from '../../src/domain/interfaces/linear-client.interface.js';
@@ -119,6 +122,14 @@ describe('RunAgentPipelineUseCase', () => {
       commitAll: vi.fn().mockResolvedValue(undefined),
       push: vi.fn().mockResolvedValue(undefined),
       getHeadCommit: vi.fn().mockResolvedValue('deadbeef'),
+      preflightCleanup: vi.fn().mockResolvedValue({
+        hadUncommittedChanges: false,
+        branchBeforeReset: 'main',
+        headCommitBeforeReset: 'deadbeef',
+        statusBeforeReset: '',
+      }),
+      getWorkspaceStatus: vi.fn().mockResolvedValue({ hasUncommittedChanges: false, statusOutput: '' }),
+      diffStat: vi.fn().mockResolvedValue(''),
     };
 
     recordGateFailureMock.mockResolvedValue(undefined);
@@ -1111,9 +1122,14 @@ describe('RunAgentPipelineUseCase', () => {
       await useCase.execute(makeRetryJob());
 
       expect(incrementOrchestrationRetryCountMock).toHaveBeenCalledWith(expect.any(String), 'CAF-123');
-      const plannerCall = (agentRunner.run as ReturnType<typeof vi.fn>).mock.calls.find((call) => call[0] === 'caf-planner');
-      expect(plannerCall?.[2]).toContain('Stored title');
-      expect(plannerCall?.[2]).toContain('Stored description');
+      // Gate-aware resume (Task 6): planner is skipped entirely — tasks.md is
+      // read from the already-synced branch instead.
+      expect(agentRunner.run).not.toHaveBeenCalledWith('caf-planner', expect.anything(), expect.anything(), expect.anything());
+      // ticketTitle/ticketDescription refreshed from stored state surface in
+      // the final PR title (this scenario runs a clean success end-to-end).
+      expect(vcsClient.createPullRequest).toHaveBeenCalledWith(
+        expect.objectContaining({ title: expect.stringContaining('Stored title') }),
+      );
     });
 
     it('CAF-RETRYPIPELINE-01 Task 4/5 AC: a /caf-retry-pipeline-shaped job and a Linear-resume-shaped job hit the exact same counter code path (no separate/parallel counters per trigger)', async () => {
@@ -1171,6 +1187,162 @@ describe('RunAgentPipelineUseCase', () => {
       expect(vcsClient.postIssueComment).toHaveBeenCalledWith(
         expect.objectContaining({ owner: 'ganjardbc', repo: 'umkm-pos', issueNumber: 7 }),
       );
+    });
+
+    describe('Task 6 — gate-aware resume, manual-change diffing, uncommitted-residue detection', () => {
+      function makeRetryJobWithState(overrides: Partial<ExistingJobPayload> = {}) {
+        return makeJob({
+          isRetry: true,
+          maxOrchestrationRetries: 2,
+          retryContext: { owner: 'ganjardbc', repo: 'umkm-pos', prNumber: 7 },
+          ...overrides,
+        });
+      }
+
+      it.each(['implementation', 'qa', 'reviewer'] as const)(
+        'injects the %s gate\'s own artifact as context and skips the planner',
+        async (gate) => {
+          (agentRunner.run as ReturnType<typeof vi.fn>).mockResolvedValue(makeAgentResult({ exitCode: 0 }));
+          readOrchestrationStateMock.mockResolvedValue({
+            orchestrationRetryCount: 0,
+            lastFailedGate: gate,
+            lastFailedAt: '2026-01-01T00:00:00.000Z',
+            lastKnownCommitSha: 'deadbeef', // matches gitService.getHeadCommit default — no manual-change diff
+            ticketTitle: 'Stored title',
+            ticketDescription: 'Stored description',
+          });
+          readVerifyReportMock.mockResolvedValue({ status: 'SUCCESS', raw: 'VERIFY_ARTIFACT_MARKER' });
+          readQaReportMock.mockResolvedValue({ status: 'PASS', raw: 'QA_ARTIFACT_MARKER' });
+          readReviewerReportMock.mockResolvedValue({ verdict: 'APPROVE', raw: 'REVIEWER_ARTIFACT_MARKER' });
+
+          const useCase = new RunAgentPipelineUseCase({ gitService, workspaceManager, agentRunner, linearClient, vcsClient, notifier });
+          await useCase.execute(makeRetryJobWithState());
+
+          expect(agentRunner.run).not.toHaveBeenCalledWith('caf-planner', expect.anything(), expect.anything(), expect.anything());
+          const marker = { implementation: 'VERIFY_ARTIFACT_MARKER', qa: 'QA_ARTIFACT_MARKER', reviewer: 'REVIEWER_ARTIFACT_MARKER' }[gate];
+          const backendCall = (agentRunner.run as ReturnType<typeof vi.fn>).mock.calls.find((call) => call[0] === 'caf-backend');
+          expect(backendCall?.[2]).toContain(marker);
+          expect(backendCall?.[2]).toContain(`stopped at the ${gate} gate`);
+        },
+      );
+
+      it('defaults to the implementation gate\'s artifact when lastFailedGate is null', async () => {
+        (agentRunner.run as ReturnType<typeof vi.fn>).mockResolvedValue(makeAgentResult({ exitCode: 0 }));
+        readOrchestrationStateMock.mockResolvedValue({
+          orchestrationRetryCount: 0,
+          lastFailedGate: null,
+          lastFailedAt: null,
+          lastKnownCommitSha: null,
+          ticketTitle: 'Stored title',
+          ticketDescription: 'Stored description',
+        });
+        readVerifyReportMock.mockResolvedValue({ status: 'SUCCESS', raw: 'VERIFY_ARTIFACT_MARKER' });
+
+        const useCase = new RunAgentPipelineUseCase({ gitService, workspaceManager, agentRunner, linearClient, vcsClient, notifier });
+        await useCase.execute(makeRetryJobWithState());
+
+        const backendCall = (agentRunner.run as ReturnType<typeof vi.fn>).mock.calls.find((call) => call[0] === 'caf-backend');
+        expect(backendCall?.[2]).toContain('VERIFY_ARTIFACT_MARKER');
+      });
+
+      it('computes and injects a manual-change diff when HEAD moved past lastKnownCommitSha', async () => {
+        (agentRunner.run as ReturnType<typeof vi.fn>).mockResolvedValue(makeAgentResult({ exitCode: 0 }));
+        readOrchestrationStateMock.mockResolvedValue({
+          orchestrationRetryCount: 0,
+          lastFailedGate: 'qa',
+          lastFailedAt: '2026-01-01T00:00:00.000Z',
+          lastKnownCommitSha: 'old-sha',
+          ticketTitle: 'Stored title',
+          ticketDescription: 'Stored description',
+        });
+        (gitService.getHeadCommit as ReturnType<typeof vi.fn>).mockResolvedValue('new-sha');
+        (gitService.diffStat as ReturnType<typeof vi.fn>).mockResolvedValue(' 1 file changed, 2 insertions(+)');
+
+        const useCase = new RunAgentPipelineUseCase({ gitService, workspaceManager, agentRunner, linearClient, vcsClient, notifier });
+        await useCase.execute(makeRetryJobWithState());
+
+        expect(gitService.diffStat).toHaveBeenCalledWith(expect.any(String), 'old-sha', 'new-sha', expect.any(String));
+        const backendCall = (agentRunner.run as ReturnType<typeof vi.fn>).mock.calls.find((call) => call[0] === 'caf-backend');
+        expect(backendCall?.[2]).toContain('Manual changes were made directly to the branch');
+        expect(backendCall?.[2]).toContain('1 file changed, 2 insertions(+)');
+      });
+
+      it('does not compute a manual-change diff when HEAD matches lastKnownCommitSha', async () => {
+        (agentRunner.run as ReturnType<typeof vi.fn>).mockResolvedValue(makeAgentResult({ exitCode: 0 }));
+        readOrchestrationStateMock.mockResolvedValue({
+          orchestrationRetryCount: 0,
+          lastFailedGate: 'qa',
+          lastFailedAt: '2026-01-01T00:00:00.000Z',
+          lastKnownCommitSha: 'deadbeef', // equals gitService.getHeadCommit's default mock
+          ticketTitle: 'Stored title',
+          ticketDescription: 'Stored description',
+        });
+
+        const useCase = new RunAgentPipelineUseCase({ gitService, workspaceManager, agentRunner, linearClient, vcsClient, notifier });
+        await useCase.execute(makeRetryJobWithState());
+
+        expect(gitService.diffStat).not.toHaveBeenCalled();
+        const backendCall = (agentRunner.run as ReturnType<typeof vi.fn>).mock.calls.find((call) => call[0] === 'caf-backend');
+        expect(backendCall?.[2]).not.toContain('Manual changes were made directly');
+      });
+
+      describe('uncommitted-residue detection (existing persistent workspace)', () => {
+        const dirs: string[] = [];
+
+        afterEach(() => {
+          while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true });
+        });
+
+        function makeExistingWorkspace(): string {
+          const dir = mkdtempSync(join(tmpdir(), 'caf-orchestrator-retry-residue-test-'));
+          dirs.push(dir);
+          mkdirSync(join(dir, 'repo', '.git'), { recursive: true });
+          return dir;
+        }
+
+        it('stops the retry without touching the workspace when uncommitted residue is found', async () => {
+          const existingWorkspace = makeExistingWorkspace();
+          (workspaceManager.createWorkspace as ReturnType<typeof vi.fn>).mockResolvedValue(existingWorkspace);
+          (gitService.getWorkspaceStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
+            hasUncommittedChanges: true,
+            statusOutput: ' M some/file.ts',
+          });
+
+          const useCase = new RunAgentPipelineUseCase({ gitService, workspaceManager, agentRunner, linearClient, vcsClient, notifier });
+          await useCase.execute(makeRetryJobWithState());
+
+          expect(gitService.preflightCleanup).not.toHaveBeenCalled();
+          expect(gitService.clone).not.toHaveBeenCalled();
+          expect(agentRunner.run).not.toHaveBeenCalled();
+          expect(incrementOrchestrationRetryCountMock).not.toHaveBeenCalled();
+          expect(vcsClient.postIssueComment).toHaveBeenCalledWith(
+            expect.objectContaining({ body: expect.stringContaining('unexpected uncommitted changes') }),
+          );
+          expect(notifier.notifyPipelineNeedsHuman).toHaveBeenCalledTimes(1);
+        });
+
+        it('proceeds with preflightCleanup (not clone) when the existing workspace is clean', async () => {
+          const existingWorkspace = makeExistingWorkspace();
+          (workspaceManager.createWorkspace as ReturnType<typeof vi.fn>).mockResolvedValue(existingWorkspace);
+          (agentRunner.run as ReturnType<typeof vi.fn>).mockResolvedValue(makeAgentResult({ exitCode: 0 }));
+          readOrchestrationStateMock.mockResolvedValue({
+            orchestrationRetryCount: 0,
+            lastFailedGate: 'qa',
+            lastFailedAt: '2026-01-01T00:00:00.000Z',
+            lastKnownCommitSha: 'deadbeef',
+            ticketTitle: 'Stored title',
+            ticketDescription: 'Stored description',
+          });
+
+          const useCase = new RunAgentPipelineUseCase({ gitService, workspaceManager, agentRunner, linearClient, vcsClient, notifier });
+          await useCase.execute(makeRetryJobWithState());
+
+          expect(gitService.getWorkspaceStatus).toHaveBeenCalledWith(expect.stringContaining('/repo'), expect.any(String));
+          expect(gitService.preflightCleanup).toHaveBeenCalledWith(expect.stringContaining('/repo'), 'ai-agent/CAF-123', expect.any(String));
+          expect(gitService.clone).not.toHaveBeenCalled();
+          expect(incrementOrchestrationRetryCountMock).toHaveBeenCalledTimes(1);
+        });
+      });
     });
   });
 });
