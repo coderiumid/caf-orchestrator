@@ -44,9 +44,13 @@ vi.mock('../../src/infrastructure/reports/report-reader.js', () => ({
 
 const recordGateFailureMock = vi.fn();
 const resetOrchestrationStateMock = vi.fn();
+const readOrchestrationStateMock = vi.fn();
+const incrementOrchestrationRetryCountMock = vi.fn();
 vi.mock('../../src/infrastructure/reports/orchestration-state.js', () => ({
   recordGateFailure: recordGateFailureMock,
   resetOrchestrationState: resetOrchestrationStateMock,
+  readOrchestrationState: readOrchestrationStateMock,
+  incrementOrchestrationRetryCount: incrementOrchestrationRetryCountMock,
 }));
 
 // AGENT_SKIP_ENABLED defaults false to match the real schema default — tests
@@ -119,6 +123,8 @@ describe('RunAgentPipelineUseCase', () => {
 
     recordGateFailureMock.mockResolvedValue(undefined);
     resetOrchestrationStateMock.mockResolvedValue(undefined);
+    readOrchestrationStateMock.mockResolvedValue(undefined);
+    incrementOrchestrationRetryCountMock.mockResolvedValue(1);
 
     workspaceManager = {
       createWorkspace: vi.fn().mockResolvedValue('/tmp/workspace-1'),
@@ -517,7 +523,10 @@ describe('RunAgentPipelineUseCase', () => {
       expect.stringContaining('Draft PR: https://github.com/ganjardbc/umkm-pos/pull/1'),
     );
     expect(notifier.notifyPipelineNeedsHuman).toHaveBeenCalledTimes(1);
-    expect(recordGateFailureMock).toHaveBeenCalledWith(expect.any(String), 'CAF-123', 'implementation', 'deadbeef');
+    expect(recordGateFailureMock).toHaveBeenCalledWith(expect.any(String), 'CAF-123', 'implementation', 'deadbeef', {
+      ticketTitle: 'Test ticket',
+      ticketDescription: 'Test description',
+    });
     expect(resetOrchestrationStateMock).not.toHaveBeenCalled();
   });
 
@@ -639,7 +648,10 @@ describe('RunAgentPipelineUseCase', () => {
       expect.stringContaining('needs human review (QA failed after retry)'),
     );
     expect(notifier.notifyPipelineNeedsHuman).toHaveBeenCalledTimes(1);
-    expect(recordGateFailureMock).toHaveBeenCalledWith(expect.any(String), 'CAF-123', 'qa', 'deadbeef');
+    expect(recordGateFailureMock).toHaveBeenCalledWith(expect.any(String), 'CAF-123', 'qa', 'deadbeef', {
+      ticketTitle: 'Test ticket',
+      ticketDescription: 'Test description',
+    });
     expect(resetOrchestrationStateMock).not.toHaveBeenCalled();
   });
 
@@ -750,7 +762,10 @@ describe('RunAgentPipelineUseCase', () => {
       expect.stringContaining('needs human review (reviewer requested changes after retry)'),
     );
     expect(notifier.notifyPipelineNeedsHuman).toHaveBeenCalledTimes(1);
-    expect(recordGateFailureMock).toHaveBeenCalledWith(expect.any(String), 'CAF-123', 'reviewer', 'deadbeef');
+    expect(recordGateFailureMock).toHaveBeenCalledWith(expect.any(String), 'CAF-123', 'reviewer', 'deadbeef', {
+      ticketTitle: 'Test ticket',
+      ticketDescription: 'Test description',
+    });
     expect(resetOrchestrationStateMock).not.toHaveBeenCalled();
   });
 
@@ -1009,6 +1024,115 @@ describe('RunAgentPipelineUseCase', () => {
       expect(notifier.notifyAgentSkipped).not.toHaveBeenCalled();
       expect(appendSkipNoteMock).not.toHaveBeenCalled();
       expect(gitService.commitAll).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('CAF-RETRYPIPELINE-01 — isRetry job', () => {
+    function makeRetryJob(overrides: Partial<ExistingJobPayload> = {}): ExistingJobPayload {
+      return makeJob({
+        isRetry: true,
+        retryContext: { owner: 'ganjardbc', repo: 'umkm-pos', prNumber: 7, maxOrchestrationRetries: 2 },
+        ...overrides,
+      });
+    }
+
+    it('clones directly onto the existing ai-agent branch and never calls createBranch', async () => {
+      (agentRunner.run as ReturnType<typeof vi.fn>).mockResolvedValue(makeAgentResult({ exitCode: 0 }));
+      readOrchestrationStateMock.mockResolvedValue({
+        orchestrationRetryCount: 0,
+        lastFailedGate: 'qa',
+        lastFailedAt: '2026-01-01T00:00:00.000Z',
+        lastKnownCommitSha: 'sha-1',
+        ticketTitle: 'Stored title',
+        ticketDescription: 'Stored description',
+      });
+
+      const useCase = new RunAgentPipelineUseCase({ gitService, workspaceManager, agentRunner, linearClient, vcsClient, notifier });
+      await useCase.execute(makeRetryJob());
+
+      expect(gitService.clone).toHaveBeenCalledWith(expect.any(String), 'ai-agent/CAF-123', expect.any(String), expect.any(String));
+      expect(gitService.createBranch).not.toHaveBeenCalled();
+      expect(incrementOrchestrationRetryCountMock).toHaveBeenCalledWith(expect.any(String), 'CAF-123');
+    });
+
+    it('rejects with a comment and does not run any agent when no orchestration state exists', async () => {
+      readOrchestrationStateMock.mockResolvedValue(undefined);
+
+      const useCase = new RunAgentPipelineUseCase({ gitService, workspaceManager, agentRunner, linearClient, vcsClient, notifier });
+      await useCase.execute(makeRetryJob());
+
+      expect(agentRunner.run).not.toHaveBeenCalled();
+      expect(incrementOrchestrationRetryCountMock).not.toHaveBeenCalled();
+      expect(vcsClient.postIssueComment).toHaveBeenCalledWith({
+        owner: 'ganjardbc',
+        repo: 'umkm-pos',
+        issueNumber: 7,
+        body: expect.stringContaining('nothing to resume'),
+      });
+    });
+
+    it('rejects with a comment and does not run any agent when orchestrationRetryCount already reached the limit', async () => {
+      readOrchestrationStateMock.mockResolvedValue({
+        orchestrationRetryCount: 2,
+        lastFailedGate: 'qa',
+        lastFailedAt: '2026-01-01T00:00:00.000Z',
+        lastKnownCommitSha: 'sha-1',
+        ticketTitle: 'Stored title',
+        ticketDescription: 'Stored description',
+      });
+
+      const useCase = new RunAgentPipelineUseCase({ gitService, workspaceManager, agentRunner, linearClient, vcsClient, notifier });
+      await useCase.execute(makeRetryJob());
+
+      expect(agentRunner.run).not.toHaveBeenCalled();
+      expect(incrementOrchestrationRetryCountMock).not.toHaveBeenCalled();
+      expect(vcsClient.postIssueComment).toHaveBeenCalledWith({
+        owner: 'ganjardbc',
+        repo: 'umkm-pos',
+        issueNumber: 7,
+        body: expect.stringContaining('Retry limit reached'),
+      });
+    });
+
+    it('proceeds and increments the counter when under the limit, refreshing ticketTitle/ticketDescription from stored state', async () => {
+      (agentRunner.run as ReturnType<typeof vi.fn>).mockResolvedValue(makeAgentResult({ exitCode: 0 }));
+      readOrchestrationStateMock.mockResolvedValue({
+        orchestrationRetryCount: 1,
+        lastFailedGate: 'qa',
+        lastFailedAt: '2026-01-01T00:00:00.000Z',
+        lastKnownCommitSha: 'sha-1',
+        ticketTitle: 'Stored title',
+        ticketDescription: 'Stored description',
+      });
+      incrementOrchestrationRetryCountMock.mockResolvedValue(2);
+
+      const useCase = new RunAgentPipelineUseCase({ gitService, workspaceManager, agentRunner, linearClient, vcsClient, notifier });
+      await useCase.execute(makeRetryJob());
+
+      expect(incrementOrchestrationRetryCountMock).toHaveBeenCalledWith(expect.any(String), 'CAF-123');
+      const plannerCall = (agentRunner.run as ReturnType<typeof vi.fn>).mock.calls.find((call) => call[0] === 'caf-planner');
+      expect(plannerCall?.[2]).toContain('Stored title');
+      expect(plannerCall?.[2]).toContain('Stored description');
+    });
+
+    it('routes every status comment to the PR (retryContext), not the original ticket', async () => {
+      (agentRunner.run as ReturnType<typeof vi.fn>).mockResolvedValue(makeAgentResult({ exitCode: 0 }));
+      readOrchestrationStateMock.mockResolvedValue({
+        orchestrationRetryCount: 0,
+        lastFailedGate: 'qa',
+        lastFailedAt: '2026-01-01T00:00:00.000Z',
+        lastKnownCommitSha: 'sha-1',
+        ticketTitle: 'Stored title',
+        ticketDescription: 'Stored description',
+      });
+
+      const useCase = new RunAgentPipelineUseCase({ gitService, workspaceManager, agentRunner, linearClient, vcsClient, notifier });
+      await useCase.execute(makeRetryJob());
+
+      expect(linearClient.postComment).not.toHaveBeenCalled();
+      expect(vcsClient.postIssueComment).toHaveBeenCalledWith(
+        expect.objectContaining({ owner: 'ganjardbc', repo: 'umkm-pos', issueNumber: 7 }),
+      );
     });
   });
 });

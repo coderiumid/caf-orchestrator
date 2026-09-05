@@ -10,6 +10,7 @@ const configMock = {
     apiUrl: 'https://api.github.com',
     deliveryDedupeTtlSeconds: 86_400,
   },
+  orchestration: { maxOrchestrationRetries: 2 },
   dashboard: { enabled: false },
 };
 
@@ -19,12 +20,13 @@ const checkReviewPermissionMock = vi.fn().mockResolvedValue(true);
 const getPullRequestHeadRefMock = vi.fn().mockResolvedValue('ai-agent/CAF-PRREVIEW-01');
 const listReviewCommentsMock = vi.fn().mockResolvedValue([]);
 const listIssueCommentsMock = vi.fn().mockResolvedValue([]);
+const getByPrefixMock = vi.fn();
 
 vi.mock('../../src/config/index.js', () => ({
   get config() {
     return configMock;
   },
-  projectRegistry: {},
+  projectRegistry: { getByPrefix: getByPrefixMock },
 }));
 
 vi.mock('../../src/infrastructure/queue/client.js', () => ({
@@ -115,6 +117,7 @@ describe('github webhook routing', () => {
     getPullRequestHeadRefMock.mockResolvedValue('ai-agent/CAF-PRREVIEW-01');
     listReviewCommentsMock.mockResolvedValue([]);
     listIssueCommentsMock.mockResolvedValue([]);
+    getByPrefixMock.mockReturnValue(undefined);
   });
 
   it('acknowledges ping with 200 and does not enqueue', async () => {
@@ -212,6 +215,106 @@ describe('github webhook routing', () => {
       );
       expect(response.statusCode).toBe(200);
       expect(addJobMock).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('issue_comment — /caf-retry-pipeline', () => {
+    const project = {
+      ticketPrefix: 'CAF',
+      repoCloneUrl: 'https://github.com/ganjardbc/umkm-pos.git',
+      baseBranch: 'main',
+      workspaceDir: '/tmp/caf-orchestrator/workspace/umkm-pos',
+      agents: { modelOverrides: {} },
+      orchestration: { maxOrchestrationRetries: undefined },
+    };
+
+    it('enqueues an agent-pipeline retry job when the PR branch is ai-agent/* and a project is registered', async () => {
+      getPullRequestHeadRefMock.mockResolvedValue('ai-agent/CAF-123');
+      getByPrefixMock.mockReturnValue(project);
+
+      const response = await inject(
+        issueCommentPayload({ comment: { id: 1, body: '/caf-retry-pipeline', user: { login: 'ganjardbc', type: 'User' } } }),
+        'issue_comment',
+      );
+
+      expect(response.statusCode).toBe(202);
+      expect(addJobMock).toHaveBeenCalledTimes(1);
+      const [name, jobData] = addJobMock.mock.calls[0] as [string, Record<string, unknown>];
+      expect(name).toBe('agent-pipeline');
+      expect(jobData.ticketKey).toBe('CAF-123');
+      expect(jobData.isRetry).toBe(true);
+      expect(jobData.retryContext).toEqual({
+        owner: 'ganjardbc',
+        repo: 'umkm-pos',
+        prNumber: 42,
+        maxOrchestrationRetries: 2, // falls back to config.orchestration.maxOrchestrationRetries
+      });
+    });
+
+    it('uses the per-repo maxOrchestrationRetries override when the project sets one', async () => {
+      getPullRequestHeadRefMock.mockResolvedValue('ai-agent/CAF-123');
+      getByPrefixMock.mockReturnValue({ ...project, orchestration: { maxOrchestrationRetries: 5 } });
+
+      const response = await inject(
+        issueCommentPayload({ comment: { id: 1, body: '/caf-retry-pipeline', user: { login: 'ganjardbc', type: 'User' } } }),
+        'issue_comment',
+      );
+
+      expect(response.statusCode).toBe(202);
+      const [, jobData] = addJobMock.mock.calls[0] as [string, Record<string, unknown>];
+      expect((jobData.retryContext as { maxOrchestrationRetries: number }).maxOrchestrationRetries).toBe(5);
+    });
+
+    it('ignores the command when the PR head branch is not an ai-agent/* branch', async () => {
+      getPullRequestHeadRefMock.mockResolvedValue('feature/something-else');
+
+      const response = await inject(
+        issueCommentPayload({ comment: { id: 1, body: '/caf-retry-pipeline', user: { login: 'ganjardbc', type: 'User' } } }),
+        'issue_comment',
+      );
+
+      expect(response.statusCode).toBe(200);
+      expect(addJobMock).not.toHaveBeenCalled();
+    });
+
+    it('ignores the command when no project is registered for the derived ticket prefix', async () => {
+      getPullRequestHeadRefMock.mockResolvedValue('ai-agent/UNKNOWN-1');
+      getByPrefixMock.mockReturnValue(undefined);
+
+      const response = await inject(
+        issueCommentPayload({ comment: { id: 1, body: '/caf-retry-pipeline', user: { login: 'ganjardbc', type: 'User' } } }),
+        'issue_comment',
+      );
+
+      expect(response.statusCode).toBe(200);
+      expect(addJobMock).not.toHaveBeenCalled();
+    });
+
+    it('fails closed silently (200, no enqueue) when the sender lacks permission', async () => {
+      checkReviewPermissionMock.mockResolvedValueOnce(false);
+
+      const response = await inject(
+        issueCommentPayload({ comment: { id: 1, body: '/caf-retry-pipeline', user: { login: 'ganjardbc', type: 'User' } } }),
+        'issue_comment',
+      );
+
+      expect(response.statusCode).toBe(200);
+      expect(addJobMock).not.toHaveBeenCalled();
+      expect(getPullRequestHeadRefMock).not.toHaveBeenCalled();
+    });
+
+    it('does not enqueue when the pipeline trigger is disabled', async () => {
+      configMock.ENABLE_PIPELINE_TRIGGER = false;
+      try {
+        const response = await inject(
+          issueCommentPayload({ comment: { id: 1, body: '/caf-retry-pipeline', user: { login: 'ganjardbc', type: 'User' } } }),
+          'issue_comment',
+        );
+        expect(response.statusCode).toBe(200);
+        expect(addJobMock).not.toHaveBeenCalled();
+      } finally {
+        configMock.ENABLE_PIPELINE_TRIGGER = true;
+      }
     });
   });
 

@@ -6,6 +6,7 @@ import {
   readOrchestrationState,
   recordGateFailure,
   resetOrchestrationState,
+  incrementOrchestrationRetryCount,
 } from '../../src/infrastructure/reports/orchestration-state.js';
 
 const dirs: string[] = [];
@@ -49,13 +50,18 @@ describe('readOrchestrationState', () => {
 describe('recordGateFailure', () => {
   it('creates the task dir and writes the state file when none existed', async () => {
     const workspacePath = makeWorkspace();
-    await recordGateFailure(workspacePath, 'GAN-2', 'implementation', 'sha-1');
+    await recordGateFailure(workspacePath, 'GAN-2', 'implementation', 'sha-1', {
+      ticketTitle: 'Test ticket',
+      ticketDescription: 'Test description',
+    });
 
     const state = await readOrchestrationState(workspacePath, 'GAN-2');
     expect(state?.orchestrationRetryCount).toBe(0);
     expect(state?.lastFailedGate).toBe('implementation');
     expect(state?.lastKnownCommitSha).toBe('sha-1');
     expect(typeof state?.lastFailedAt).toBe('string');
+    expect(state?.ticketTitle).toBe('Test ticket');
+    expect(state?.ticketDescription).toBe('Test description');
   });
 
   it('preserves orchestrationRetryCount from an existing state instead of resetting it', async () => {
@@ -67,7 +73,10 @@ describe('recordGateFailure', () => {
       JSON.stringify({ orchestrationRetryCount: 2, lastFailedGate: 'implementation', lastFailedAt: '2026-01-01T00:00:00.000Z', lastKnownCommitSha: 'old-sha' }),
     );
 
-    await recordGateFailure(workspacePath, 'GAN-3', 'reviewer', 'new-sha');
+    await recordGateFailure(workspacePath, 'GAN-3', 'reviewer', 'new-sha', {
+      ticketTitle: 'Test ticket',
+      ticketDescription: 'Test description',
+    });
 
     const state = await readOrchestrationState(workspacePath, 'GAN-3');
     expect(state?.orchestrationRetryCount).toBe(2);
@@ -77,8 +86,8 @@ describe('recordGateFailure', () => {
 
   it('does not leak state between 2 different tickets in the same workspace', async () => {
     const workspacePath = makeWorkspace();
-    await recordGateFailure(workspacePath, 'GAN-4', 'qa', 'sha-a');
-    await recordGateFailure(workspacePath, 'GAN-5', 'reviewer', 'sha-b');
+    await recordGateFailure(workspacePath, 'GAN-4', 'qa', 'sha-a', { ticketTitle: 'A', ticketDescription: 'desc A' });
+    await recordGateFailure(workspacePath, 'GAN-5', 'reviewer', 'sha-b', { ticketTitle: 'B', ticketDescription: 'desc B' });
 
     const stateA = await readOrchestrationState(workspacePath, 'GAN-4');
     const stateB = await readOrchestrationState(workspacePath, 'GAN-5');
@@ -89,10 +98,43 @@ describe('recordGateFailure', () => {
   });
 });
 
+describe('incrementOrchestrationRetryCount', () => {
+  it('bumps orchestrationRetryCount by 1 and preserves other fields', async () => {
+    const workspacePath = makeWorkspace();
+    await recordGateFailure(workspacePath, 'GAN-8', 'qa', 'sha-1', { ticketTitle: 'T', ticketDescription: 'D' });
+
+    const newCount = await incrementOrchestrationRetryCount(workspacePath, 'GAN-8');
+    expect(newCount).toBe(1);
+
+    const state = await readOrchestrationState(workspacePath, 'GAN-8');
+    expect(state?.orchestrationRetryCount).toBe(1);
+    expect(state?.lastFailedGate).toBe('qa');
+    expect(state?.lastKnownCommitSha).toBe('sha-1');
+    expect(state?.ticketTitle).toBe('T');
+    expect(state?.ticketDescription).toBe('D');
+  });
+
+  it('starts from 0 -> 1 when called against a workspace with no prior state', async () => {
+    const workspacePath = makeWorkspace();
+    const newCount = await incrementOrchestrationRetryCount(workspacePath, 'GAN-9');
+    expect(newCount).toBe(1);
+  });
+
+  it('increments repeatedly, each call preserving the previous count', async () => {
+    const workspacePath = makeWorkspace();
+    await recordGateFailure(workspacePath, 'GAN-10', 'reviewer', 'sha-1', { ticketTitle: 'T', ticketDescription: 'D' });
+
+    await incrementOrchestrationRetryCount(workspacePath, 'GAN-10');
+    const secondCount = await incrementOrchestrationRetryCount(workspacePath, 'GAN-10');
+
+    expect(secondCount).toBe(2);
+  });
+});
+
 describe('resetOrchestrationState', () => {
   it('deletes an existing state file', async () => {
     const workspacePath = makeWorkspace();
-    await recordGateFailure(workspacePath, 'GAN-6', 'qa', 'sha-1');
+    await recordGateFailure(workspacePath, 'GAN-6', 'qa', 'sha-1', { ticketTitle: 'T', ticketDescription: 'D' });
     expect(existsSync(statePath(workspacePath, 'GAN-6'))).toBe(true);
 
     await resetOrchestrationState(workspacePath, 'GAN-6');
