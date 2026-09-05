@@ -19,6 +19,22 @@ export interface JobProjectContext {
   };
 }
 
+/**
+ * CAF-RETRYPIPELINE-01: carried on a resume job — either from
+ * `/caf-retry-pipeline` (Task 4) or a Linear ticket re-entering "Ready for AI"
+ * on a branch that already exists (Task 5). Both trigger paths resolve the
+ * same open PR (via `findOpenPullRequestByHead`) and route every status
+ * comment for this run there, rather than back to the original Linear
+ * ticket/GitHub issue — that PR thread is where the human who triggered the
+ * retry is actually watching.
+ */
+export interface RetryContext {
+  owner: string;
+  repo: string;
+  prNumber: number;
+  maxOrchestrationRetries: number;
+}
+
 export interface ExistingJobPayload {
   jobId: string;
   ticketId: string;
@@ -31,6 +47,14 @@ export interface ExistingJobPayload {
   // (including any already queued in Redis) has no such field and must keep
   // behaving exactly as before.
   ticketSource?: 'linear' | 'github';
+  // CAF-RETRYPIPELINE-01: true when this job is a resume of a
+  // previously-gate-exhausted ticket (branch `ai-agent/{ticketKey}` already
+  // exists) rather than a fresh ticket. Changes clone/branch behavior in
+  // run-agent-pipeline.use-case.ts (sync onto the existing branch instead of
+  // creating a new one off baseBranch) and gates the run on
+  // orchestration-state.json's retry counter before any agent runs.
+  isRetry?: boolean;
+  retryContext?: RetryContext;
 }
 
 /**

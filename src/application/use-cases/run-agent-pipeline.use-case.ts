@@ -23,8 +23,10 @@ import {
   type ReviewerReport,
 } from '../../infrastructure/reports/report-reader.js';
 import {
+  readOrchestrationState,
   recordGateFailure,
   resetOrchestrationState,
+  incrementOrchestrationRetryCount,
   type OrchestrationGate,
 } from '../../infrastructure/reports/orchestration-state.js';
 import { parseGithubRepo } from '../../infrastructure/vcs/github.service.js';
@@ -141,6 +143,15 @@ export class RunAgentPipelineUseCase {
    * ticketId, e.g. "25" for CDR-25).
    */
   private async postTicketComment(job: ExistingJobPayload, body: string): Promise<void> {
+    // CAF-RETRYPIPELINE-01: a resume run's thread of truth is the PR the
+    // retry was triggered from, not the original Linear ticket/GitHub issue —
+    // that's where the human who typed /caf-retry-pipeline (or re-flipped the
+    // Linear ticket) is actually watching.
+    if (job.retryContext) {
+      const { owner, repo, prNumber } = job.retryContext;
+      await this.deps.vcsClient.postIssueComment({ owner, repo, issueNumber: prNumber, body });
+      return;
+    }
     if (job.ticketSource === 'github') {
       const { owner, repo } = parseGithubRepo(job.projectConfig.repoCloneUrl);
       await this.deps.vcsClient.postIssueComment({ owner, repo, issueNumber: Number(job.ticketId), body });
@@ -218,16 +229,40 @@ export class RunAgentPipelineUseCase {
     });
 
     try {
-      // CAF-WSMODE-01: a persistent workspace already holding a prior job's
-      // clone (existsSync check, not a hidden mode branch) gets fetched +
-      // reset instead of cloned fresh; first run / ephemeral mode clones as
-      // before.
-      if (existsSync(`${repoPath}/.git`)) {
-        await gitService.preflightCleanup(repoPath, job.projectConfig.baseBranch, workspaceRoot);
+      if (job.isRetry) {
+        // CAF-RETRYPIPELINE-01: resume onto the EXISTING ai-agent branch
+        // (already pushed by the run that exhausted a gate) instead of
+        // branching fresh off baseBranch — reusing preflightCleanup with the
+        // ticket branch as its "base" fetches + hard-resets the workspace to
+        // origin/<branch>, and clone() already supports checking out an
+        // arbitrary branch directly. This is only the minimal sync needed to
+        // avoid a non-fast-forward push on retry; it does NOT do Task 6's
+        // manual-change diffing or uncommitted-residue detection — those
+        // still don't exist yet.
+        if (existsSync(`${repoPath}/.git`)) {
+          await gitService.preflightCleanup(repoPath, branch, workspaceRoot);
+        } else {
+          await gitService.clone(job.projectConfig.repoCloneUrl, branch, repoPath, workspaceRoot);
+        }
       } else {
-        await gitService.clone(job.projectConfig.repoCloneUrl, job.projectConfig.baseBranch, repoPath, workspaceRoot);
+        // CAF-WSMODE-01: a persistent workspace already holding a prior job's
+        // clone (existsSync check, not a hidden mode branch) gets fetched +
+        // reset instead of cloned fresh; first run / ephemeral mode clones as
+        // before.
+        if (existsSync(`${repoPath}/.git`)) {
+          await gitService.preflightCleanup(repoPath, job.projectConfig.baseBranch, workspaceRoot);
+        } else {
+          await gitService.clone(job.projectConfig.repoCloneUrl, job.projectConfig.baseBranch, repoPath, workspaceRoot);
+        }
+        await gitService.createBranch(repoPath, branch, workspaceRoot);
       }
-      await gitService.createBranch(repoPath, branch, workspaceRoot);
+
+      if (job.isRetry) {
+        const retryGate = await this.checkAndConsumeRetryBudget(repoPath, job);
+        if (!retryGate.allowed) {
+          return;
+        }
+      }
 
       const plannerPrompt = [
         `Ticket ${job.ticketKey}: ${job.ticketTitle}`,
@@ -614,7 +649,10 @@ export class RunAgentPipelineUseCase {
   private async recordGateExhaustion(repoPath: string, job: ExistingJobPayload, gate: OrchestrationGate): Promise<void> {
     try {
       const commitSha = await this.deps.gitService.getHeadCommit(repoPath);
-      await recordGateFailure(repoPath, job.ticketKey, gate, commitSha);
+      await recordGateFailure(repoPath, job.ticketKey, gate, commitSha, {
+        ticketTitle: job.ticketTitle,
+        ticketDescription: job.ticketDescription,
+      });
     } catch (err) {
       logger.error('Failed to write orchestration-state.json on gate exhaustion', err instanceof Error ? err : new Error(String(err)), {
         jobId: job.jobId,
@@ -622,6 +660,64 @@ export class RunAgentPipelineUseCase {
         gate,
       });
     }
+  }
+
+  /**
+   * Gate for a resume job (`job.isRetry`) — read right after the workspace
+   * has been synced onto the existing `ai-agent/{ticketKey}` branch, before
+   * any agent runs. Rejects (posts an explicit comment, returns
+   * `allowed: false`) when there's nothing to resume (no
+   * orchestration-state.json at all — this command only makes sense on a PR
+   * this orchestrator itself opened via a gate-exhaustion) or the ticket has
+   * already used up `maxOrchestrationRetries`. Otherwise increments the
+   * shared counter (Task 4 `/caf-retry-pipeline` and Task 5's Linear
+   * re-trigger both call this same path, so they share one counter — see
+   * CAF-RETRYPIPELINE-01 acceptance criteria) and refreshes
+   * `job.ticketTitle`/`job.ticketDescription` from the stored state, since a
+   * resume trigger carries no fresh ticket content of its own.
+   */
+  private async checkAndConsumeRetryBudget(
+    repoPath: string,
+    job: ExistingJobPayload,
+  ): Promise<{ allowed: boolean }> {
+    const state = await readOrchestrationState(repoPath, job.ticketKey);
+    if (!state) {
+      await this.postTicketComment(
+        job,
+        `⚠️ /caf-retry-pipeline: no prior orchestration state found for ${job.ticketKey} — nothing to resume. This command only works on a Draft PR the pipeline opened automatically after a gate stopped it.`,
+      );
+      logger.info('Retry rejected: no orchestration-state.json found', undefined, {
+        jobId: job.jobId,
+        ticketKey: job.ticketKey,
+      });
+      return { allowed: false };
+    }
+
+    const maxRetries = job.retryContext?.maxOrchestrationRetries ?? 0;
+    if (state.orchestrationRetryCount >= maxRetries) {
+      await this.postTicketComment(
+        job,
+        `🚫 Retry limit reached for ${job.ticketKey} (${state.orchestrationRetryCount}/${maxRetries}). Automatic retry is no longer available — please make changes manually or ask a maintainer to intervene.`,
+      );
+      logger.info('Retry rejected: orchestrationRetryCount at or above maxOrchestrationRetries', undefined, {
+        jobId: job.jobId,
+        ticketKey: job.ticketKey,
+        orchestrationRetryCount: state.orchestrationRetryCount,
+        maxRetries,
+      });
+      return { allowed: false };
+    }
+
+    job.ticketTitle = state.ticketTitle || job.ticketTitle;
+    job.ticketDescription = state.ticketDescription || job.ticketDescription;
+    const newCount = await incrementOrchestrationRetryCount(repoPath, job.ticketKey);
+    logger.info('Orchestration retry allowed, counter incremented', undefined, {
+      jobId: job.jobId,
+      ticketKey: job.ticketKey,
+      orchestrationRetryCount: newCount,
+      maxRetries,
+    });
+    return { allowed: true };
   }
 
   /**
