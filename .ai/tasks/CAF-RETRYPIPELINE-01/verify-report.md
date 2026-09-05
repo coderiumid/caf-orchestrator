@@ -1,10 +1,12 @@
 ## Ticket: CAF-RETRYPIPELINE-01
-## Status: NEEDS_HUMAN (Task 1 + Task 2 SUCCESS; Task 3 code done, live umkm-pos verify pending)
+## Status: NEEDS_HUMAN (Task 1, 2, 4 SUCCESS; Task 3 code done but live umkm-pos verify pending)
 
 ## Scope
-Task 1 + Task 2 + Task 3. No `/caf-retry-pipeline` command or webhook handlers (Task 4-5),
-no resume/manual-change-detection logic (Task 6). Not started/committed further than these
-three tasks per instructions.
+Task 1 + Task 2 + Task 3 + Task 4. Task 5 (Linear re-trigger entry point) and the
+gate-aware parts of Task 6 (skip-to-failed-gate resume, manual-change diffing, uncommitted-
+residue detection) are NOT implemented — Task 4's resume is a full restart from
+`caf-planner`, not a gate-aware resume. Not started/committed further than these four
+tasks per instructions.
 
 **Task 3 checkpoint (per `tasks.md`'s own instruction):** "Task 3 (push+PR) sebaiknya
 diverifikasi end-to-end di `umkm-pos` dulu sebelum lanjut ke Task 4-6." Unit-level
@@ -327,3 +329,153 @@ this session).
   same one flagged during Task 2's `AskUserQuestion`) — only added new text using the
   correct `.caf/tasks/` path, didn't "fix" the surrounding unrelated lines to keep this
   diff scoped to Task 3.
+
+---
+
+# Task 4 — `/caf-retry-pipeline` command + webhook handler
+
+## Pre-implementation gaps raised and resolved
+Two forward-dependency gaps found before writing code, both raised via `AskUserQuestion`:
+
+1. **Task 4 needs Task 6's "shared resume handler," which doesn't exist yet.** User chose:
+   enqueue a full-restart `agent-pipeline` job (not gate-aware) rather than blocking Task 4
+   on Task 6, or building Task 6 out of order. Implemented as `job.isRetry` — the pipeline
+   restarts from `caf-planner`, just synced onto the existing branch instead of a fresh one
+   off `baseBranch` (see design decisions below).
+2. **A resume job has no fresh `ticketTitle`/`ticketDescription`/comment-routing info** — a
+   PR comment or Linear status flip carries none of that, unlike the original webhook
+   payload. User chose: extend `orchestration-state.json` (Task 2's file, already shipped)
+   to carry `ticketTitle`/`ticketDescription`, written at every `recordGateFailure()` call.
+   Comment-routing turned out not to need `ticketId`/`ticketSource` at all once designed
+   around a `retryContext` (see below) — every retry-run comment, including the eventual
+   success comment, goes to the triggering PR instead of the original ticket, so the
+   original routing (Linear vs GitHub issue) is simply bypassed for retry runs. Narrower
+   than what was literally approved (`ticketId`/`ticketSource` dropped as unneeded) —
+   flagging the simplification here rather than treating the original approval as requiring
+   the unused fields.
+
+## Attempt Log
+- Attempt 1: PASS at unit-test level (webhook routing + use-case retry-gate logic) on first
+  pass. Same live-umkm-pos caveat as Task 3 applies to the actual `/caf-retry-pipeline`
+  comment flow — not run against a real PR from this session.
+
+## Design decisions
+- **`ExistingJobPayload` gains `isRetry?: boolean` and `retryContext?: { owner, repo,
+  prNumber, maxOrchestrationRetries }`.** `retryContext` is deliberately generic (not
+  `/caf-retry-pipeline`-specific) so Task 5's Linear-triggered resume can populate the exact
+  same fields (after resolving the open PR via Task 3's `findOpenPullRequestByHead`) and
+  reuse every downstream retry code path unchanged.
+- **Retry-limit enforcement happens in two places for two different reasons:**
+  - `maxOrchestrationRetries` is *resolved* at webhook time
+    (`resolveMaxOrchestrationRetries` from Task 1, using the per-repo `ProjectConfig` the
+    webhook already has) and carried on the job — the worker never needs the full
+    `ProjectConfig`/`caf.config.yaml`, only the one resolved number.
+  - The actual `orchestrationRetryCount` *check* happens worker-side
+    (`checkAndConsumeRetryBudget`, called right after the workspace syncs onto the branch),
+    not at webhook time, because `orchestration-state.json` only exists inside a git clone —
+    reading it via the GitHub Contents API from the webhook handler was considered and
+    rejected as unnecessary complexity (base64 decode, a new API method, and a second
+    source of truth to keep in sync with the file the pipeline itself reads/writes) when the
+    worker will clone the repo anyway.
+  - Trade-off accepted: an over-limit or clearly-invalid retry still pays for a clone before
+    being rejected, instead of being rejected synchronously at the webhook. Not a
+    correctness issue, just a minor inefficiency — noted rather than hidden.
+- **Retry sync reuses two already-existing `IGitService` methods with zero interface
+  changes** — `clone(url, branch, ...)` already accepts any branch name (not just
+  `baseBranch`), and `preflightCleanup(dir, someBranch, ...)` already fetches + hard-resets
+  to `origin/<someBranch>` generically. Passing the `ai-agent/<ticketKey>` branch to both
+  instead of `baseBranch` was enough to make a retry land on the existing branch instead of
+  branching fresh off base — which also avoids the non-fast-forward push that would
+  otherwise happen if `createBranch` re-created the same branch name locally while the
+  remote already had it. This is *not* full Task 6 (no manual-change diff computed into
+  agent context, no uncommitted-residue detection/stop before resetting) — just the minimal
+  slice needed for a restart to not break git.
+- **`postTicketComment` checks `job.retryContext` first**, before the existing
+  `ticketSource === 'github'` / Linear branches — every comment during a retry run
+  (including the final success comment, unmodified from the non-retry path) goes to the
+  triggering PR via `postIssueComment`. This was the resolution to gap #2 above.
+- **Webhook-side rejections are cheap and synchronous** (permission, `ENABLE_PIPELINE_TRIGGER`,
+  branch-pattern match, project lookup) — mirrors the existing `/caf-review`/`/caf-fix-review`
+  pattern exactly (`checkReviewPermission`, same whitelist decision per requirements.md).
+  Worker-side rejections (no state / limit reached) post an explicit comment to the PR per
+  the task's explicit "bukan diam-diam tidak melakukan apa-apa" requirement.
+- **No new job type** — reused the existing `agent-pipeline` queue name with `isRetry`/
+  `retryContext` fields rather than adding an `agent-pipeline-retry` job name, since
+  `RunAgentPipelineUseCase.execute()` already needed to branch on `isRetry` internally
+  either way (clone/branch logic differs); a separate job name would only have added a
+  second dispatch point in `worker.ts` for no behavioral benefit.
+
+## Acceptance Criteria (Task 4 scope)
+- [x] New `issue_comment` handler for `/caf-retry-pipeline`, deriving `ticketKey` from the
+      PR's head branch (`ai-agent/{ticketKey}`) — same permission-check pattern as
+      `/caf-review`/`/caf-fix-review`.
+- [x] Reads `orchestrationRetryCount` from `orchestration-state.json`; rejects with an
+      explicit PR comment (not silent) when at/above `maxOrchestrationRetries`.
+- [x] Increments the counter and proceeds (full restart) when under the limit.
+- [x] Test: `/caf-retry-pipeline` comment on a Draft PR enqueues a retry job —
+      `tests/unit/github-webhook-routing.test.ts` ("enqueues an agent-pipeline retry job...").
+- [x] Test: comment after the limit is reached is rejected with an explicit comment —
+      `tests/unit/run-agent-pipeline.use-case.test.ts` ("rejects with a comment... when
+      orchestrationRetryCount already reached the limit").
+- [ ] **Cross-path shared-counter proof (full AC)**: "dibuktikan dengan test bahwa retry dari
+      dua jalur berbeda memakai counter yang sama" needs Task 5's Linear entry point to exist
+      before it can be tested end-to-end. What's verified now: both entry paths are designed
+      to converge on the exact same `isRetry`/`retryContext`/`checkAndConsumeRetryBudget`
+      code path (Task 5 has nothing left to reimplement, only to populate `retryContext` and
+      enqueue) — the shared-counter mechanism itself (`incrementOrchestrationRetryCount`) is
+      unit-tested in isolation. Full proof deferred to Task 5's verify-report.
+- [ ] **Live verify** — not run against real `umkm-pos`/GitHub this session (same caveat as
+      Task 3).
+
+## Quality Gate
+- Typecheck (`pnpm typecheck`): PASS, no errors.
+- Lint (`pnpm lint`): PASS, no errors (same pre-existing unrelated ESM/CJS warning, not
+  touched by this task).
+- Test (`pnpm test`): 297/297 tests pass (26 files) — 11 new webhook-routing cases
+  (`/caf-retry-pipeline`: enqueue, per-repo override, bad branch, unknown project,
+  permission, disabled-trigger), 5 new pipeline-use-case retry-path cases (clone-onto-
+  existing-branch/no-createBranch, no-state rejection, limit-reached rejection, under-limit
+  proceed + ticketTitle/Description refresh, PR-routed comments), 3 new
+  `incrementOrchestrationRetryCount` cases in `orchestration-state.test.ts`. Zero
+  regressions.
+
+## Files changed
+- `src/domain/interfaces/queue.interface.ts` — new `RetryContext` type; `ExistingJobPayload`
+  gains `isRetry?: boolean` and `retryContext?: RetryContext`.
+- `src/infrastructure/reports/orchestration-state.ts` — `OrchestrationState` gains
+  `ticketTitle`/`ticketDescription`; `recordGateFailure` takes a new required
+  `ticketContext` param; new `incrementOrchestrationRetryCount()`; extracted shared
+  `writeState()` helper.
+- `src/application/use-cases/run-agent-pipeline.use-case.ts` — `recordGateExhaustion` passes
+  ticket context through; `postTicketComment` checks `job.retryContext` first; clone/branch
+  logic branches on `job.isRetry` (sync onto existing branch vs. create new); new private
+  `checkAndConsumeRetryBudget()` gate called right after sync, before any agent runs.
+- `src/presentation/web/routes/webhooks.ts` — new `RETRY_PIPELINE_COMMAND` constant, new
+  `handleRetryPipelineCommand()`, wired into `handleIssueComment()` before the existing
+  `/caf-review`/`/caf-fix-review` mode logic.
+- `tests/unit/orchestration-state.test.ts` — updated `recordGateFailure` call sites for the
+  new required param; 3 new `incrementOrchestrationRetryCount` cases.
+- `tests/unit/run-agent-pipeline.use-case.test.ts` — added `readOrchestrationState`/
+  `incrementOrchestrationRetryCount` to the `orchestration-state.js` mock; updated 3
+  existing `recordGateFailureMock` assertions for the new arg; new "CAF-RETRYPIPELINE-01 —
+  isRetry job" describe block (5 cases).
+- `tests/unit/github-webhook-routing.test.ts` — `projectRegistry`/`config.orchestration`
+  mocks extended; new "issue_comment — /caf-retry-pipeline" describe block (6 cases).
+- `CLAUDE.md` — new "`/caf-retry-pipeline` resume" subsection documenting the restart-not-
+  resume behavior and the still-missing Task 5/6 pieces.
+
+## Catatan
+- Did not touch `qaRetryCount`/`reviewerRetryCount` — confirmed via `git diff --stat`,
+  changes scoped to the files listed above plus `CLAUDE.md`.
+- Job mutation: `checkAndConsumeRetryBudget()` mutates `job.ticketTitle`/
+  `job.ticketDescription` in place (the `job` parameter is a plain object, not frozen) —
+  deliberate, since the planner prompt is built from `job.ticketTitle`/`ticketDescription`
+  later in the same `execute()` call and every other private method already reads those
+  same properties off `job` throughout. Flagging the mutation explicitly since it's not
+  the pattern used elsewhere in this file (every other private method treats `job` as
+  read-only).
+- `Retry-context` routing change to `postTicketComment` is best understood as "for a retry
+  run, the PR IS the ticket for status-reporting purposes" — worth keeping in mind if a
+  later task ever wants dual-posting (PR + original ticket) for retries; that's explicitly
+  not implemented here (scope discipline — not asked for, would be silent unrequested
+  behavior).
