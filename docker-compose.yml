@@ -30,6 +30,7 @@ services:
       - WORKSPACE_DIR=/workspace
     volumes:
       - workspace:/workspace
+      - /home/ubuntu/workspace/caf-orchestrator-workspaces:/home/ubuntu/workspace/caf-orchestrator-workspaces
     depends_on:
       redis:
         condition: service_healthy
@@ -51,6 +52,7 @@ services:
       - GIT_SSH_COMMAND=ssh -i /home/node/.ssh/id_ed25519 -o StrictHostKeyChecking=no
     volumes:
       - workspace:/workspace
+      - /home/ubuntu/workspace/caf-orchestrator-workspaces:/home/ubuntu/workspace/caf-orchestrator-workspaces
       - /home/ubuntu/.ssh/id_ed25519:/home/node/.ssh/id_ed25519:ro
       - /home/ubuntu/.ssh/id_ed25519.pub:/home/node/.ssh/id_ed25519.pub:ro
     depends_on:
