@@ -4,7 +4,7 @@ import { WorkspaceLockError } from '../../domain/errors/app-errors.js';
 import type { IAgentRunner } from '../../domain/interfaces/agent-runner.interface.js';
 import type { ILinearClient } from '../../domain/interfaces/linear-client.interface.js';
 import type { INotifier } from '../../domain/interfaces/notifier.interface.js';
-import type { IVcsClient } from '../../domain/interfaces/vcs-client.interface.js';
+import type { IVcsClient, CreatePullRequestResult } from '../../domain/interfaces/vcs-client.interface.js';
 import type { ExistingJobPayload } from '../../domain/interfaces/queue.interface.js';
 import {
   routeTasks,
@@ -73,6 +73,36 @@ function buildPrBody(
   );
 
   return lines.join('\n');
+}
+
+const GATE_ARTIFACT_FILE: Record<OrchestrationGate, string> = {
+  implementation: 'verify-report.md',
+  qa: 'qa-report.md',
+  reviewer: 'review-notes.md',
+};
+
+/**
+ * PR body for a gate-exhaustion Draft PR (CAF-RETRYPIPELINE-01 Task 3) —
+ * reformats the one artifact the failing gate already produced
+ * (verify-report.md/qa-report.md/review-notes.md), no new text generated per
+ * the report-contract convention (CLAUDE.md).
+ */
+function buildGateExhaustionPrBody(job: ExistingJobPayload, gate: OrchestrationGate, artifactRaw: string): string {
+  return [
+    `Ticket: ${job.ticketKey}`,
+    job.ticketDescription || '',
+    '',
+    `## Pipeline stopped — gate exhausted: ${gate}`,
+    '',
+    `Automated retries at the ${gate} gate did not pass. Work completed so far has been pushed here for human review.`,
+    '',
+    '## Reports',
+    `- Requirements: \`.caf/tasks/${job.ticketKey}/requirements.md\``,
+    `- Tasks: \`.caf/tasks/${job.ticketKey}/tasks.md\``,
+    `- ${GATE_ARTIFACT_FILE[gate]}: \`.caf/tasks/${job.ticketKey}/${GATE_ARTIFACT_FILE[gate]}\``,
+    '',
+    artifactRaw,
+  ].join('\n');
 }
 
 /**
@@ -318,9 +348,10 @@ export class RunAgentPipelineUseCase {
 
       if (verifyReport.status === 'NEEDS_HUMAN') {
         await this.recordGateExhaustion(repoPath, job, 'implementation');
+        const pushResult = await this.pushAndOpenGatePr(repoPath, job, branch, 'implementation', verifyReport.raw);
         await this.postTicketComment(
           job,
-          `Agent pipeline needs human review:\n\n${verifyReport.raw}`,
+          this.appendPushResultNote(`Agent pipeline needs human review:\n\n${verifyReport.raw}`, pushResult),
         );
         logger.info('Pipeline stopped: verify-report reported NEEDS_HUMAN', undefined, {
           jobId: job.jobId,
@@ -363,9 +394,10 @@ export class RunAgentPipelineUseCase {
 
       if (qaReport.status === 'FAIL') {
         await this.recordGateExhaustion(repoPath, job, 'qa');
+        const pushResult = await this.pushAndOpenGatePr(repoPath, job, branch, 'qa', qaReport.raw);
         await this.postTicketComment(
           job,
-          `Agent pipeline needs human review (QA failed after retry):\n\n${qaReport.raw}`,
+          this.appendPushResultNote(`Agent pipeline needs human review (QA failed after retry):\n\n${qaReport.raw}`, pushResult),
         );
         logger.info('Pipeline stopped: QA report reported FAIL after retry', undefined, {
           jobId: job.jobId,
@@ -414,9 +446,13 @@ export class RunAgentPipelineUseCase {
 
       if (reviewerReport.verdict === 'CHANGES_REQUESTED') {
         await this.recordGateExhaustion(repoPath, job, 'reviewer');
+        const pushResult = await this.pushAndOpenGatePr(repoPath, job, branch, 'reviewer', reviewerReport.raw);
         await this.postTicketComment(
           job,
-          `Agent pipeline needs human review (reviewer requested changes after retry):\n\n${reviewerReport.raw}`,
+          this.appendPushResultNote(
+            `Agent pipeline needs human review (reviewer requested changes after retry):\n\n${reviewerReport.raw}`,
+            pushResult,
+          ),
         );
         logger.info('Pipeline stopped: reviewer requested changes after retry', undefined, {
           jobId: job.jobId,
@@ -586,6 +622,81 @@ export class RunAgentPipelineUseCase {
         gate,
       });
     }
+  }
+
+  /**
+   * Commits + pushes the branch and opens (or updates, if one is already open
+   * on this branch) a Draft PR when a gate exhausts its retries
+   * (CAF-RETRYPIPELINE-01 Task 3) — so the work the agents already did is
+   * never stranded in an ephemeral/persistent workspace only. Deliberately
+   * swallows its own errors: a push/GitHub failure here must not turn a
+   * NEEDS_HUMAN gate's `return` into a `throw` (that would hand the job back
+   * to BullMQ's retry policy, which the "return vs throw" contract this
+   * pipeline relies on explicitly forbids — see CLAUDE.md and the gate
+   * exhaustion sections above). The caller surfaces the outcome (PR link or
+   * failure note) in the human-facing comment instead.
+   */
+  private async pushAndOpenGatePr(
+    repoPath: string,
+    job: ExistingJobPayload,
+    branch: string,
+    gate: OrchestrationGate,
+    artifactRaw: string,
+  ): Promise<{ pr?: CreatePullRequestResult; error?: string }> {
+    const { gitService, vcsClient } = this.deps;
+    try {
+      await gitService.commitAll(
+        repoPath,
+        `AI agent pipeline: ${job.ticketKey} (needs human review — ${gate} gate)`,
+        job.projectConfig.workspaceDir,
+      );
+      await gitService.push(repoPath, branch, job.projectConfig.workspaceDir);
+
+      const { owner, repo } = parseGithubRepo(job.projectConfig.repoCloneUrl);
+      const body = buildGateExhaustionPrBody(job, gate, artifactRaw);
+      const existing = await vcsClient.findOpenPullRequestByHead({ owner, repo, head: branch });
+
+      const pr = existing
+        ? await vcsClient.updatePullRequest({ owner, repo, prNumber: existing.number, body })
+        : await vcsClient.createPullRequest({
+            owner,
+            repo,
+            head: branch,
+            base: job.projectConfig.baseBranch,
+            title: `${job.ticketKey}: ${job.ticketTitle}`,
+            body,
+            draft: true,
+          });
+
+      logger.info('Pushed and opened/updated Draft PR on gate exhaustion', undefined, {
+        jobId: job.jobId,
+        ticketKey: job.ticketKey,
+        gate,
+        prUrl: pr.url,
+        reusedExisting: !!existing,
+      });
+
+      return { pr };
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      logger.error(
+        'Failed to push + open/update Draft PR on gate exhaustion',
+        err instanceof Error ? err : new Error(errorMessage),
+        { jobId: job.jobId, ticketKey: job.ticketKey, gate },
+      );
+      return { error: errorMessage };
+    }
+  }
+
+  /** Appends the Draft PR link (or a failure note) to a gate-exhaustion comment, without disturbing the fixed prefix existing callers/tests match on. */
+  private appendPushResultNote(message: string, pushResult: { pr?: CreatePullRequestResult; error?: string }): string {
+    if (pushResult.pr) {
+      return `${message}\n\nDraft PR: ${pushResult.pr.url}`;
+    }
+    if (pushResult.error) {
+      return `${message}\n\n⚠️ Could not push/open a Draft PR automatically: ${pushResult.error}. Code changes remain in the workspace only — push manually or retry.`;
+    }
+    return message;
   }
 
   /**
