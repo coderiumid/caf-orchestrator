@@ -247,8 +247,8 @@ describe('github webhook routing', () => {
         owner: 'ganjardbc',
         repo: 'umkm-pos',
         prNumber: 42,
-        maxOrchestrationRetries: 2, // falls back to config.orchestration.maxOrchestrationRetries
       });
+      expect(jobData.maxOrchestrationRetries).toBe(2); // falls back to config.orchestration.maxOrchestrationRetries
     });
 
     it('uses the per-repo maxOrchestrationRetries override when the project sets one', async () => {
@@ -262,7 +262,7 @@ describe('github webhook routing', () => {
 
       expect(response.statusCode).toBe(202);
       const [, jobData] = addJobMock.mock.calls[0] as [string, Record<string, unknown>];
-      expect((jobData.retryContext as { maxOrchestrationRetries: number }).maxOrchestrationRetries).toBe(5);
+      expect(jobData.maxOrchestrationRetries).toBe(5);
     });
 
     it('ignores the command when the PR head branch is not an ai-agent/* branch', async () => {

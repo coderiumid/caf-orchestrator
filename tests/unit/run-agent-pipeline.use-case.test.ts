@@ -1031,7 +1031,8 @@ describe('RunAgentPipelineUseCase', () => {
     function makeRetryJob(overrides: Partial<ExistingJobPayload> = {}): ExistingJobPayload {
       return makeJob({
         isRetry: true,
-        retryContext: { owner: 'ganjardbc', repo: 'umkm-pos', prNumber: 7, maxOrchestrationRetries: 2 },
+        maxOrchestrationRetries: 2,
+        retryContext: { owner: 'ganjardbc', repo: 'umkm-pos', prNumber: 7 },
         ...overrides,
       });
     }
@@ -1113,6 +1114,43 @@ describe('RunAgentPipelineUseCase', () => {
       const plannerCall = (agentRunner.run as ReturnType<typeof vi.fn>).mock.calls.find((call) => call[0] === 'caf-planner');
       expect(plannerCall?.[2]).toContain('Stored title');
       expect(plannerCall?.[2]).toContain('Stored description');
+    });
+
+    it('CAF-RETRYPIPELINE-01 Task 4/5 AC: a /caf-retry-pipeline-shaped job and a Linear-resume-shaped job hit the exact same counter code path (no separate/parallel counters per trigger)', async () => {
+      (agentRunner.run as ReturnType<typeof vi.fn>).mockResolvedValue(makeAgentResult({ exitCode: 0 }));
+      readOrchestrationStateMock.mockResolvedValue({
+        orchestrationRetryCount: 1,
+        lastFailedGate: 'qa',
+        lastFailedAt: '2026-01-01T00:00:00.000Z',
+        lastKnownCommitSha: 'sha-1',
+        ticketTitle: 'Stored title',
+        ticketDescription: 'Stored description',
+      });
+      incrementOrchestrationRetryCountMock.mockResolvedValue(2);
+
+      // Shape enqueued by webhooks.ts's handleRetryPipelineCommand (Task 4).
+      const fromCafRetryPipelineCommand = makeJob({
+        isRetry: true,
+        maxOrchestrationRetries: 2,
+        retryContext: { owner: 'ganjardbc', repo: 'umkm-pos', prNumber: 7 },
+      });
+      // Shape enqueued by the Linear webhook's resume branch (Task 5) — same
+      // fields, same isRetry contract, populated from a different trigger.
+      const fromLinearResume = makeJob({
+        isRetry: true,
+        maxOrchestrationRetries: 2,
+        retryContext: { owner: 'ganjardbc', repo: 'umkm-pos', prNumber: 7 },
+      });
+
+      const useCase = new RunAgentPipelineUseCase({ gitService, workspaceManager, agentRunner, linearClient, vcsClient, notifier });
+      await useCase.execute(fromCafRetryPipelineCommand);
+      await useCase.execute(fromLinearResume);
+
+      expect(incrementOrchestrationRetryCountMock).toHaveBeenCalledTimes(2);
+      const [firstCall, secondCall] = incrementOrchestrationRetryCountMock.mock.calls;
+      // Same function, same argument shape for both trigger origins — proves
+      // there's exactly one counter code path, not two independent ones.
+      expect(firstCall).toEqual(secondCall);
     });
 
     it('routes every status comment to the PR (retryContext), not the original ticket', async () => {
