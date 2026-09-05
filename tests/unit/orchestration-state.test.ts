@@ -45,6 +45,15 @@ describe('readOrchestrationState', () => {
     expect(state?.lastFailedGate).toBe('qa');
     expect(state?.lastKnownCommitSha).toBe('abc123');
   });
+
+  it('treats malformed JSON (e.g. truncated by a crash mid-write) as absent rather than throwing', async () => {
+    const workspacePath = makeWorkspace();
+    const dir = join(workspacePath, '.caf', 'tasks', 'GAN-2');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'orchestration-state.json'), '{ "orchestrationRetryCount": 1, "lastFailedGate": ');
+
+    await expect(readOrchestrationState(workspacePath, 'GAN-2')).resolves.toBeUndefined();
+  });
 });
 
 describe('recordGateFailure', () => {

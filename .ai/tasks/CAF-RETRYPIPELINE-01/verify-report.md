@@ -1,12 +1,12 @@
 ## Ticket: CAF-RETRYPIPELINE-01
-## Status: NEEDS_HUMAN (Task 1, 2, 4, 5, 6 SUCCESS at unit-test level; Task 3 code done but live umkm-pos verify pending)
+## Status: NEEDS_HUMAN (Task 1-8 all SUCCESS at unit-test level; live-verify caveat remains)
 
 ## Scope
-Task 1 through Task 6 — all 6 tasks in `.ai/tasks/CAF-RETRYPIPELINE-01/tasks.md`. Task 7
-(grep-audit-final) and Task 8 (regression test pass over the full suite) not yet done as
-their own explicit checkpoints, though Task 8's core claim (full-success pipeline
-unaffected) is continuously covered by the pre-existing test suite staying green throughout
-every task in this session.
+All 8 tasks in `.ai/tasks/CAF-RETRYPIPELINE-01/tasks.md` complete at the unit-test level.
+The one recurring caveat across Task 3/4/5/6: each task's own `tasks.md` verify step calls
+for a live run against real `umkm-pos`/GitHub/Linear, which this session could not do
+(no live pipeline trigger access). That live verification is the only thing standing
+between this and a clean SUCCESS.
 
 **Task 3 checkpoint (per `tasks.md`'s own instruction):** "Task 3 (push+PR) sebaiknya
 diverifikasi end-to-end di `umkm-pos` dulu sebelum lanjut ke Task 4-6." Unit-level
@@ -784,3 +784,70 @@ formality.
   agent-authored template has any assumption about its shape to conflict with.
 - Not done as a separate task/commit — folded into Task 6's session since both were audits
   of the same freshly-written code.
+
+---
+
+# Task 8 — Regression test
+
+## Attempt Log
+- Attempt 1: PASS on first pass. One small hardening fix applied alongside (see below),
+  not a bug found by a failing test — a defensive improvement made while writing the
+  parsing-edge-case test the task calls for.
+
+## Design decisions
+- **`readOrchestrationState` hardened against malformed JSON.** Task 8 asks for "test unit
+  untuk parsing/reading orchestration-state.json (pola sama dengan
+  `tests/unit/report-reader.test.ts`)" — writing that test surfaced that
+  `JSON.parse(raw)` was unguarded: a truncated/corrupted file (crash mid-write, manual edit)
+  would throw uncaught, propagating up through `checkAndConsumeRetryBudget` into `execute()`'s
+  generic catch → BullMQ retry — which would just fail identically forever, since retrying
+  doesn't un-corrupt a file. Wrapped the parse in try/catch: logs the error and treats it the
+  same as "file absent" (`undefined`), which `checkAndConsumeRetryBudget` already handles
+  safely (rejects the retry with an explicit comment, doesn't proceed blindly). This is the
+  one actual code change in this task — everything else is test coverage confirming existing
+  behavior.
+- **Two new regression tests target the two specific claims in the task's own wording**:
+  "tidak ada Draft PR ekstra" and "tidak ada orchestration-state.json yang mengganggu flow
+  normal" — verified directly (not just inferred from the success test already passing)
+  by asserting `readOrchestrationState`/`incrementOrchestrationRetryCount`/
+  `getWorkspaceStatus`/`diffStat` are never called on a normal run, and that
+  `createPullRequest` is called exactly once without `draft: true`, with
+  `findOpenPullRequestByHead`/`updatePullRequest` never called at all (those are
+  gate-exhaustion-only).
+
+## Acceptance Criteria (Task 8 scope)
+- [x] Full-success pipeline (no `NEEDS_HUMAN` at all) unaffected: no extra Draft PR, no
+      orchestration-state.json interference — new dedicated regression test plus the
+      pre-existing success-path test's existing assertions.
+- [x] Unit tests for parsing/reading `orchestration-state.json`, matching
+      `report-reader.test.ts`'s pattern (real temp-dir fixtures, not mocked fs) — already
+      substantially covered by Task 2/4's `orchestration-state.test.ts` (13 pre-existing
+      cases); added the one edge case that was actually missing: malformed JSON.
+
+## Quality Gate
+- Typecheck (`pnpm typecheck`): PASS, no errors.
+- Lint (`pnpm lint`): PASS, no errors (same pre-existing unrelated ESM/CJS warning).
+- Test (`pnpm test`): 312/312 tests pass (26 files) — 1 new malformed-JSON case
+  (`orchestration-state.test.ts`), 1 new dedicated regression test
+  (`run-agent-pipeline.use-case.test.ts`). Zero regressions.
+
+## Files changed
+- `src/infrastructure/reports/orchestration-state.ts` — `readOrchestrationState` now
+  catches a `JSON.parse` failure, logs it, and returns `undefined` instead of throwing.
+- `tests/unit/orchestration-state.test.ts` — 1 new case: malformed/truncated JSON treated
+  as absent.
+- `tests/unit/run-agent-pipeline.use-case.test.ts` — 1 new dedicated Task 8 regression test.
+
+## Catatan — ticket-level summary
+All 8 tasks in `.ai/tasks/CAF-RETRYPIPELINE-01/tasks.md` are done at the unit-test level:
+312 tests passing, typecheck/lint clean, full coverage of every acceptance criterion this
+session could verify without a live GitHub/Linear/umkm-pos environment. The consistent gap
+across Tasks 3, 4, 5, and 6 is the same one: each task's own verify step explicitly calls
+for a real run against `umkm-pos` (Draft PR actually appearing correctly formed and in
+draft state; `/caf-retry-pipeline` actually resuming a real PR; a real Linear ticket
+re-entering "Ready for AI" on an existing branch; the 3 real-repo scenarios for manual-change
+diffing and uncommitted-residue detection). None of that was run from this session. Per
+`tasks.md`'s own checkpoint instruction ("Task 3... sebaiknya diverifikasi end-to-end di
+umkm-pos dulu sebelum lanjut ke Task 4-6"), that live verification should happen before this
+ticket is considered fully SUCCESS — recommend the developer runs it before merging/relying
+on this in production.

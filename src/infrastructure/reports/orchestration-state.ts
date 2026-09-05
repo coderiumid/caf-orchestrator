@@ -1,6 +1,7 @@
 import { readFile, writeFile, rm, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { taskDir } from './report-reader.js';
+import { logger } from '../logging/logger.js';
 
 // Cross-invocation retry state for CAF-RETRYPIPELINE-01. Unlike the other
 // artifacts in this directory (verify-report.md, qa-report.md, ...), this
@@ -42,7 +43,22 @@ export async function readOrchestrationState(
   } catch {
     return undefined;
   }
-  return JSON.parse(raw) as OrchestrationState;
+  try {
+    return JSON.parse(raw) as OrchestrationState;
+  } catch (err) {
+    // Only ever written by this orchestrator (JSON.stringify, never
+    // agent-authored), but a crash mid-write or manual edit could still leave
+    // it truncated/invalid — treat that the same as "no state" (undefined)
+    // rather than letting an unhandled parse error crash the whole pipeline
+    // run via execute()'s generic catch (which would hand it to BullMQ's
+    // retry policy for something that will never fix itself by retrying).
+    logger.error(
+      'orchestration-state.json is not valid JSON — treating as absent',
+      err instanceof Error ? err : new Error(String(err)),
+      { workspacePath, ticketKey },
+    );
+    return undefined;
+  }
 }
 
 async function writeState(workspacePath: string, ticketKey: string, state: OrchestrationState): Promise<void> {

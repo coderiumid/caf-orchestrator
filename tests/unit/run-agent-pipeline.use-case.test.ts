@@ -197,6 +197,27 @@ describe('RunAgentPipelineUseCase', () => {
     expect(recordGateFailureMock).not.toHaveBeenCalled();
   });
 
+  it('CAF-RETRYPIPELINE-01 Task 8 regression: a normal (non-retry) success run never reads/increments orchestration retry state or opens a draft PR', async () => {
+    (agentRunner.run as ReturnType<typeof vi.fn>).mockResolvedValue(makeAgentResult({ exitCode: 0 }));
+
+    const useCase = new RunAgentPipelineUseCase({ gitService, workspaceManager, agentRunner, linearClient, vcsClient, notifier });
+    await useCase.execute(makeJob());
+
+    // orchestration-state.json is only ever read/incremented on the isRetry
+    // path — a normal run must not touch it at all beyond the unconditional
+    // reset-on-success (already asserted above), even indirectly.
+    expect(readOrchestrationStateMock).not.toHaveBeenCalled();
+    expect(incrementOrchestrationRetryCountMock).not.toHaveBeenCalled();
+    expect(gitService.getWorkspaceStatus).not.toHaveBeenCalled();
+    expect(gitService.diffStat).not.toHaveBeenCalled();
+    // The only createPullRequest call is the normal ready-for-review one —
+    // never draft:true, which is exclusive to the gate-exhaustion path.
+    expect(vcsClient.createPullRequest).toHaveBeenCalledTimes(1);
+    expect(vcsClient.createPullRequest).not.toHaveBeenCalledWith(expect.objectContaining({ draft: true }));
+    expect(vcsClient.findOpenPullRequestByHead).not.toHaveBeenCalled();
+    expect(vcsClient.updatePullRequest).not.toHaveBeenCalled();
+  });
+
   it('notifies notifyAgentStarted for every agent stage that actually runs (planner, backend, qa, reviewer)', async () => {
     (agentRunner.run as ReturnType<typeof vi.fn>).mockResolvedValue(
       makeAgentResult({ exitCode: 0 }),
