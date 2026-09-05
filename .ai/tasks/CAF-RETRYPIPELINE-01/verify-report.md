@@ -1,12 +1,11 @@
 ## Ticket: CAF-RETRYPIPELINE-01
-## Status: NEEDS_HUMAN (Task 1, 2, 4 SUCCESS; Task 3 code done but live umkm-pos verify pending)
+## Status: NEEDS_HUMAN (Task 1, 2, 4, 5 SUCCESS; Task 3 code done but live umkm-pos verify pending)
 
 ## Scope
-Task 1 + Task 2 + Task 3 + Task 4. Task 5 (Linear re-trigger entry point) and the
-gate-aware parts of Task 6 (skip-to-failed-gate resume, manual-change diffing, uncommitted-
-residue detection) are NOT implemented — Task 4's resume is a full restart from
-`caf-planner`, not a gate-aware resume. Not started/committed further than these four
-tasks per instructions.
+Task 1 + Task 2 + Task 3 + Task 4 + Task 5. The gate-aware parts of Task 6 (skip-to-failed-
+gate resume, manual-change diffing, uncommitted-residue detection) are NOT implemented —
+both retry entry points share a full-restart-from-`caf-planner` resume, not a gate-aware
+one. Not started/committed further than these five tasks per instructions.
 
 **Task 3 checkpoint (per `tasks.md`'s own instruction):** "Task 3 (push+PR) sebaiknya
 diverifikasi end-to-end di `umkm-pos` dulu sebelum lanjut ke Task 4-6." Unit-level
@@ -479,3 +478,133 @@ Two forward-dependency gaps found before writing code, both raised via `AskUserQ
   later task ever wants dual-posting (PR + original ticket) for retries; that's explicitly
   not implemented here (scope discipline — not asked for, would be silent unrequested
   behavior).
+
+---
+
+# Task 5 — Trigger retry via Linear (jalur kedua ke resume handler yang sama)
+
+## Refactor carried over from Task 4 (before writing Task 5 code)
+Task 4 originally put `maxOrchestrationRetries` inside `RetryContext` (alongside owner/
+repo/prNumber). Task 5 exposed why that was wrong: the Linear resume path can know
+`maxOrchestrationRetries` (resolved from the registered `ProjectConfig`, always available)
+independently of whether an open PR exists for the branch (which may be `undefined` — a
+branch can exist with no PR ever opened, e.g. the very first gate exhaustion's push failed
+per Task 3's own failure-handling). Bundling them together would have forced a fake/default
+`maxOrchestrationRetries` into a `retryContext: undefined` case, or forced `retryContext` to
+exist just to carry a number that has nothing to do with PR-based comment routing. Fixed by
+moving `maxOrchestrationRetries` to a top-level `ExistingJobPayload` field, independent of
+`retryContext` (which now only ever carries owner/repo/prNumber, and is `undefined` exactly
+when no PR was found). Updated Task 4's webhook handler, use-case, and all affected tests
+to match — this is a pure refactor of Task 4's own work, not new Task 5 surface area, so
+it's called out here rather than hidden inside "design decisions."
+
+## Attempt Log
+- Attempt 1: PASS at unit-test level on first pass, including the refactor above. Same
+  live-verify caveat as Tasks 3/4 — a real Linear ticket flipping back to "Ready for AI" on
+  a branch with an existing PR was not exercised against real Linear/GitHub from this
+  session.
+
+## Design decisions
+- **`githubService.branchExists(owner, repo, branch)` added** — `GET /repos/{o}/{r}/branches/
+  {branch}`, treating 404 as `false` (not an error) since that's the expected, meaningful
+  answer for "not a resume." Deliberately not added to `IVcsClient` (same precedent as
+  `getPullRequestHeadRef`/`listReviewComments`/`listIssueComments`) — `webhooks.ts` already
+  imports the concrete `githubService` singleton directly for GitHub-specific queries the
+  domain-level interface doesn't need to expose.
+- **The Linear webhook's resume check runs after `projectConfig` is resolved, before the
+  "new ticket" `jobData` is built** — reuses `projectConfig.repoCloneUrl` (already parsed
+  via `parseGithubRepo` for the resume check) so the branch-existence and PR lookup happen
+  against the correct GitHub repo without a second registry lookup.
+- **`retryContext` is `undefined`, not a synthesized placeholder, when the branch exists but
+  no open PR is found.** `postTicketComment` already falls back to `ticketSource`-based
+  routing when `retryContext` is absent (Task 4's code, unchanged) — for a Linear-triggered
+  resume with no PR, that correctly means "post back to the Linear ticket," which is the
+  only sane fallback since there's no PR thread to post to instead.
+- **`ticketTitle`/`ticketDescription` on the Linear resume path come from the fresh webhook
+  payload** (`payload.data.title`/`payload.data.description`), unlike the PR-comment path
+  which has no fresh values and uses a `Retry: {ticketKey}` placeholder. Both still get
+  overwritten by `checkAndConsumeRetryBudget()` from `orchestration-state.json` once the
+  workspace syncs — deliberately not special-cased to skip that overwrite for the Linear
+  path, so both trigger paths behave identically once inside `execute()` (the whole point of
+  a shared resume handler).
+- **Cross-path shared-counter proof**: added a dedicated test
+  (`run-agent-pipeline.use-case.test.ts`, "a /caf-retry-pipeline-shaped job and a
+  Linear-resume-shaped job hit the exact same counter code path") that runs `execute()`
+  twice with the two entry points' respective job shapes and asserts
+  `incrementOrchestrationRetryCount` was called with identical arguments both times — this
+  is the acceptance criterion Task 4's report left as `[ ]` pending Task 5's existence.
+
+## Acceptance Criteria (Task 5 scope)
+- [x] Linear webhook checks whether `ai-agent/{TICKET-ID}` already exists before treating a
+      "Ready for AI" transition as a new ticket.
+- [x] If it exists, routes to the same shared resume path as Task 4 (`isRetry`,
+      `maxOrchestrationRetries`, `retryContext`, `checkAndConsumeRetryBudget`) — no
+      duplicate/parallel implementation.
+- [x] Ticket whose branch already exists does not create a new branch — verified: the
+      resume path never calls `gitService.createBranch` (same assertion already covering
+      Task 4's isRetry tests, reused unchanged since both paths hit identical `execute()`
+      code).
+- [x] `orchestrationRetryCount` updated by both trigger paths uses the same counter, proven
+      by the dedicated cross-path test above (Task 4's corresponding AC, closed here).
+- [x] Test: resume job enqueued with retryContext when an open PR exists —
+      `tests/unit/webhook-routing.test.ts` ("enqueues a resume job (isRetry + retryContext
+      with the open PR)...").
+- [x] Test: resume job enqueued with `retryContext: undefined` when the branch exists but no
+      PR is open — `tests/unit/webhook-routing.test.ts` ("...when the branch exists but no
+      open PR is found").
+- [x] Test: per-repo `maxOrchestrationRetries` override respected on the Linear resume path
+      too — `tests/unit/webhook-routing.test.ts` ("uses the per-repo maxOrchestrationRetries
+      override when resuming").
+- [x] Regression: normal new-ticket flow (branch doesn't exist) unaffected —
+      `tests/unit/webhook-routing.test.ts` ("does not create a new branch/job shape when no
+      ai-agent branch exists").
+- [ ] **Live verify** — not run against real Linear/GitHub this session (same caveat as
+      Tasks 3/4).
+
+## Quality Gate
+- Typecheck (`pnpm typecheck`): PASS, no errors.
+- Lint (`pnpm lint`): PASS, no errors (same pre-existing unrelated ESM/CJS warning, not
+  touched by this task).
+- Test (`pnpm test`): 302/302 tests pass (26 files) — 4 new Linear-webhook resume cases
+  (`webhook-routing.test.ts`), 1 new cross-path shared-counter proof
+  (`run-agent-pipeline.use-case.test.ts`), plus 2 assertions fixed in
+  `github-webhook-routing.test.ts` for the `RetryContext`/`maxOrchestrationRetries`
+  refactor. Zero regressions.
+
+## Files changed
+- `src/domain/interfaces/queue.interface.ts` — `RetryContext` narrowed to
+  `{owner, repo, prNumber}`; `ExistingJobPayload` gains a top-level
+  `maxOrchestrationRetries?: number` (moved out of `RetryContext`).
+- `src/infrastructure/vcs/github.service.ts` — new `branchExists(owner, repo, branch)`.
+- `src/application/use-cases/run-agent-pipeline.use-case.ts` — `checkAndConsumeRetryBudget`
+  reads `job.maxOrchestrationRetries` (top-level) instead of
+  `job.retryContext?.maxOrchestrationRetries`.
+- `src/presentation/web/routes/webhooks.ts` — Linear webhook's `/linear` handler gains the
+  branch-exists resume check (before the existing "new ticket" `jobData` construction);
+  Task 4's `handleRetryPipelineCommand` updated for the `RetryContext` refactor.
+- `tests/unit/webhook-routing.test.ts` — new `githubService` mock (`branchExists`,
+  `findOpenPullRequestByHead`, real `parseGithubRepo` via `importOriginal`); 4 new resume
+  cases.
+- `tests/unit/github-webhook-routing.test.ts` — 2 assertions updated for the
+  `RetryContext`/`maxOrchestrationRetries` refactor.
+- `tests/unit/run-agent-pipeline.use-case.test.ts` — `makeRetryJob` helper updated for the
+  refactor; 1 new cross-path shared-counter test.
+- `CLAUDE.md` — rewrote the "`/caf-retry-pipeline` resume" subsection to describe both
+  trigger paths converging on the same mechanism, instead of describing Task 4 alone with a
+  "not yet wired" note for Task 5.
+
+## Catatan
+- With Task 4 + Task 5 both done, the full CAF-RETRYPIPELINE-01 acceptance criterion "retry
+  dari dua jalur berbeda memakai counter yang sama, bukan counter terpisah" is now backed by
+  a direct test, not just an architectural claim.
+- Remaining explicit gaps for whoever picks up Task 6: (1) resume is a full restart, not
+  gate-aware — no skip-to-failed-gate logic reads `lastFailedGate` to decide which agent to
+  re-run; (2) no manual-change diffing (`git diff {lastKnownCommitSha}..HEAD --stat` /
+  `manualChangesSinceLastRun`) is computed or injected into agent context; (3) no
+  uncommitted-residue detection/stop before the `preflightCleanup`-based sync — the retry
+  sync added in Task 4 already does `fetch` + `reset --hard` unconditionally, same
+  destructive-but-audited behavior as the existing CAF-WSMODE-01 preflight cleanup, just
+  pointed at the ticket branch instead of `baseBranch`.
+- Did not touch `qaRetryCount`/`reviewerRetryCount`, `caf-pr-review` (`/caf-review`,
+  `/caf-fix-review`), or any whitelist/permission logic beyond reusing
+  `checkReviewPermission` as-is — confirmed via `git diff --stat`.
