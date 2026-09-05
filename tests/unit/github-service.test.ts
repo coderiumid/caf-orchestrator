@@ -9,6 +9,111 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe('GithubService.createPullRequest', () => {
+  it('sends draft:true when draft is requested', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ html_url: 'https://github.com/o/r/pull/1', number: 1 }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { GithubService } = await import('../../src/infrastructure/vcs/github.service.js');
+    await new GithubService().createPullRequest({
+      owner: 'o',
+      repo: 'r',
+      head: 'ai-agent/CAF-1',
+      base: 'main',
+      title: 'title',
+      body: 'body',
+      draft: true,
+    });
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse(init.body)).toMatchObject({ draft: true });
+  });
+
+  it('defaults draft to false when not specified', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ html_url: 'https://github.com/o/r/pull/1', number: 1 }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { GithubService } = await import('../../src/infrastructure/vcs/github.service.js');
+    await new GithubService().createPullRequest({
+      owner: 'o',
+      repo: 'r',
+      head: 'ai-agent/CAF-1',
+      base: 'main',
+      title: 'title',
+      body: 'body',
+    });
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse(init.body)).toMatchObject({ draft: false });
+  });
+});
+
+describe('GithubService.findOpenPullRequestByHead', () => {
+  it('queries with owner:branch head filter and state=open, returns the first match', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => [{ html_url: 'https://github.com/o/r/pull/5', number: 5 }],
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { GithubService } = await import('../../src/infrastructure/vcs/github.service.js');
+    const result = await new GithubService().findOpenPullRequestByHead({ owner: 'o', repo: 'r', head: 'ai-agent/CAF-1' });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url] = fetchMock.mock.calls[0];
+    expect(url).toContain('/repos/o/r/pulls?head=');
+    expect(url).toContain(encodeURIComponent('o:ai-agent/CAF-1'));
+    expect(url).toContain('state=open');
+    expect(result).toEqual({ url: 'https://github.com/o/r/pull/5', number: 5 });
+  });
+
+  it('returns undefined when no open PR matches', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => [] });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { GithubService } = await import('../../src/infrastructure/vcs/github.service.js');
+    const result = await new GithubService().findOpenPullRequestByHead({ owner: 'o', repo: 'r', head: 'ai-agent/CAF-1' });
+
+    expect(result).toBeUndefined();
+  });
+});
+
+describe('GithubService.updatePullRequest', () => {
+  it('PATCHes the PR body', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ html_url: 'https://github.com/o/r/pull/5', number: 5 }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { GithubService } = await import('../../src/infrastructure/vcs/github.service.js');
+    const result = await new GithubService().updatePullRequest({ owner: 'o', repo: 'r', prNumber: 5, body: 'updated body' });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('https://api.github.com/repos/o/r/pulls/5');
+    expect(init.method).toBe('PATCH');
+    expect(JSON.parse(init.body)).toEqual({ body: 'updated body' });
+    expect(result).toEqual({ url: 'https://github.com/o/r/pull/5', number: 5 });
+  });
+
+  it('throws GithubApiError on failure', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 404, text: async () => 'not found' });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { GithubService } = await import('../../src/infrastructure/vcs/github.service.js');
+    await expect(
+      new GithubService().updatePullRequest({ owner: 'o', repo: 'r', prNumber: 5, body: 'x' }),
+    ).rejects.toBeInstanceOf(GithubApiError);
+  });
+});
+
 describe('GithubService.listReviewComments', () => {
   it('normalizes the REST API\'s explicit `in_reply_to_id: null` (thread-starter) to undefined', async () => {
     // GET /pulls/{number}/comments sets in_reply_to_id explicitly to `null` for

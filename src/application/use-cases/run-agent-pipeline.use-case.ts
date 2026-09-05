@@ -4,7 +4,7 @@ import { WorkspaceLockError } from '../../domain/errors/app-errors.js';
 import type { IAgentRunner } from '../../domain/interfaces/agent-runner.interface.js';
 import type { ILinearClient } from '../../domain/interfaces/linear-client.interface.js';
 import type { INotifier } from '../../domain/interfaces/notifier.interface.js';
-import type { IVcsClient } from '../../domain/interfaces/vcs-client.interface.js';
+import type { IVcsClient, CreatePullRequestResult } from '../../domain/interfaces/vcs-client.interface.js';
 import type { ExistingJobPayload } from '../../domain/interfaces/queue.interface.js';
 import {
   routeTasks,
@@ -22,6 +22,14 @@ import {
   type QaReport,
   type ReviewerReport,
 } from '../../infrastructure/reports/report-reader.js';
+import {
+  readOrchestrationState,
+  recordGateFailure,
+  resetOrchestrationState,
+  incrementOrchestrationRetryCount,
+  type OrchestrationGate,
+  type OrchestrationState,
+} from '../../infrastructure/reports/orchestration-state.js';
 import { parseGithubRepo } from '../../infrastructure/vcs/github.service.js';
 import { logger } from '../../infrastructure/logging/logger.js';
 import { parseApiError, formatResetDelay, NonRetryableApiError } from '../../infrastructure/agent/api-error.js';
@@ -70,6 +78,36 @@ function buildPrBody(
   return lines.join('\n');
 }
 
+const GATE_ARTIFACT_FILE: Record<OrchestrationGate, string> = {
+  implementation: 'verify-report.md',
+  qa: 'qa-report.md',
+  reviewer: 'review-notes.md',
+};
+
+/**
+ * PR body for a gate-exhaustion Draft PR (CAF-RETRYPIPELINE-01 Task 3) —
+ * reformats the one artifact the failing gate already produced
+ * (verify-report.md/qa-report.md/review-notes.md), no new text generated per
+ * the report-contract convention (CLAUDE.md).
+ */
+function buildGateExhaustionPrBody(job: ExistingJobPayload, gate: OrchestrationGate, artifactRaw: string): string {
+  return [
+    `Ticket: ${job.ticketKey}`,
+    job.ticketDescription || '',
+    '',
+    `## Pipeline stopped — gate exhausted: ${gate}`,
+    '',
+    `Automated retries at the ${gate} gate did not pass. Work completed so far has been pushed here for human review.`,
+    '',
+    '## Reports',
+    `- Requirements: \`.caf/tasks/${job.ticketKey}/requirements.md\``,
+    `- Tasks: \`.caf/tasks/${job.ticketKey}/tasks.md\``,
+    `- ${GATE_ARTIFACT_FILE[gate]}: \`.caf/tasks/${job.ticketKey}/${GATE_ARTIFACT_FILE[gate]}\``,
+    '',
+    artifactRaw,
+  ].join('\n');
+}
+
 /**
  * Builds the PR-body warning block for a QA/Reviewer skip. Two skip reasons
  * are folded into one block (not two separate ones) since both mean the
@@ -106,6 +144,15 @@ export class RunAgentPipelineUseCase {
    * ticketId, e.g. "25" for CDR-25).
    */
   private async postTicketComment(job: ExistingJobPayload, body: string): Promise<void> {
+    // CAF-RETRYPIPELINE-01: a resume run's thread of truth is the PR the
+    // retry was triggered from, not the original Linear ticket/GitHub issue —
+    // that's where the human who typed /caf-retry-pipeline (or re-flipped the
+    // Linear ticket) is actually watching.
+    if (job.retryContext) {
+      const { owner, repo, prNumber } = job.retryContext;
+      await this.deps.vcsClient.postIssueComment({ owner, repo, issueNumber: prNumber, body });
+      return;
+    }
     if (job.ticketSource === 'github') {
       const { owner, repo } = parseGithubRepo(job.projectConfig.repoCloneUrl);
       await this.deps.vcsClient.postIssueComment({ owner, repo, issueNumber: Number(job.ticketId), body });
@@ -115,7 +162,7 @@ export class RunAgentPipelineUseCase {
   }
 
   async execute(job: ExistingJobPayload): Promise<void> {
-    const { gitService, workspaceManager, agentRunner, linearClient, vcsClient, notifier } = this.deps;
+    const { gitService, workspaceManager, agentRunner, linearClient, notifier } = this.deps;
 
     // Fire-and-forget: don't await, don't let notification failure affect the
     // pipeline. send() internally catches all errors already.
@@ -183,42 +230,138 @@ export class RunAgentPipelineUseCase {
     });
 
     try {
-      // CAF-WSMODE-01: a persistent workspace already holding a prior job's
-      // clone (existsSync check, not a hidden mode branch) gets fetched +
-      // reset instead of cloned fresh; first run / ephemeral mode clones as
-      // before.
-      if (existsSync(`${repoPath}/.git`)) {
-        await gitService.preflightCleanup(repoPath, job.projectConfig.baseBranch, workspaceRoot);
+      let tasksMarkdown: string;
+      let resumeContext: string | undefined;
+
+      if (job.isRetry) {
+        // CAF-RETRYPIPELINE-01 Task 6: an existing persistent-mode checkout
+        // must be inspected BEFORE preflightCleanup's destructive
+        // fetch+reset — unexpected uncommitted residue (e.g. a PIV run
+        // interrupted mid-write) is exactly the "don't touch it, ask a
+        // human" case the normal (non-retry) preflightCleanup path
+        // deliberately does NOT stop for (it logs and discards). A fresh
+        // ephemeral clone below has no prior state, so nothing to check.
+        if (existsSync(`${repoPath}/.git`)) {
+          const status = await gitService.getWorkspaceStatus(repoPath, workspaceRoot);
+          if (status.hasUncommittedChanges) {
+            logger.warn('Retry sync aborted: unexpected uncommitted changes in persistent workspace', undefined, {
+              jobId: job.jobId,
+              ticketKey: job.ticketKey,
+              statusOutput: status.statusOutput,
+            });
+            await this.postTicketComment(
+              job,
+              [
+                `🚫 Retry stopped: unexpected uncommitted changes found in the workspace before syncing to \`${branch}\`.`,
+                'This may be residue from an interrupted run. Nothing was touched or discarded — please investigate the workspace manually (or ask a maintainer) before retrying again.',
+                '',
+                '```',
+                status.statusOutput,
+                '```',
+              ].join('\n'),
+            );
+            await notifier?.notifyPipelineNeedsHuman({
+              jobId: job.jobId,
+              ticketKey: job.ticketKey,
+              reason: 'Unexpected uncommitted changes in persistent workspace before retry sync',
+            });
+            return;
+          }
+          // CAF-RETRYPIPELINE-01: resume onto the EXISTING ai-agent branch
+          // (already pushed by the run that exhausted a gate) instead of
+          // branching fresh off baseBranch — preflightCleanup with the
+          // ticket branch as its "base" fetches + hard-resets the workspace
+          // to origin/<branch>.
+          await gitService.preflightCleanup(repoPath, branch, workspaceRoot);
+        } else {
+          await gitService.clone(job.projectConfig.repoCloneUrl, branch, repoPath, workspaceRoot);
+        }
+
+        const retryGate = await this.checkAndConsumeRetryBudget(repoPath, job);
+        if (!retryGate.allowed) {
+          return;
+        }
+        const { state } = retryGate;
+
+        // Manual-change detection (Task 6): compare the just-synced HEAD
+        // against the sha recorded at the moment the gate failed. A
+        // difference means a human committed to the branch in between —
+        // surfaced as context for the resumed agent, never a stop condition
+        // (only unexpected *uncommitted* residue, checked above, stops the
+        // pipeline).
+        let manualChangesSinceLastRun: string | undefined;
+        if (state.lastKnownCommitSha) {
+          const newHeadSha = await gitService.getHeadCommit(repoPath);
+          if (newHeadSha !== state.lastKnownCommitSha) {
+            try {
+              manualChangesSinceLastRun = await gitService.diffStat(repoPath, state.lastKnownCommitSha, newHeadSha, workspaceRoot);
+            } catch (err) {
+              logger.error(
+                'Failed to compute manual-change diff stat — proceeding without it',
+                err instanceof Error ? err : new Error(String(err)),
+                { jobId: job.jobId, ticketKey: job.ticketKey },
+              );
+            }
+          }
+        }
+
+        // Gate-aware resume: skip the planner entirely and jump straight to
+        // re-running the implementation agent(s) with the failing gate's own
+        // artifact as context — same agents the existing per-invocation
+        // QA-fail/reviewer-CHANGES_REQUESTED retry loops already re-run, just
+        // entered across a job boundary instead of within one.
+        const gate = state.lastFailedGate ?? 'implementation';
+        const gateArtifactRaw = await this.readGateArtifactRaw(repoPath, job.ticketKey, gate);
+
+        const contextParts: string[] = [`Resuming after a previous automated run stopped at the ${gate} gate.`];
+        if (gateArtifactRaw) {
+          contextParts.push(`Previous ${GATE_ARTIFACT_FILE[gate]}:\n\n${gateArtifactRaw}`);
+        }
+        if (manualChangesSinceLastRun) {
+          contextParts.push(
+            `Manual changes were made directly to the branch since the last automated run — do not assume file contents match what the last run left behind:\n\n${manualChangesSinceLastRun}`,
+          );
+        }
+        resumeContext = contextParts.join('\n\n');
+
+        const existingTasksMarkdown = await readTasks(repoPath, job.ticketKey);
+        if (!existingTasksMarkdown) {
+          throw new Error(`Resume job found no existing tasks.md on branch ${branch} — cannot resume without it`);
+        }
+        tasksMarkdown = existingTasksMarkdown;
+
+        logger.info('Gate-aware resume: skipping planner, resuming implementation with prior gate context', undefined, {
+          jobId: job.jobId,
+          ticketKey: job.ticketKey,
+          gate,
+          hasManualChanges: !!manualChangesSinceLastRun,
+        });
       } else {
-        await gitService.clone(job.projectConfig.repoCloneUrl, job.projectConfig.baseBranch, repoPath, workspaceRoot);
-      }
-      await gitService.createBranch(repoPath, branch, workspaceRoot);
+        // CAF-WSMODE-01: a persistent workspace already holding a prior job's
+        // clone (existsSync check, not a hidden mode branch) gets fetched +
+        // reset instead of cloned fresh; first run / ephemeral mode clones as
+        // before.
+        if (existsSync(`${repoPath}/.git`)) {
+          await gitService.preflightCleanup(repoPath, job.projectConfig.baseBranch, workspaceRoot);
+        } else {
+          await gitService.clone(job.projectConfig.repoCloneUrl, job.projectConfig.baseBranch, repoPath, workspaceRoot);
+        }
+        await gitService.createBranch(repoPath, branch, workspaceRoot);
 
-      const plannerPrompt = [
-        `Ticket ${job.ticketKey}: ${job.ticketTitle}`,
-        '',
-        job.ticketDescription || '(no description provided)',
-      ].join('\n');
+        const plannerPrompt = [
+          `Ticket ${job.ticketKey}: ${job.ticketTitle}`,
+          '',
+          job.ticketDescription || '(no description provided)',
+        ].join('\n');
 
-      void notifier?.notifyAgentStarted({ jobId: job.jobId, ticketKey: job.ticketKey, agentName: 'caf-planner' });
-      const plannerResult = await agentRunner.run(
-        'caf-planner',
-        repoPath,
-        plannerPrompt,
-        job.projectConfig.agents.modelOverrides['caf-planner'],
-      );
-      logger.info('caf-planner agent run result', undefined, {
-        jobId: job.jobId,
-        ticketKey: job.ticketKey,
-        agentName: 'caf-planner',
-        exitCode: plannerResult.exitCode,
-        signal: plannerResult.signal,
-        timedOut: plannerResult.timedOut,
-        stdout: plannerResult.stdout,
-        stderr: plannerResult.stderr,
-      });
-      if (plannerResult.signal || plannerResult.exitCode !== 0) {
-        logger.error('caf-planner agent run failed', undefined, {
+        void notifier?.notifyAgentStarted({ jobId: job.jobId, ticketKey: job.ticketKey, agentName: 'caf-planner' });
+        const plannerResult = await agentRunner.run(
+          'caf-planner',
+          repoPath,
+          plannerPrompt,
+          job.projectConfig.agents.modelOverrides['caf-planner'],
+        );
+        logger.info('caf-planner agent run result', undefined, {
           jobId: job.jobId,
           ticketKey: job.ticketKey,
           agentName: 'caf-planner',
@@ -228,36 +371,96 @@ export class RunAgentPipelineUseCase {
           stdout: plannerResult.stdout,
           stderr: plannerResult.stderr,
         });
-      }
-      if (plannerResult.signal) {
-        throw new Error(`caf-planner agent killed by signal ${plannerResult.signal}`);
-      }
-      if (plannerResult.exitCode !== 0) {
-        await this.stopIfNonRetryable('caf-planner', plannerResult, job);
-        throw new Error(`caf-planner agent exited with code ${plannerResult.exitCode}: ${plannerResult.stderr}`);
+        if (plannerResult.signal || plannerResult.exitCode !== 0) {
+          logger.error('caf-planner agent run failed', undefined, {
+            jobId: job.jobId,
+            ticketKey: job.ticketKey,
+            agentName: 'caf-planner',
+            exitCode: plannerResult.exitCode,
+            signal: plannerResult.signal,
+            timedOut: plannerResult.timedOut,
+            stdout: plannerResult.stdout,
+            stderr: plannerResult.stderr,
+          });
+        }
+        if (plannerResult.signal) {
+          throw new Error(`caf-planner agent killed by signal ${plannerResult.signal}`);
+        }
+        if (plannerResult.exitCode !== 0) {
+          await this.stopIfNonRetryable('caf-planner', plannerResult, job);
+          throw new Error(`caf-planner agent exited with code ${plannerResult.exitCode}: ${plannerResult.stderr}`);
+        }
+
+        const freshTasksMarkdown = await readTasks(repoPath, job.ticketKey);
+        if (!freshTasksMarkdown) {
+          // Log agent output at ERROR level so it's visible even when INFO is filtered.
+          // A silent exit-0 without producing tasks.md is the hardest failure to debug.
+          logger.error('caf-planner exited 0 but did not produce tasks.md', undefined, {
+            jobId: job.jobId,
+            ticketKey: job.ticketKey,
+            stdout: plannerResult.stdout,
+            stderr: plannerResult.stderr,
+          });
+          throw new Error('caf-planner did not produce tasks.md');
+        }
+        tasksMarkdown = freshTasksMarkdown;
       }
 
-      const tasksMarkdown = await readTasks(repoPath, job.ticketKey);
-      if (!tasksMarkdown) {
-        // Log agent output at ERROR level so it's visible even when INFO is filtered.
-        // A silent exit-0 without producing tasks.md is the hardest failure to debug.
-        logger.error('caf-planner exited 0 but did not produce tasks.md', undefined, {
-          jobId: job.jobId,
-          ticketKey: job.ticketKey,
-          stdout: plannerResult.stdout,
-          stderr: plannerResult.stderr,
-        });
-        throw new Error('caf-planner did not produce tasks.md');
+      await this.runPipelineFromImplementation(job, repoPath, branch, workspaceRoot, jobStart, tasksMarkdown, resumeContext);
+    } catch (err) {
+      if (err instanceof NonRetryableApiError) {
+        // Already reported via postComment + logger.info in stopIfNonRetryable.
+        // Clean stop, same as the NEEDS_HUMAN/QA/reviewer gates — no BullMQ retry.
+        return;
       }
 
-      // Empty map when the flag is off — every .get() below then resolves to
-      // undefined, so nothing downstream can behave differently from before
-      // dynamic agent skip existed. See AGENT_SKIP_ENABLED in config/schema.ts.
-      const skipDirectives = config.AGENT_SKIP_ENABLED
-        ? parseSkipDirectives(tasksMarkdown)
-        : new Map<SkippableAgent, string>();
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      logger.error('Agent pipeline failed', err instanceof Error ? err : new Error(errorMessage), {
+        jobId: job.jobId,
+        ticketKey: job.ticketKey,
+        totalDurationMs: ms(jobStart),
+      });
 
-      const routedAgents = routeTasks(tasksMarkdown, { strictEmptyCheck: config.AGENT_SKIP_ENABLED });
+      await notifier?.notifyPipelineFailed({
+        jobId: job.jobId,
+        ticketKey: job.ticketKey,
+        errorMessage,
+      });
+
+      throw err;
+    } finally {
+      await workspaceManager.cleanupWorkspace(workspacePath, workspaceRoot, workspacePurpose);
+    }
+  }
+
+  /**
+   * Shared pipeline tail (CAF-RETRYPIPELINE-01 Task 6) — everything from
+   * routing `tasks.md` through the final success comment. Entered two ways:
+   * the normal path (fresh planner output, no `extraContext`) and a
+   * gate-aware resume (`tasksMarkdown` read from the existing branch,
+   * `extraContext` carrying the failing gate's artifact + any manual-change
+   * diff). Both converge here so there is exactly one implementation/QA/
+   * reviewer/docs/commit/PR code path, not two drifting copies.
+   */
+  private async runPipelineFromImplementation(
+    job: ExistingJobPayload,
+    repoPath: string,
+    branch: string,
+    workspaceRoot: string,
+    jobStart: bigint,
+    tasksMarkdown: string,
+    extraContext?: string,
+  ): Promise<void> {
+    const { gitService, agentRunner, notifier, vcsClient } = this.deps;
+
+    // Empty map when the flag is off — every .get() below then resolves to
+    // undefined, so nothing downstream can behave differently from before
+    // dynamic agent skip existed. See AGENT_SKIP_ENABLED in config/schema.ts.
+    const skipDirectives = config.AGENT_SKIP_ENABLED
+      ? parseSkipDirectives(tasksMarkdown)
+      : new Map<SkippableAgent, string>();
+
+    const routedAgents = routeTasks(tasksMarkdown, { strictEmptyCheck: config.AGENT_SKIP_ENABLED });
       if (routedAgents.length === 0) {
         throw new Error('No Frontend Tasks or Backend Tasks section found in tasks.md (caf-frontend/caf-backend)');
       }
@@ -294,7 +497,8 @@ export class RunAgentPipelineUseCase {
         await notifier?.notifyAgentSkipped({ jobId: job.jobId, ticketKey: job.ticketKey, agentName: agent, reason });
       }
 
-      const implementationPrompt = `Implement your assigned section of .caf/tasks/${job.ticketKey}/tasks.md for ticket ${job.ticketKey}.`;
+      const baseImplementationPrompt = `Implement your assigned section of .caf/tasks/${job.ticketKey}/tasks.md for ticket ${job.ticketKey}.`;
+      const implementationPrompt = extraContext ? `${baseImplementationPrompt}\n\n${extraContext}` : baseImplementationPrompt;
 
       await this.runImplementationAgents(agentsToRun, repoPath, implementationPrompt, job);
 
@@ -312,9 +516,11 @@ export class RunAgentPipelineUseCase {
       }
 
       if (verifyReport.status === 'NEEDS_HUMAN') {
+        await this.recordGateExhaustion(repoPath, job, 'implementation');
+        const pushResult = await this.pushAndOpenGatePr(repoPath, job, branch, 'implementation', verifyReport.raw);
         await this.postTicketComment(
           job,
-          `Agent pipeline needs human review:\n\n${verifyReport.raw}`,
+          this.appendPushResultNote(`Agent pipeline needs human review:\n\n${verifyReport.raw}`, pushResult),
         );
         logger.info('Pipeline stopped: verify-report reported NEEDS_HUMAN', undefined, {
           jobId: job.jobId,
@@ -356,9 +562,11 @@ export class RunAgentPipelineUseCase {
       }
 
       if (qaReport.status === 'FAIL') {
+        await this.recordGateExhaustion(repoPath, job, 'qa');
+        const pushResult = await this.pushAndOpenGatePr(repoPath, job, branch, 'qa', qaReport.raw);
         await this.postTicketComment(
           job,
-          `Agent pipeline needs human review (QA failed after retry):\n\n${qaReport.raw}`,
+          this.appendPushResultNote(`Agent pipeline needs human review (QA failed after retry):\n\n${qaReport.raw}`, pushResult),
         );
         logger.info('Pipeline stopped: QA report reported FAIL after retry', undefined, {
           jobId: job.jobId,
@@ -406,9 +614,14 @@ export class RunAgentPipelineUseCase {
       }
 
       if (reviewerReport.verdict === 'CHANGES_REQUESTED') {
+        await this.recordGateExhaustion(repoPath, job, 'reviewer');
+        const pushResult = await this.pushAndOpenGatePr(repoPath, job, branch, 'reviewer', reviewerReport.raw);
         await this.postTicketComment(
           job,
-          `Agent pipeline needs human review (reviewer requested changes after retry):\n\n${reviewerReport.raw}`,
+          this.appendPushResultNote(
+            `Agent pipeline needs human review (reviewer requested changes after retry):\n\n${reviewerReport.raw}`,
+            pushResult,
+          ),
         );
         logger.info('Pipeline stopped: reviewer requested changes after retry', undefined, {
           jobId: job.jobId,
@@ -487,6 +700,15 @@ export class RunAgentPipelineUseCase {
         }
       }
 
+      try {
+        await resetOrchestrationState(repoPath, job.ticketKey);
+      } catch (err) {
+        logger.error('Failed to reset orchestration-state.json on pipeline success', err instanceof Error ? err : new Error(String(err)), {
+          jobId: job.jobId,
+          ticketKey: job.ticketKey,
+        });
+      }
+
       await gitService.commitAll(repoPath, `AI agent pipeline: ${job.ticketKey}`, workspaceRoot);
       await gitService.push(repoPath, branch, workspaceRoot);
 
@@ -524,30 +746,182 @@ export class RunAgentPipelineUseCase {
         durationMs: totalMs,
         branch,
       });
+  }
+
+  /**
+   * Stamps orchestration-state.json with the gate that just exhausted its
+   * retries (CAF-RETRYPIPELINE-01 Task 2) — read by the future resume handler
+   * (Task 6) to know which agent/artifact to resume with, and by
+   * /caf-retry-pipeline (Task 4) to enforce maxOrchestrationRetries. Failure
+   * to read HEAD (e.g. a git error) must not crash the pipeline here — the
+   * human-facing NEEDS_HUMAN comment this precedes still needs to go out.
+   */
+  private async recordGateExhaustion(repoPath: string, job: ExistingJobPayload, gate: OrchestrationGate): Promise<void> {
+    try {
+      const commitSha = await this.deps.gitService.getHeadCommit(repoPath);
+      await recordGateFailure(repoPath, job.ticketKey, gate, commitSha, {
+        ticketTitle: job.ticketTitle,
+        ticketDescription: job.ticketDescription,
+      });
     } catch (err) {
-      if (err instanceof NonRetryableApiError) {
-        // Already reported via postComment + logger.info in stopIfNonRetryable.
-        // Clean stop, same as the NEEDS_HUMAN/QA/reviewer gates — no BullMQ retry.
-        return;
-      }
-
-      const errorMessage = err instanceof Error ? err.message : String(err);
-      logger.error('Agent pipeline failed', err instanceof Error ? err : new Error(errorMessage), {
+      logger.error('Failed to write orchestration-state.json on gate exhaustion', err instanceof Error ? err : new Error(String(err)), {
         jobId: job.jobId,
         ticketKey: job.ticketKey,
-        totalDurationMs: ms(jobStart),
+        gate,
       });
-
-      await notifier?.notifyPipelineFailed({
-        jobId: job.jobId,
-        ticketKey: job.ticketKey,
-        errorMessage,
-      });
-
-      throw err;
-    } finally {
-      await workspaceManager.cleanupWorkspace(workspacePath, workspaceRoot, workspacePurpose);
     }
+  }
+
+  /**
+   * Gate for a resume job (`job.isRetry`) — read right after the workspace
+   * has been synced onto the existing `ai-agent/{ticketKey}` branch, before
+   * any agent runs. Rejects (posts an explicit comment, returns
+   * `allowed: false`) when there's nothing to resume (no
+   * orchestration-state.json at all — this command only makes sense on a PR
+   * this orchestrator itself opened via a gate-exhaustion) or the ticket has
+   * already used up `maxOrchestrationRetries`. Otherwise increments the
+   * shared counter (Task 4 `/caf-retry-pipeline` and Task 5's Linear
+   * re-trigger both call this same path, so they share one counter — see
+   * CAF-RETRYPIPELINE-01 acceptance criteria), refreshes
+   * `job.ticketTitle`/`job.ticketDescription` from the stored state (a
+   * resume trigger carries no fresh ticket content of its own), and returns
+   * the state itself so the caller can drive gate-aware resume (Task 6:
+   * `lastFailedGate` decides which artifact to inject as context,
+   * `lastKnownCommitSha` drives the manual-change diff).
+   */
+  private async checkAndConsumeRetryBudget(
+    repoPath: string,
+    job: ExistingJobPayload,
+  ): Promise<{ allowed: false } | { allowed: true; state: OrchestrationState }> {
+    const state = await readOrchestrationState(repoPath, job.ticketKey);
+    if (!state) {
+      await this.postTicketComment(
+        job,
+        `⚠️ /caf-retry-pipeline: no prior orchestration state found for ${job.ticketKey} — nothing to resume. This command only works on a Draft PR the pipeline opened automatically after a gate stopped it.`,
+      );
+      logger.info('Retry rejected: no orchestration-state.json found', undefined, {
+        jobId: job.jobId,
+        ticketKey: job.ticketKey,
+      });
+      return { allowed: false };
+    }
+
+    const maxRetries = job.maxOrchestrationRetries ?? 0;
+    if (state.orchestrationRetryCount >= maxRetries) {
+      await this.postTicketComment(
+        job,
+        `🚫 Retry limit reached for ${job.ticketKey} (${state.orchestrationRetryCount}/${maxRetries}). Automatic retry is no longer available — please make changes manually or ask a maintainer to intervene.`,
+      );
+      logger.info('Retry rejected: orchestrationRetryCount at or above maxOrchestrationRetries', undefined, {
+        jobId: job.jobId,
+        ticketKey: job.ticketKey,
+        orchestrationRetryCount: state.orchestrationRetryCount,
+        maxRetries,
+      });
+      return { allowed: false };
+    }
+
+    job.ticketTitle = state.ticketTitle || job.ticketTitle;
+    job.ticketDescription = state.ticketDescription || job.ticketDescription;
+    const newCount = await incrementOrchestrationRetryCount(repoPath, job.ticketKey);
+    logger.info('Orchestration retry allowed, counter incremented', undefined, {
+      jobId: job.jobId,
+      ticketKey: job.ticketKey,
+      orchestrationRetryCount: newCount,
+      maxRetries,
+    });
+    return { allowed: true, state };
+  }
+
+  /** Raw content of whichever artifact `gate` produced — the context a gate-aware resume (Task 6) injects into the resumed implementation prompt. Undefined if the file is missing (e.g. removed by a manual commit since the last run). */
+  private async readGateArtifactRaw(
+    repoPath: string,
+    ticketKey: string,
+    gate: OrchestrationGate,
+  ): Promise<string | undefined> {
+    switch (gate) {
+      case 'implementation':
+        return (await readVerifyReport(repoPath, ticketKey))?.raw;
+      case 'qa':
+        return (await readQaReport(repoPath, ticketKey))?.raw;
+      case 'reviewer':
+        return (await readReviewerReport(repoPath, ticketKey))?.raw;
+    }
+  }
+
+  /**
+   * Commits + pushes the branch and opens (or updates, if one is already open
+   * on this branch) a Draft PR when a gate exhausts its retries
+   * (CAF-RETRYPIPELINE-01 Task 3) — so the work the agents already did is
+   * never stranded in an ephemeral/persistent workspace only. Deliberately
+   * swallows its own errors: a push/GitHub failure here must not turn a
+   * NEEDS_HUMAN gate's `return` into a `throw` (that would hand the job back
+   * to BullMQ's retry policy, which the "return vs throw" contract this
+   * pipeline relies on explicitly forbids — see CLAUDE.md and the gate
+   * exhaustion sections above). The caller surfaces the outcome (PR link or
+   * failure note) in the human-facing comment instead.
+   */
+  private async pushAndOpenGatePr(
+    repoPath: string,
+    job: ExistingJobPayload,
+    branch: string,
+    gate: OrchestrationGate,
+    artifactRaw: string,
+  ): Promise<{ pr?: CreatePullRequestResult; error?: string }> {
+    const { gitService, vcsClient } = this.deps;
+    try {
+      await gitService.commitAll(
+        repoPath,
+        `AI agent pipeline: ${job.ticketKey} (needs human review — ${gate} gate)`,
+        job.projectConfig.workspaceDir,
+      );
+      await gitService.push(repoPath, branch, job.projectConfig.workspaceDir);
+
+      const { owner, repo } = parseGithubRepo(job.projectConfig.repoCloneUrl);
+      const body = buildGateExhaustionPrBody(job, gate, artifactRaw);
+      const existing = await vcsClient.findOpenPullRequestByHead({ owner, repo, head: branch });
+
+      const pr = existing
+        ? await vcsClient.updatePullRequest({ owner, repo, prNumber: existing.number, body })
+        : await vcsClient.createPullRequest({
+            owner,
+            repo,
+            head: branch,
+            base: job.projectConfig.baseBranch,
+            title: `${job.ticketKey}: ${job.ticketTitle}`,
+            body,
+            draft: true,
+          });
+
+      logger.info('Pushed and opened/updated Draft PR on gate exhaustion', undefined, {
+        jobId: job.jobId,
+        ticketKey: job.ticketKey,
+        gate,
+        prUrl: pr.url,
+        reusedExisting: !!existing,
+      });
+
+      return { pr };
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      logger.error(
+        'Failed to push + open/update Draft PR on gate exhaustion',
+        err instanceof Error ? err : new Error(errorMessage),
+        { jobId: job.jobId, ticketKey: job.ticketKey, gate },
+      );
+      return { error: errorMessage };
+    }
+  }
+
+  /** Appends the Draft PR link (or a failure note) to a gate-exhaustion comment, without disturbing the fixed prefix existing callers/tests match on. */
+  private appendPushResultNote(message: string, pushResult: { pr?: CreatePullRequestResult; error?: string }): string {
+    if (pushResult.pr) {
+      return `${message}\n\nDraft PR: ${pushResult.pr.url}`;
+    }
+    if (pushResult.error) {
+      return `${message}\n\n⚠️ Could not push/open a Draft PR automatically: ${pushResult.error}. Code changes remain in the workspace only — push manually or retry.`;
+    }
+    return message;
   }
 
   /**

@@ -9,6 +9,12 @@ export interface PreflightCleanupResult {
   statusBeforeReset: string;
 }
 
+export interface WorkspaceStatus {
+  hasUncommittedChanges: boolean;
+  /** `git status --short` output (empty string when clean). */
+  statusOutput: string;
+}
+
 export interface IGitService {
   /** workspaceRoot defaults to the global workspace.dir config when omitted (e.g. PR-review jobs, which have no per-project registry entry). Every targetDir must resolve inside it — enforced as a path-escape guard. */
   clone(repoUrl: string, branch: string, targetDir: string, workspaceRoot?: string): Promise<void>;
@@ -25,6 +31,19 @@ export interface IGitService {
    * being discarded, so the loss is auditable, not silent.
    */
   preflightCleanup(targetDir: string, baseBranch: string, workspaceRoot?: string): Promise<PreflightCleanupResult>;
+  /** Current HEAD commit sha of targetDir (`git rev-parse HEAD`) — used to stamp `lastKnownCommitSha` in orchestration-state.json on gate exhaustion (CAF-RETRYPIPELINE-01). */
+  getHeadCommit(targetDir: string): Promise<string>;
+  /**
+   * Read-only `git status --short` check (no fetch, no reset) — CAF-RETRYPIPELINE-01
+   * Task 6 calls this on a retry BEFORE `preflightCleanup`'s destructive reset, so
+   * unexpected uncommitted residue (e.g. a PIV run interrupted mid-write) can be
+   * detected and the retry stopped for human investigation, instead of being
+   * silently discarded the way `preflightCleanup`'s own audited-but-still-destructive
+   * discard behaves for the normal (non-retry) sync path.
+   */
+  getWorkspaceStatus(targetDir: string, workspaceRoot?: string): Promise<WorkspaceStatus>;
+  /** `git diff {fromSha}..{toSha} --stat` — used to compute `manualChangesSinceLastRun` for a retry's resumed agent context (CAF-RETRYPIPELINE-01 Task 6). */
+  diffStat(targetDir: string, fromSha: string, toSha: string, workspaceRoot?: string): Promise<string>;
 }
 
 /**

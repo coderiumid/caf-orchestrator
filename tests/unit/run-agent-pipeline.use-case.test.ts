@@ -1,4 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { IGitService, IWorkspaceManager } from '../../src/domain/interfaces/git.interface.js';
 import type { IAgentRunner, AgentRunResult } from '../../src/domain/interfaces/agent-runner.interface.js';
 import type { ILinearClient } from '../../src/domain/interfaces/linear-client.interface.js';
@@ -39,6 +42,18 @@ vi.mock('../../src/infrastructure/reports/report-reader.js', () => ({
   readQaReport: readQaReportMock,
   readReviewerReport: readReviewerReportMock,
   appendSkipNote: appendSkipNoteMock,
+  taskDir: (workspacePath: string, ticketKey: string) => `${workspacePath}/.caf/tasks/${ticketKey}`,
+}));
+
+const recordGateFailureMock = vi.fn();
+const resetOrchestrationStateMock = vi.fn();
+const readOrchestrationStateMock = vi.fn();
+const incrementOrchestrationRetryCountMock = vi.fn();
+vi.mock('../../src/infrastructure/reports/orchestration-state.js', () => ({
+  recordGateFailure: recordGateFailureMock,
+  resetOrchestrationState: resetOrchestrationStateMock,
+  readOrchestrationState: readOrchestrationStateMock,
+  incrementOrchestrationRetryCount: incrementOrchestrationRetryCountMock,
 }));
 
 // AGENT_SKIP_ENABLED defaults false to match the real schema default — tests
@@ -106,7 +121,21 @@ describe('RunAgentPipelineUseCase', () => {
       createBranch: vi.fn().mockResolvedValue(undefined),
       commitAll: vi.fn().mockResolvedValue(undefined),
       push: vi.fn().mockResolvedValue(undefined),
+      getHeadCommit: vi.fn().mockResolvedValue('deadbeef'),
+      preflightCleanup: vi.fn().mockResolvedValue({
+        hadUncommittedChanges: false,
+        branchBeforeReset: 'main',
+        headCommitBeforeReset: 'deadbeef',
+        statusBeforeReset: '',
+      }),
+      getWorkspaceStatus: vi.fn().mockResolvedValue({ hasUncommittedChanges: false, statusOutput: '' }),
+      diffStat: vi.fn().mockResolvedValue(''),
     };
+
+    recordGateFailureMock.mockResolvedValue(undefined);
+    resetOrchestrationStateMock.mockResolvedValue(undefined);
+    readOrchestrationStateMock.mockResolvedValue(undefined);
+    incrementOrchestrationRetryCountMock.mockResolvedValue(1);
 
     workspaceManager = {
       createWorkspace: vi.fn().mockResolvedValue('/tmp/workspace-1'),
@@ -128,6 +157,8 @@ describe('RunAgentPipelineUseCase', () => {
       replyToReviewComment: vi.fn().mockResolvedValue(undefined),
       postIssueComment: vi.fn().mockResolvedValue(undefined),
       createPullRequestReview: vi.fn().mockResolvedValue({ url: 'https://github.com/ganjardbc/umkm-pos/pull/1#review-1', id: 1 }),
+      findOpenPullRequestByHead: vi.fn().mockResolvedValue(undefined),
+      updatePullRequest: vi.fn().mockResolvedValue({ url: 'https://github.com/ganjardbc/umkm-pos/pull/1', number: 1 }),
     };
 
     notifier = {
@@ -162,6 +193,29 @@ describe('RunAgentPipelineUseCase', () => {
     expect(notifier.notifyPipelineComplete).toHaveBeenCalledTimes(1);
     expect(notifier.notifyPipelineFailed).not.toHaveBeenCalled();
     expect(loggerErrorMock).not.toHaveBeenCalled();
+    expect(resetOrchestrationStateMock).toHaveBeenCalledWith(expect.any(String), 'CAF-123');
+    expect(recordGateFailureMock).not.toHaveBeenCalled();
+  });
+
+  it('CAF-RETRYPIPELINE-01 Task 8 regression: a normal (non-retry) success run never reads/increments orchestration retry state or opens a draft PR', async () => {
+    (agentRunner.run as ReturnType<typeof vi.fn>).mockResolvedValue(makeAgentResult({ exitCode: 0 }));
+
+    const useCase = new RunAgentPipelineUseCase({ gitService, workspaceManager, agentRunner, linearClient, vcsClient, notifier });
+    await useCase.execute(makeJob());
+
+    // orchestration-state.json is only ever read/incremented on the isRetry
+    // path — a normal run must not touch it at all beyond the unconditional
+    // reset-on-success (already asserted above), even indirectly.
+    expect(readOrchestrationStateMock).not.toHaveBeenCalled();
+    expect(incrementOrchestrationRetryCountMock).not.toHaveBeenCalled();
+    expect(gitService.getWorkspaceStatus).not.toHaveBeenCalled();
+    expect(gitService.diffStat).not.toHaveBeenCalled();
+    // The only createPullRequest call is the normal ready-for-review one —
+    // never draft:true, which is exclusive to the gate-exhaustion path.
+    expect(vcsClient.createPullRequest).toHaveBeenCalledTimes(1);
+    expect(vcsClient.createPullRequest).not.toHaveBeenCalledWith(expect.objectContaining({ draft: true }));
+    expect(vcsClient.findOpenPullRequestByHead).not.toHaveBeenCalled();
+    expect(vcsClient.updatePullRequest).not.toHaveBeenCalled();
   });
 
   it('notifies notifyAgentStarted for every agent stage that actually runs (planner, backend, qa, reviewer)', async () => {
@@ -482,12 +536,66 @@ describe('RunAgentPipelineUseCase', () => {
 
     expect(agentRunner.run).not.toHaveBeenCalledWith('caf-qa', expect.anything(), expect.anything());
     expect(readQaReportMock).not.toHaveBeenCalled();
-    expect(gitService.commitAll).not.toHaveBeenCalled();
-    expect(gitService.push).not.toHaveBeenCalled();
+    expect(gitService.commitAll).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.stringContaining('needs human review — implementation gate'),
+      expect.any(String),
+    );
+    expect(gitService.push).toHaveBeenCalledTimes(1);
+    expect(vcsClient.findOpenPullRequestByHead).toHaveBeenCalledTimes(1);
+    expect(vcsClient.createPullRequest).toHaveBeenCalledWith(expect.objectContaining({ draft: true }));
+    expect(vcsClient.updatePullRequest).not.toHaveBeenCalled();
     expect(notifier.notifyPipelineComplete).not.toHaveBeenCalled();
     expect(linearClient.postComment).toHaveBeenCalledWith(
       expect.any(String),
       expect.stringContaining('needs human review'),
+    );
+    expect(linearClient.postComment).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.stringContaining('Draft PR: https://github.com/ganjardbc/umkm-pos/pull/1'),
+    );
+    expect(notifier.notifyPipelineNeedsHuman).toHaveBeenCalledTimes(1);
+    expect(recordGateFailureMock).toHaveBeenCalledWith(expect.any(String), 'CAF-123', 'implementation', 'deadbeef', {
+      ticketTitle: 'Test ticket',
+      ticketDescription: 'Test description',
+    });
+    expect(resetOrchestrationStateMock).not.toHaveBeenCalled();
+  });
+
+  it('updates an already-open Draft PR instead of creating a duplicate on gate exhaustion', async () => {
+    (agentRunner.run as ReturnType<typeof vi.fn>).mockResolvedValue(makeAgentResult({ exitCode: 0 }));
+    readVerifyReportMock.mockResolvedValue({ status: 'NEEDS_HUMAN', raw: 'NEEDS_HUMAN: manual check required' });
+    (vcsClient.findOpenPullRequestByHead as ReturnType<typeof vi.fn>).mockResolvedValue({
+      url: 'https://github.com/ganjardbc/umkm-pos/pull/7',
+      number: 7,
+    });
+    (vcsClient.updatePullRequest as ReturnType<typeof vi.fn>).mockResolvedValue({
+      url: 'https://github.com/ganjardbc/umkm-pos/pull/7',
+      number: 7,
+    });
+
+    const useCase = new RunAgentPipelineUseCase({ gitService, workspaceManager, agentRunner, linearClient, vcsClient, notifier });
+    await useCase.execute(makeJob());
+
+    expect(vcsClient.updatePullRequest).toHaveBeenCalledWith(expect.objectContaining({ prNumber: 7 }));
+    expect(vcsClient.createPullRequest).not.toHaveBeenCalled();
+    expect(linearClient.postComment).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.stringContaining('Draft PR: https://github.com/ganjardbc/umkm-pos/pull/7'),
+    );
+  });
+
+  it('does not throw when push/PR fails on gate exhaustion — notes the failure in the comment instead', async () => {
+    (agentRunner.run as ReturnType<typeof vi.fn>).mockResolvedValue(makeAgentResult({ exitCode: 0 }));
+    readVerifyReportMock.mockResolvedValue({ status: 'NEEDS_HUMAN', raw: 'NEEDS_HUMAN: manual check required' });
+    (gitService.push as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('network unreachable'));
+
+    const useCase = new RunAgentPipelineUseCase({ gitService, workspaceManager, agentRunner, linearClient, vcsClient, notifier });
+    await expect(useCase.execute(makeJob())).resolves.toBeUndefined();
+
+    expect(linearClient.postComment).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.stringContaining('Could not push/open a Draft PR automatically: network unreachable'),
     );
     expect(notifier.notifyPipelineNeedsHuman).toHaveBeenCalledTimes(1);
   });
@@ -559,14 +667,24 @@ describe('RunAgentPipelineUseCase', () => {
     expect(backendCalls).toHaveLength(2);
     expect(qaCalls).toHaveLength(2);
     expect(docsCalls).toHaveLength(0);
-    expect(gitService.commitAll).not.toHaveBeenCalled();
-    expect(gitService.push).not.toHaveBeenCalled();
+    expect(gitService.commitAll).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.stringContaining('needs human review — qa gate'),
+      expect.any(String),
+    );
+    expect(gitService.push).toHaveBeenCalledTimes(1);
+    expect(vcsClient.createPullRequest).toHaveBeenCalledWith(expect.objectContaining({ draft: true }));
     expect(notifier.notifyPipelineComplete).not.toHaveBeenCalled();
     expect(linearClient.postComment).toHaveBeenCalledWith(
       expect.any(String),
       expect.stringContaining('needs human review (QA failed after retry)'),
     );
     expect(notifier.notifyPipelineNeedsHuman).toHaveBeenCalledTimes(1);
+    expect(recordGateFailureMock).toHaveBeenCalledWith(expect.any(String), 'CAF-123', 'qa', 'deadbeef', {
+      ticketTitle: 'Test ticket',
+      ticketDescription: 'Test description',
+    });
+    expect(resetOrchestrationStateMock).not.toHaveBeenCalled();
   });
 
   it('throws when qa-report.md is not produced', async () => {
@@ -663,14 +781,24 @@ describe('RunAgentPipelineUseCase', () => {
     expect(backendCalls).toHaveLength(2);
     expect(qaCalls).toHaveLength(1);
     expect(docsCalls).toHaveLength(0);
-    expect(gitService.commitAll).not.toHaveBeenCalled();
-    expect(gitService.push).not.toHaveBeenCalled();
+    expect(gitService.commitAll).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.stringContaining('needs human review — reviewer gate'),
+      expect.any(String),
+    );
+    expect(gitService.push).toHaveBeenCalledTimes(1);
+    expect(vcsClient.createPullRequest).toHaveBeenCalledWith(expect.objectContaining({ draft: true }));
     expect(notifier.notifyPipelineComplete).not.toHaveBeenCalled();
     expect(linearClient.postComment).toHaveBeenCalledWith(
       expect.any(String),
       expect.stringContaining('needs human review (reviewer requested changes after retry)'),
     );
     expect(notifier.notifyPipelineNeedsHuman).toHaveBeenCalledTimes(1);
+    expect(recordGateFailureMock).toHaveBeenCalledWith(expect.any(String), 'CAF-123', 'reviewer', 'deadbeef', {
+      ticketTitle: 'Test ticket',
+      ticketDescription: 'Test description',
+    });
+    expect(resetOrchestrationStateMock).not.toHaveBeenCalled();
   });
 
   it('throws when review-notes.md is not produced', async () => {
@@ -928,6 +1056,314 @@ describe('RunAgentPipelineUseCase', () => {
       expect(notifier.notifyAgentSkipped).not.toHaveBeenCalled();
       expect(appendSkipNoteMock).not.toHaveBeenCalled();
       expect(gitService.commitAll).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('CAF-RETRYPIPELINE-01 — isRetry job', () => {
+    function makeRetryJob(overrides: Partial<ExistingJobPayload> = {}): ExistingJobPayload {
+      return makeJob({
+        isRetry: true,
+        maxOrchestrationRetries: 2,
+        retryContext: { owner: 'ganjardbc', repo: 'umkm-pos', prNumber: 7 },
+        ...overrides,
+      });
+    }
+
+    it('clones directly onto the existing ai-agent branch and never calls createBranch', async () => {
+      (agentRunner.run as ReturnType<typeof vi.fn>).mockResolvedValue(makeAgentResult({ exitCode: 0 }));
+      readOrchestrationStateMock.mockResolvedValue({
+        orchestrationRetryCount: 0,
+        lastFailedGate: 'qa',
+        lastFailedAt: '2026-01-01T00:00:00.000Z',
+        lastKnownCommitSha: 'sha-1',
+        ticketTitle: 'Stored title',
+        ticketDescription: 'Stored description',
+      });
+
+      const useCase = new RunAgentPipelineUseCase({ gitService, workspaceManager, agentRunner, linearClient, vcsClient, notifier });
+      await useCase.execute(makeRetryJob());
+
+      expect(gitService.clone).toHaveBeenCalledWith(expect.any(String), 'ai-agent/CAF-123', expect.any(String), expect.any(String));
+      expect(gitService.createBranch).not.toHaveBeenCalled();
+      expect(incrementOrchestrationRetryCountMock).toHaveBeenCalledWith(expect.any(String), 'CAF-123');
+    });
+
+    it('rejects with a comment and does not run any agent when no orchestration state exists', async () => {
+      readOrchestrationStateMock.mockResolvedValue(undefined);
+
+      const useCase = new RunAgentPipelineUseCase({ gitService, workspaceManager, agentRunner, linearClient, vcsClient, notifier });
+      await useCase.execute(makeRetryJob());
+
+      expect(agentRunner.run).not.toHaveBeenCalled();
+      expect(incrementOrchestrationRetryCountMock).not.toHaveBeenCalled();
+      expect(vcsClient.postIssueComment).toHaveBeenCalledWith({
+        owner: 'ganjardbc',
+        repo: 'umkm-pos',
+        issueNumber: 7,
+        body: expect.stringContaining('nothing to resume'),
+      });
+    });
+
+    it('rejects with a comment and does not run any agent when orchestrationRetryCount already reached the limit', async () => {
+      readOrchestrationStateMock.mockResolvedValue({
+        orchestrationRetryCount: 2,
+        lastFailedGate: 'qa',
+        lastFailedAt: '2026-01-01T00:00:00.000Z',
+        lastKnownCommitSha: 'sha-1',
+        ticketTitle: 'Stored title',
+        ticketDescription: 'Stored description',
+      });
+
+      const useCase = new RunAgentPipelineUseCase({ gitService, workspaceManager, agentRunner, linearClient, vcsClient, notifier });
+      await useCase.execute(makeRetryJob());
+
+      expect(agentRunner.run).not.toHaveBeenCalled();
+      expect(incrementOrchestrationRetryCountMock).not.toHaveBeenCalled();
+      expect(vcsClient.postIssueComment).toHaveBeenCalledWith({
+        owner: 'ganjardbc',
+        repo: 'umkm-pos',
+        issueNumber: 7,
+        body: expect.stringContaining('Retry limit reached'),
+      });
+    });
+
+    it('proceeds and increments the counter when under the limit, refreshing ticketTitle/ticketDescription from stored state', async () => {
+      (agentRunner.run as ReturnType<typeof vi.fn>).mockResolvedValue(makeAgentResult({ exitCode: 0 }));
+      readOrchestrationStateMock.mockResolvedValue({
+        orchestrationRetryCount: 1,
+        lastFailedGate: 'qa',
+        lastFailedAt: '2026-01-01T00:00:00.000Z',
+        lastKnownCommitSha: 'sha-1',
+        ticketTitle: 'Stored title',
+        ticketDescription: 'Stored description',
+      });
+      incrementOrchestrationRetryCountMock.mockResolvedValue(2);
+
+      const useCase = new RunAgentPipelineUseCase({ gitService, workspaceManager, agentRunner, linearClient, vcsClient, notifier });
+      await useCase.execute(makeRetryJob());
+
+      expect(incrementOrchestrationRetryCountMock).toHaveBeenCalledWith(expect.any(String), 'CAF-123');
+      // Gate-aware resume (Task 6): planner is skipped entirely — tasks.md is
+      // read from the already-synced branch instead.
+      expect(agentRunner.run).not.toHaveBeenCalledWith('caf-planner', expect.anything(), expect.anything(), expect.anything());
+      // ticketTitle/ticketDescription refreshed from stored state surface in
+      // the final PR title (this scenario runs a clean success end-to-end).
+      expect(vcsClient.createPullRequest).toHaveBeenCalledWith(
+        expect.objectContaining({ title: expect.stringContaining('Stored title') }),
+      );
+    });
+
+    it('CAF-RETRYPIPELINE-01 Task 4/5 AC: a /caf-retry-pipeline-shaped job and a Linear-resume-shaped job hit the exact same counter code path (no separate/parallel counters per trigger)', async () => {
+      (agentRunner.run as ReturnType<typeof vi.fn>).mockResolvedValue(makeAgentResult({ exitCode: 0 }));
+      readOrchestrationStateMock.mockResolvedValue({
+        orchestrationRetryCount: 1,
+        lastFailedGate: 'qa',
+        lastFailedAt: '2026-01-01T00:00:00.000Z',
+        lastKnownCommitSha: 'sha-1',
+        ticketTitle: 'Stored title',
+        ticketDescription: 'Stored description',
+      });
+      incrementOrchestrationRetryCountMock.mockResolvedValue(2);
+
+      // Shape enqueued by webhooks.ts's handleRetryPipelineCommand (Task 4).
+      const fromCafRetryPipelineCommand = makeJob({
+        isRetry: true,
+        maxOrchestrationRetries: 2,
+        retryContext: { owner: 'ganjardbc', repo: 'umkm-pos', prNumber: 7 },
+      });
+      // Shape enqueued by the Linear webhook's resume branch (Task 5) — same
+      // fields, same isRetry contract, populated from a different trigger.
+      const fromLinearResume = makeJob({
+        isRetry: true,
+        maxOrchestrationRetries: 2,
+        retryContext: { owner: 'ganjardbc', repo: 'umkm-pos', prNumber: 7 },
+      });
+
+      const useCase = new RunAgentPipelineUseCase({ gitService, workspaceManager, agentRunner, linearClient, vcsClient, notifier });
+      await useCase.execute(fromCafRetryPipelineCommand);
+      await useCase.execute(fromLinearResume);
+
+      expect(incrementOrchestrationRetryCountMock).toHaveBeenCalledTimes(2);
+      const [firstCall, secondCall] = incrementOrchestrationRetryCountMock.mock.calls;
+      // Same function, same argument shape for both trigger origins — proves
+      // there's exactly one counter code path, not two independent ones.
+      expect(firstCall).toEqual(secondCall);
+    });
+
+    it('routes every status comment to the PR (retryContext), not the original ticket', async () => {
+      (agentRunner.run as ReturnType<typeof vi.fn>).mockResolvedValue(makeAgentResult({ exitCode: 0 }));
+      readOrchestrationStateMock.mockResolvedValue({
+        orchestrationRetryCount: 0,
+        lastFailedGate: 'qa',
+        lastFailedAt: '2026-01-01T00:00:00.000Z',
+        lastKnownCommitSha: 'sha-1',
+        ticketTitle: 'Stored title',
+        ticketDescription: 'Stored description',
+      });
+
+      const useCase = new RunAgentPipelineUseCase({ gitService, workspaceManager, agentRunner, linearClient, vcsClient, notifier });
+      await useCase.execute(makeRetryJob());
+
+      expect(linearClient.postComment).not.toHaveBeenCalled();
+      expect(vcsClient.postIssueComment).toHaveBeenCalledWith(
+        expect.objectContaining({ owner: 'ganjardbc', repo: 'umkm-pos', issueNumber: 7 }),
+      );
+    });
+
+    describe('Task 6 — gate-aware resume, manual-change diffing, uncommitted-residue detection', () => {
+      function makeRetryJobWithState(overrides: Partial<ExistingJobPayload> = {}) {
+        return makeJob({
+          isRetry: true,
+          maxOrchestrationRetries: 2,
+          retryContext: { owner: 'ganjardbc', repo: 'umkm-pos', prNumber: 7 },
+          ...overrides,
+        });
+      }
+
+      it.each(['implementation', 'qa', 'reviewer'] as const)(
+        'injects the %s gate\'s own artifact as context and skips the planner',
+        async (gate) => {
+          (agentRunner.run as ReturnType<typeof vi.fn>).mockResolvedValue(makeAgentResult({ exitCode: 0 }));
+          readOrchestrationStateMock.mockResolvedValue({
+            orchestrationRetryCount: 0,
+            lastFailedGate: gate,
+            lastFailedAt: '2026-01-01T00:00:00.000Z',
+            lastKnownCommitSha: 'deadbeef', // matches gitService.getHeadCommit default — no manual-change diff
+            ticketTitle: 'Stored title',
+            ticketDescription: 'Stored description',
+          });
+          readVerifyReportMock.mockResolvedValue({ status: 'SUCCESS', raw: 'VERIFY_ARTIFACT_MARKER' });
+          readQaReportMock.mockResolvedValue({ status: 'PASS', raw: 'QA_ARTIFACT_MARKER' });
+          readReviewerReportMock.mockResolvedValue({ verdict: 'APPROVE', raw: 'REVIEWER_ARTIFACT_MARKER' });
+
+          const useCase = new RunAgentPipelineUseCase({ gitService, workspaceManager, agentRunner, linearClient, vcsClient, notifier });
+          await useCase.execute(makeRetryJobWithState());
+
+          expect(agentRunner.run).not.toHaveBeenCalledWith('caf-planner', expect.anything(), expect.anything(), expect.anything());
+          const marker = { implementation: 'VERIFY_ARTIFACT_MARKER', qa: 'QA_ARTIFACT_MARKER', reviewer: 'REVIEWER_ARTIFACT_MARKER' }[gate];
+          const backendCall = (agentRunner.run as ReturnType<typeof vi.fn>).mock.calls.find((call) => call[0] === 'caf-backend');
+          expect(backendCall?.[2]).toContain(marker);
+          expect(backendCall?.[2]).toContain(`stopped at the ${gate} gate`);
+        },
+      );
+
+      it('defaults to the implementation gate\'s artifact when lastFailedGate is null', async () => {
+        (agentRunner.run as ReturnType<typeof vi.fn>).mockResolvedValue(makeAgentResult({ exitCode: 0 }));
+        readOrchestrationStateMock.mockResolvedValue({
+          orchestrationRetryCount: 0,
+          lastFailedGate: null,
+          lastFailedAt: null,
+          lastKnownCommitSha: null,
+          ticketTitle: 'Stored title',
+          ticketDescription: 'Stored description',
+        });
+        readVerifyReportMock.mockResolvedValue({ status: 'SUCCESS', raw: 'VERIFY_ARTIFACT_MARKER' });
+
+        const useCase = new RunAgentPipelineUseCase({ gitService, workspaceManager, agentRunner, linearClient, vcsClient, notifier });
+        await useCase.execute(makeRetryJobWithState());
+
+        const backendCall = (agentRunner.run as ReturnType<typeof vi.fn>).mock.calls.find((call) => call[0] === 'caf-backend');
+        expect(backendCall?.[2]).toContain('VERIFY_ARTIFACT_MARKER');
+      });
+
+      it('computes and injects a manual-change diff when HEAD moved past lastKnownCommitSha', async () => {
+        (agentRunner.run as ReturnType<typeof vi.fn>).mockResolvedValue(makeAgentResult({ exitCode: 0 }));
+        readOrchestrationStateMock.mockResolvedValue({
+          orchestrationRetryCount: 0,
+          lastFailedGate: 'qa',
+          lastFailedAt: '2026-01-01T00:00:00.000Z',
+          lastKnownCommitSha: 'old-sha',
+          ticketTitle: 'Stored title',
+          ticketDescription: 'Stored description',
+        });
+        (gitService.getHeadCommit as ReturnType<typeof vi.fn>).mockResolvedValue('new-sha');
+        (gitService.diffStat as ReturnType<typeof vi.fn>).mockResolvedValue(' 1 file changed, 2 insertions(+)');
+
+        const useCase = new RunAgentPipelineUseCase({ gitService, workspaceManager, agentRunner, linearClient, vcsClient, notifier });
+        await useCase.execute(makeRetryJobWithState());
+
+        expect(gitService.diffStat).toHaveBeenCalledWith(expect.any(String), 'old-sha', 'new-sha', expect.any(String));
+        const backendCall = (agentRunner.run as ReturnType<typeof vi.fn>).mock.calls.find((call) => call[0] === 'caf-backend');
+        expect(backendCall?.[2]).toContain('Manual changes were made directly to the branch');
+        expect(backendCall?.[2]).toContain('1 file changed, 2 insertions(+)');
+      });
+
+      it('does not compute a manual-change diff when HEAD matches lastKnownCommitSha', async () => {
+        (agentRunner.run as ReturnType<typeof vi.fn>).mockResolvedValue(makeAgentResult({ exitCode: 0 }));
+        readOrchestrationStateMock.mockResolvedValue({
+          orchestrationRetryCount: 0,
+          lastFailedGate: 'qa',
+          lastFailedAt: '2026-01-01T00:00:00.000Z',
+          lastKnownCommitSha: 'deadbeef', // equals gitService.getHeadCommit's default mock
+          ticketTitle: 'Stored title',
+          ticketDescription: 'Stored description',
+        });
+
+        const useCase = new RunAgentPipelineUseCase({ gitService, workspaceManager, agentRunner, linearClient, vcsClient, notifier });
+        await useCase.execute(makeRetryJobWithState());
+
+        expect(gitService.diffStat).not.toHaveBeenCalled();
+        const backendCall = (agentRunner.run as ReturnType<typeof vi.fn>).mock.calls.find((call) => call[0] === 'caf-backend');
+        expect(backendCall?.[2]).not.toContain('Manual changes were made directly');
+      });
+
+      describe('uncommitted-residue detection (existing persistent workspace)', () => {
+        const dirs: string[] = [];
+
+        afterEach(() => {
+          while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true });
+        });
+
+        function makeExistingWorkspace(): string {
+          const dir = mkdtempSync(join(tmpdir(), 'caf-orchestrator-retry-residue-test-'));
+          dirs.push(dir);
+          mkdirSync(join(dir, 'repo', '.git'), { recursive: true });
+          return dir;
+        }
+
+        it('stops the retry without touching the workspace when uncommitted residue is found', async () => {
+          const existingWorkspace = makeExistingWorkspace();
+          (workspaceManager.createWorkspace as ReturnType<typeof vi.fn>).mockResolvedValue(existingWorkspace);
+          (gitService.getWorkspaceStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
+            hasUncommittedChanges: true,
+            statusOutput: ' M some/file.ts',
+          });
+
+          const useCase = new RunAgentPipelineUseCase({ gitService, workspaceManager, agentRunner, linearClient, vcsClient, notifier });
+          await useCase.execute(makeRetryJobWithState());
+
+          expect(gitService.preflightCleanup).not.toHaveBeenCalled();
+          expect(gitService.clone).not.toHaveBeenCalled();
+          expect(agentRunner.run).not.toHaveBeenCalled();
+          expect(incrementOrchestrationRetryCountMock).not.toHaveBeenCalled();
+          expect(vcsClient.postIssueComment).toHaveBeenCalledWith(
+            expect.objectContaining({ body: expect.stringContaining('unexpected uncommitted changes') }),
+          );
+          expect(notifier.notifyPipelineNeedsHuman).toHaveBeenCalledTimes(1);
+        });
+
+        it('proceeds with preflightCleanup (not clone) when the existing workspace is clean', async () => {
+          const existingWorkspace = makeExistingWorkspace();
+          (workspaceManager.createWorkspace as ReturnType<typeof vi.fn>).mockResolvedValue(existingWorkspace);
+          (agentRunner.run as ReturnType<typeof vi.fn>).mockResolvedValue(makeAgentResult({ exitCode: 0 }));
+          readOrchestrationStateMock.mockResolvedValue({
+            orchestrationRetryCount: 0,
+            lastFailedGate: 'qa',
+            lastFailedAt: '2026-01-01T00:00:00.000Z',
+            lastKnownCommitSha: 'deadbeef',
+            ticketTitle: 'Stored title',
+            ticketDescription: 'Stored description',
+          });
+
+          const useCase = new RunAgentPipelineUseCase({ gitService, workspaceManager, agentRunner, linearClient, vcsClient, notifier });
+          await useCase.execute(makeRetryJobWithState());
+
+          expect(gitService.getWorkspaceStatus).toHaveBeenCalledWith(expect.stringContaining('/repo'), expect.any(String));
+          expect(gitService.preflightCleanup).toHaveBeenCalledWith(expect.stringContaining('/repo'), 'ai-agent/CAF-123', expect.any(String));
+          expect(gitService.clone).not.toHaveBeenCalled();
+          expect(incrementOrchestrationRetryCountMock).toHaveBeenCalledTimes(1);
+        });
+      });
     });
   });
 });

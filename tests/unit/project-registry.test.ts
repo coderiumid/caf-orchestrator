@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { ProjectRegistry } from '../../src/config/project-registry.js';
+import { ProjectRegistry, resolveMaxOrchestrationRetries } from '../../src/config/project-registry.js';
 
 const validA = {
   ticketPrefix: 'GAN',
@@ -102,6 +102,25 @@ describe('ProjectRegistry.fromRawProjects', () => {
     expect(() => ProjectRegistry.fromRawProjects({ 'project-a': { ...validA, ticketPrefix: 'GAN-1' } })).toThrow(
       /ticketPrefix/,
     );
+  });
+});
+
+describe('resolveMaxOrchestrationRetries', () => {
+  it('falls back to the global default when a repo has no per-repo override', () => {
+    const registry = ProjectRegistry.fromRawProjects({ 'project-a': validA });
+    const project = registry.getByPrefix('GAN')!;
+    expect(resolveMaxOrchestrationRetries(project, 2)).toBe(2);
+  });
+
+  it('uses each repo\'s own override without leaking into the other', () => {
+    const registry = ProjectRegistry.fromRawProjects({
+      'project-a': { ...validA, orchestration: { maxOrchestrationRetries: 5 } },
+      'project-b': { ...validB, orchestration: { maxOrchestrationRetries: 1 } },
+    });
+    const projectA = registry.getByPrefix('GAN')!;
+    const projectB = registry.getByPrefix('DUM')!;
+    expect(resolveMaxOrchestrationRetries(projectA, 2)).toBe(5);
+    expect(resolveMaxOrchestrationRetries(projectB, 2)).toBe(1);
   });
 });
 

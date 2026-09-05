@@ -19,7 +19,7 @@ import { pipelineQueue } from '../../../infrastructure/queue/client.js';
 import type { ExistingJobPayload, PrReviewCommentContext, PrReviewJobPayload } from '../../../domain/interfaces/queue.interface.js';
 import { checkReviewPermission } from '../../../infrastructure/vcs/github-permission.js';
 import { githubService, parseGithubRepo } from '../../../infrastructure/vcs/github.service.js';
-import type { ProjectConfig } from '../../../config/project-registry.js';
+import { resolveMaxOrchestrationRetries, type ProjectConfig } from '../../../config/project-registry.js';
 
 // Slash-command prefixes that trigger a pr-review job from a general PR
 // comment (`issue_comment`). Checked in this order because
@@ -28,6 +28,10 @@ import type { ProjectConfig } from '../../../config/project-registry.js';
 // any other comment is ignored. See CAF-PRREVIEW-01 Checkpoint B decision log.
 const REVIEW_AGAIN_COMMAND = '/caf-review';
 const FIX_ALL_COMMAND = '/caf-fix-review';
+// CAF-RETRYPIPELINE-01: resumes a gate-exhausted ticket pipeline from its
+// Draft PR. Distinct string from the two above, no prefix collision either
+// direction — order among the three doesn't matter for correctness.
+const RETRY_PIPELINE_COMMAND = '/caf-retry-pipeline';
 
 function splitRepoFullName(fullName: string): { owner: string; repo: string } {
   const [owner, repo] = fullName.split('/');
@@ -67,6 +71,78 @@ async function enqueuePrReview(job: PrReviewJobPayload): Promise<string> {
   return queuedId;
 }
 
+const AI_AGENT_BRANCH_PATTERN = /^ai-agent\/(.+)$/;
+
+/**
+ * `/caf-retry-pipeline` on a Draft PR — resumes a ticket pipeline that
+ * stopped at a gate (CAF-RETRYPIPELINE-01 Task 4). Enforces
+ * `maxOrchestrationRetries` here (permission + prefix/project lookup) so an
+ * over-limit or unrecognized-branch comment gets an immediate, cheap
+ * rejection without spinning up a worker job; the actual counter read/increment
+ * happens once the job clones the repo (`checkAndConsumeRetryBudget` in
+ * run-agent-pipeline.use-case.ts), since orchestration-state.json only exists
+ * inside that clone.
+ */
+async function handleRetryPipelineCommand(payload: GithubIssueCommentPayload, reply: FastifyReply): Promise<FastifyReply> {
+  const { owner, repo } = splitRepoFullName(payload.repository.full_name);
+  const prNumber = payload.issue.number;
+
+  // Same whitelist decision as /caf-review — CAF-RETRYPIPELINE-01
+  // requirements.md explicitly defers a separate whitelist to a future ticket.
+  if (!(await checkReviewPermission(owner, repo, payload.sender.login))) {
+    logger.info('Retry-pipeline trigger rejected: insufficient permission', undefined, { owner, repo, username: payload.sender.login });
+    return reply.status(200).send({ status: 'ignored', reason: 'ok' });
+  }
+
+  if (!config.ENABLE_PIPELINE_TRIGGER) {
+    return reply.status(200).send({ status: 'disabled', reason: 'Pipeline trigger is disabled' });
+  }
+
+  const branch = await githubService.getPullRequestHeadRef(owner, repo, prNumber);
+  const branchMatch = AI_AGENT_BRANCH_PATTERN.exec(branch);
+  if (!branchMatch) {
+    logger.info('Retry-pipeline trigger ignored: PR head branch is not an ai-agent/* branch', undefined, {
+      owner,
+      repo,
+      prNumber,
+      branch,
+    });
+    return reply.status(200).send({ status: 'ignored', reason: 'PR head branch is not an ai-agent/* branch' });
+  }
+  const ticketKey = branchMatch[1];
+
+  const prefix = extractTicketPrefix(ticketKey);
+  const project = prefix ? projectRegistry.getByPrefix(prefix) : undefined;
+  if (!project) {
+    logger.error('Retry-pipeline trigger: no project registered for ticket prefix', undefined, { ticketKey, prefix });
+    return reply.status(200).send({ status: 'ignored', reason: 'No project registered for ticket prefix' });
+  }
+
+  const maxOrchestrationRetries = resolveMaxOrchestrationRetries(project, config.orchestration.maxOrchestrationRetries);
+
+  const jobId = `github-retry-${randomUUID()}`;
+  const jobData: ExistingJobPayload = {
+    jobId,
+    ticketId: ticketKey,
+    ticketKey,
+    // Placeholder — overwritten from orchestration-state.json once the job
+    // clones the repo (checkAndConsumeRetryBudget); a resume trigger carries
+    // no fresh ticket content of its own.
+    ticketTitle: `Retry: ${ticketKey}`,
+    ticketDescription: '',
+    projectConfig: toJobProjectContext(project),
+    isRetry: true,
+    maxOrchestrationRetries,
+    retryContext: { owner, repo, prNumber },
+  };
+
+  const queuedId = await pipelineQueue.addJob('agent-pipeline', jobData as unknown as Record<string, unknown>);
+
+  logger.info('Retry-pipeline trigger enqueued', undefined, { jobId: queuedId, ticketKey, prNumber });
+
+  return reply.status(202).send({ status: 'enqueued', jobId: queuedId });
+}
+
 async function handleIssueComment(payload: GithubIssueCommentPayload, reply: FastifyReply): Promise<FastifyReply> {
   // Anti-self-trigger guard, checked before anything else (including
   // slash-command matching): this route itself posts summary comments back
@@ -94,6 +170,11 @@ async function handleIssueComment(payload: GithubIssueCommentPayload, reply: Fas
   }
 
   const body = payload.comment.body.trim();
+
+  if (body.startsWith(RETRY_PIPELINE_COMMAND)) {
+    return handleRetryPipelineCommand(payload, reply);
+  }
+
   const mode = body.startsWith(FIX_ALL_COMMAND) ? 'global' : body.startsWith(REVIEW_AGAIN_COMMAND) ? 'initial' : undefined;
   if (!mode) {
     return reply.status(200).send({ status: 'ignored', reason: 'Comment does not start with a recognized slash command' });
@@ -316,6 +397,46 @@ export async function webhookRoutes(app: FastifyInstance): Promise<void> {
         prefix,
       });
       return reply.status(200).send({ status: 'ignored', reason: 'No project registered for ticket prefix' });
+    }
+
+    // CAF-RETRYPIPELINE-01 Task 5: a ticket re-entering "Ready for AI" whose
+    // ai-agent/{ticketKey} branch already exists (from an earlier gate
+    // exhaustion) is a resume, not a new ticket — route it through the exact
+    // same isRetry/retryContext/checkAndConsumeRetryBudget path as Task 4's
+    // /caf-retry-pipeline, sharing its counter and its NOT-gate-aware
+    // (full-restart) resume behavior. See CLAUDE.md's "/caf-retry-pipeline
+    // resume" section.
+    const { owner: ghOwner, repo: ghRepo } = parseGithubRepo(projectConfig.repoCloneUrl);
+    const retryBranch = `ai-agent/${payload.data.identifier}`;
+    const isResume = await githubService.branchExists(ghOwner, ghRepo, retryBranch);
+
+    if (isResume) {
+      const openPr = await githubService.findOpenPullRequestByHead({ owner: ghOwner, repo: ghRepo, head: retryBranch });
+      const maxOrchestrationRetries = resolveMaxOrchestrationRetries(projectConfig, config.orchestration.maxOrchestrationRetries);
+
+      const resumeJobId = `linear-retry-${randomUUID()}`;
+      const resumeJobData: ExistingJobPayload = {
+        jobId: resumeJobId,
+        ticketId: payload.data.id,
+        ticketKey: payload.data.identifier,
+        ticketTitle: payload.data.title,
+        ticketDescription: payload.data.description ?? '',
+        projectConfig: toJobProjectContext(projectConfig),
+        isRetry: true,
+        maxOrchestrationRetries,
+        retryContext: openPr ? { owner: ghOwner, repo: ghRepo, prNumber: openPr.number } : undefined,
+      };
+
+      const queuedResumeId = await pipelineQueue.addJob('agent-pipeline', resumeJobData as unknown as Record<string, unknown>);
+
+      logger.info('Linear ticket re-entered Ready for AI on an existing branch — resuming', undefined, {
+        jobId: queuedResumeId,
+        ticketKey: payload.data.identifier,
+        branch: retryBranch,
+        hasOpenPr: !!openPr,
+      });
+
+      return reply.status(202).send({ status: 'enqueued', jobId: queuedResumeId });
     }
 
     const jobId = `linear-${randomUUID()}`;

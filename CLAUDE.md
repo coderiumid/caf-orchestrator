@@ -41,13 +41,35 @@ Clean/hexagonal layering under `src/`:
 2. Run `planner` agent → must produce `.ai/tasks/<TICKET-KEY>/tasks.md`.
 3. `task-router.ts` parses `tasks.md` for `## Frontend Tasks` / `## Backend Tasks` headers to decide which implementation agent(s) run (order: frontend, then backend).
 4. Run implementation agent(s) against their section of `tasks.md`.
-5. Read `.ai/tasks/<TICKET-KEY>/verify-report.md` — if status is `NEEDS_HUMAN`, stop and comment on the ticket.
-6. Run `qa` agent → produces `qa-report.md`. On `FAIL`, retry implementation once (`MAX_QA_RETRIES = 1`), then stop-and-comment if still failing.
-7. Run `reviewer` agent → produces `review-notes.md` with a `Verdict:` line (`APPROVE` / `CHANGES_REQUESTED` / `DEFER`). On `CHANGES_REQUESTED`, retry implementation once (`MAX_REVIEWER_RETRIES = 1`), then stop-and-comment if still requested.
+5. Read `.ai/tasks/<TICKET-KEY>/verify-report.md` — if status is `NEEDS_HUMAN`, push + open (or update) a **Draft PR** and stop-and-comment on the ticket (CAF-RETRYPIPELINE-01).
+6. Run `qa` agent → produces `qa-report.md`. On `FAIL`, retry implementation once (`MAX_QA_RETRIES = 1`), then push + open/update a Draft PR and stop-and-comment if still failing.
+7. Run `reviewer` agent → produces `review-notes.md` with a `Verdict:` line (`APPROVE` / `CHANGES_REQUESTED` / `DEFER`). On `CHANGES_REQUESTED`, retry implementation once (`MAX_REVIEWER_RETRIES = 1`), then push + open/update a Draft PR and stop-and-comment if still requested.
 8. If `## Docs Tasks` section has real content (see `hasDocsTasks`), run `documentation` agent. **Docs failures never fail the job** — caught and reduced to a note, since a docs error would otherwise trigger a full BullMQ job retry of the whole pipeline.
 9. Commit all, push branch, **create a GitHub PR** via `IVcsClient.createPullRequest`, then post final comment to Linear ticket with the PR URL + QA + reviewer report bodies.
 
 Every stage's stop conditions are gates that **return early** (not throw) to end the job cleanly with a human-review comment; unexpected agent crashes/timeouts throw and let BullMQ's retry policy handle it.
+
+### Gate-exhaustion Draft PR (CAF-RETRYPIPELINE-01)
+
+Steps 5-7's `NEEDS_HUMAN` gates never leave work stranded in the workspace only: before posting the human-facing comment, `pushAndOpenGatePr()` commits + pushes the branch, then opens a **Draft PR** (`createPullRequest({ draft: true })`) or, if one is already open on this branch (`findOpenPullRequestByHead`), updates its description instead (`updatePullRequest`) rather than creating a duplicate. The PR body reformats whichever artifact the failing gate already produced (`verify-report.md`/`qa-report.md`/`review-notes.md`) — no new text generated, same report-contract convention as everywhere else. This push+PR step deliberately never throws: a GitHub/git failure here is logged and noted in the comment ("Could not push/open a Draft PR automatically: ..."), but the gate's `return` contract is preserved — a push failure must not turn into a BullMQ retry.
+
+### `/caf-retry-pipeline` resume (CAF-RETRYPIPELINE-01)
+
+Two trigger paths converge on the exact same resume mechanism — neither implements its own counter or resume logic:
+
+1. A comment starting with `/caf-retry-pipeline` on one of these Draft PRs (`routes/webhooks.ts`'s `handleRetryPipelineCommand`).
+2. A Linear ticket flipping back to "Ready for AI" on a branch that already exists (`/webhooks/linear`'s handler: before treating it as a new ticket, `githubService.branchExists(owner, repo, "ai-agent/<TICKET-KEY>")` checks first; if true, it resolves the open PR via `findOpenPullRequestByHead` — which may be `undefined` if the branch exists but no PR was ever opened — and takes the resume branch instead of the new-ticket branch).
+
+Both paths resolve `maxOrchestrationRetries` at trigger time (per-repo override in `projects.<name>.orchestration.maxOrchestrationRetries` falling back to the global `orchestration.maxOrchestrationRetries`, via `resolveMaxOrchestrationRetries()`, `config/schema.ts`) and enqueue an identically-shaped `agent-pipeline` job: `isRetry: true`, `maxOrchestrationRetries`, and `retryContext` (owner/repo/prNumber) when a PR is known — `undefined` otherwise, in which case comments fall back to normal `ticketSource`-based routing (the Linear path only, since `/caf-retry-pipeline` always has a PR by construction).
+
+On the worker side, `execute()` branches on `job.isRetry`. For an **existing persistent-mode checkout** (`existsSync(repoPath/.git)`), it first runs `gitService.getWorkspaceStatus()` — a read-only `git status --short`, no fetch/reset — **before** touching anything: unexpected uncommitted residue there (e.g. a PIV run interrupted mid-write) stops the pipeline immediately with an explicit comment (including the raw `git status` output) and does **not** run `preflightCleanup`'s destructive reset, unlike the normal (non-retry) sync path, which logs-and-discards. Only once the workspace is confirmed clean (or is a fresh ephemeral clone, which has no prior state to check) does it sync onto the **existing** `ai-agent/<TICKET-KEY>` branch (`preflightCleanup`/`clone` against that branch, never `createBranch`).
+
+`checkAndConsumeRetryBudget()` then reads `orchestration-state.json` — rejects with an explicit comment (no agents run) if no state exists or `orchestrationRetryCount` has already reached the limit, otherwise increments the shared counter, refreshes `ticketTitle`/`ticketDescription` from the stored state (a resume trigger carries no fresh ticket content of its own), and returns the state itself for the two gate-aware steps that follow:
+
+- **Manual-change diff**: the just-synced HEAD is compared to the state's `lastKnownCommitSha` (the commit at the moment the gate failed). If they differ — a human committed to the branch in between — `gitService.diffStat()` computes a `--stat` diff, which is injected as context for the resumed agent (never a stop condition; only *uncommitted* residue, checked above, stops the pipeline).
+- **Gate-aware resume**: the planner is skipped entirely. `state.lastFailedGate` (`implementation`/`qa`/`reviewer`) selects which artifact to read back (`verify-report.md`/`qa-report.md`/`review-notes.md` via the same readers `report-reader.ts` already exposes) and inject as context, and `tasks.md` is read directly from the already-synced branch instead of being freshly generated. Every `lastFailedGate` value converges on the exact same action — re-run the implementation agent(s) with that gate's artifact as context, then continue through the normal tail (verify-report check → QA gate+retry loop → reviewer gate+retry loop → docs → commit/push/PR) — because that tail is shared code (`runPipelineFromImplementation()`) between the normal path and every resume path, not a duplicated copy per gate.
+
+When `retryContext` is set, every status comment for the run — including the eventual success comment — goes to that PR instead of back to the original Linear ticket/GitHub issue, since that's what the human is actually watching.
 
 ### Dynamic agent skip (`AGENT_SKIP_ENABLED`)
 

@@ -16,6 +16,7 @@ const configMock = {
     cloneUrl: 'git@github.com:ganjardbc/umkm-pos.git',
     baseBranch: 'main',
   },
+  orchestration: { maxOrchestrationRetries: 2 },
   dashboard: { enabled: false },
 };
 
@@ -25,6 +26,7 @@ const umkmPosProject = {
   baseBranch: 'main',
   workspaceDir: '/tmp/caf-orchestrator/workspace/umkm-pos',
   agents: { modelOverrides: {} },
+  orchestration: {},
 };
 
 const projectRegistryMock = {
@@ -33,6 +35,8 @@ const projectRegistryMock = {
 
 const addJobMock = vi.fn().mockResolvedValue('job-1');
 const claimDeliveryMock = vi.fn().mockResolvedValue(true);
+const branchExistsMock = vi.fn().mockResolvedValue(false);
+const findOpenPullRequestByHeadMock = vi.fn().mockResolvedValue(undefined);
 
 vi.mock('../../src/config/index.js', () => ({
   get config() {
@@ -51,6 +55,19 @@ vi.mock('../../src/infrastructure/queue/client.js', () => ({
 vi.mock('../../src/infrastructure/linear/delivery-dedupe.js', () => ({
   claimDelivery: claimDeliveryMock,
 }));
+
+// CAF-RETRYPIPELINE-01 Task 5: real parseGithubRepo (pure regex parse) kept
+// via importOriginal, only githubService's network-calling methods mocked.
+vi.mock('../../src/infrastructure/vcs/github.service.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/infrastructure/vcs/github.service.js')>();
+  return {
+    ...actual,
+    githubService: {
+      branchExists: branchExistsMock,
+      findOpenPullRequestByHead: findOpenPullRequestByHeadMock,
+    },
+  };
+});
 
 function signBody(rawBody: string, secret: string = SECRET): string {
   return createHmac('sha256', secret).update(rawBody).digest('hex');
@@ -98,6 +115,8 @@ describe('webhook ticket-prefix routing', () => {
     vi.clearAllMocks();
     addJobMock.mockResolvedValue('job-1');
     claimDeliveryMock.mockResolvedValue(true);
+    branchExistsMock.mockResolvedValue(false);
+    findOpenPullRequestByHeadMock.mockResolvedValue(undefined);
     projectRegistryMock.getByPrefix.mockImplementation((prefix: string) =>
       prefix === 'GAN' ? umkmPosProject : undefined,
     );
@@ -164,5 +183,56 @@ describe('webhook ticket-prefix routing', () => {
     expect(response.statusCode).toBe(200);
     expect(addJobMock).not.toHaveBeenCalled();
     expect(projectRegistryMock.getByPrefix).not.toHaveBeenCalled();
+  });
+
+  describe('CAF-RETRYPIPELINE-01 Task 5 — resume on existing ai-agent branch', () => {
+    it('enqueues a resume job (isRetry + retryContext with the open PR) when the branch already exists', async () => {
+      branchExistsMock.mockResolvedValue(true);
+      findOpenPullRequestByHeadMock.mockResolvedValue({ url: 'https://github.com/ganjardbc/umkm-pos/pull/9', number: 9 });
+
+      const response = await inject(buildPayload('GAN-99'));
+
+      expect(response.statusCode).toBe(202);
+      expect(branchExistsMock).toHaveBeenCalledWith('ganjardbc', 'umkm-pos', 'ai-agent/GAN-99');
+      const [, jobData] = addJobMock.mock.calls[0] as [string, Record<string, unknown>];
+      expect(jobData.isRetry).toBe(true);
+      expect(jobData.maxOrchestrationRetries).toBe(2);
+      expect(jobData.retryContext).toEqual({ owner: 'ganjardbc', repo: 'umkm-pos', prNumber: 9 });
+    });
+
+    it('enqueues a resume job with retryContext undefined when the branch exists but no open PR is found', async () => {
+      branchExistsMock.mockResolvedValue(true);
+      findOpenPullRequestByHeadMock.mockResolvedValue(undefined);
+
+      const response = await inject(buildPayload('GAN-99'));
+
+      expect(response.statusCode).toBe(202);
+      const [, jobData] = addJobMock.mock.calls[0] as [string, Record<string, unknown>];
+      expect(jobData.isRetry).toBe(true);
+      expect(jobData.retryContext).toBeUndefined();
+    });
+
+    it('uses the per-repo maxOrchestrationRetries override when resuming', async () => {
+      branchExistsMock.mockResolvedValue(true);
+      projectRegistryMock.getByPrefix.mockReturnValue({ ...umkmPosProject, orchestration: { maxOrchestrationRetries: 7 } });
+
+      const response = await inject(buildPayload('GAN-99'));
+
+      expect(response.statusCode).toBe(202);
+      const [, jobData] = addJobMock.mock.calls[0] as [string, Record<string, unknown>];
+      expect(jobData.maxOrchestrationRetries).toBe(7);
+    });
+
+    it('does not create a new branch/job shape when no ai-agent branch exists (regression: normal new-ticket flow unaffected)', async () => {
+      branchExistsMock.mockResolvedValue(false);
+
+      const response = await inject(buildPayload('GAN-99'));
+
+      expect(response.statusCode).toBe(202);
+      const [, jobData] = addJobMock.mock.calls[0] as [string, Record<string, unknown>];
+      expect(jobData.isRetry).toBeUndefined();
+      expect(jobData.retryContext).toBeUndefined();
+      expect(findOpenPullRequestByHeadMock).not.toHaveBeenCalled();
+    });
   });
 });

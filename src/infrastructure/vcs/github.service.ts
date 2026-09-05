@@ -6,6 +6,8 @@ import type {
   PostIssueCommentInput,
   CreatePullRequestReviewInput,
   CreatePullRequestReviewResult,
+  FindPullRequestByHeadInput,
+  UpdatePullRequestInput,
 } from '../../domain/interfaces/vcs-client.interface.js';
 import { GithubApiError, SelfReviewRejectedError } from '../../domain/errors/app-errors.js';
 import { config } from '../../config/index.js';
@@ -92,7 +94,7 @@ async function githubGet<T>(path: string): Promise<T> {
 
 export class GithubService implements IVcsClient {
   async createPullRequest(input: CreatePullRequestInput): Promise<CreatePullRequestResult> {
-    const { owner, repo, head, base, title, body } = input;
+    const { owner, repo, head, base, title, body, draft } = input;
 
     const res = await fetch(`${config.github.apiUrl}/repos/${owner}/${repo}/pulls`, {
       method: 'POST',
@@ -101,7 +103,7 @@ export class GithubService implements IVcsClient {
         Accept: 'application/vnd.github+json',
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ title, head, base, body }),
+      body: JSON.stringify({ title, head, base, body, draft: draft ?? false }),
     });
 
     if (!res.ok) {
@@ -110,7 +112,49 @@ export class GithubService implements IVcsClient {
     }
 
     const json = (await res.json()) as GithubPullRequestResponse;
-    logger.info('Created GitHub pull request', undefined, { owner, repo, prNumber: json.number });
+    logger.info('Created GitHub pull request', undefined, { owner, repo, prNumber: json.number, draft: draft ?? false });
+
+    return { url: json.html_url, number: json.number };
+  }
+
+  // CAF-RETRYPIPELINE-01: GET /pulls?head=owner:branch — head must be
+  // "owner:branch" per GitHub's REST filter contract, not just the branch
+  // name, or the filter silently matches nothing. state=open only: a
+  // previously closed/merged PR on this branch name should not block opening
+  // a fresh one.
+  async findOpenPullRequestByHead(input: FindPullRequestByHeadInput): Promise<CreatePullRequestResult | undefined> {
+    const { owner, repo, head } = input;
+    const json = await githubGet<GithubPullRequestResponse[]>(
+      `/repos/${owner}/${repo}/pulls?head=${encodeURIComponent(`${owner}:${head}`)}&state=open`,
+    );
+    const [pr] = json;
+    return pr ? { url: pr.html_url, number: pr.number } : undefined;
+  }
+
+  // CAF-RETRYPIPELINE-01: re-run of an already-open gate-exhaustion PR
+  // (e.g. QA fails again after a prior implementation-gate exhaustion already
+  // opened the draft) updates the existing PR's description instead of
+  // opening a duplicate.
+  async updatePullRequest(input: UpdatePullRequestInput): Promise<CreatePullRequestResult> {
+    const { owner, repo, prNumber, body } = input;
+
+    const res = await fetch(`${config.github.apiUrl}/repos/${owner}/${repo}/pulls/${prNumber}`, {
+      method: 'PATCH',
+      headers: {
+        Authorization: `Bearer ${config.GITHUB_TOKEN}`,
+        Accept: 'application/vnd.github+json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ body }),
+    });
+
+    if (!res.ok) {
+      const responseBody = await res.text();
+      throw new GithubApiError(`GitHub API request failed (${res.status}): ${responseBody}`);
+    }
+
+    const json = (await res.json()) as GithubPullRequestResponse;
+    logger.info('Updated GitHub pull request', undefined, { owner, repo, prNumber });
 
     return { url: json.html_url, number: json.number };
   }
@@ -204,6 +248,27 @@ export class GithubService implements IVcsClient {
   async getPullRequestHeadRef(owner: string, repo: string, prNumber: number): Promise<string> {
     const json = await githubGet<GithubPullRequestDetailResponse>(`/repos/${owner}/${repo}/pulls/${prNumber}`);
     return json.head.ref;
+  }
+
+  // CAF-RETRYPIPELINE-01 Task 5: the Linear webhook checks this before
+  // treating a "Ready for AI" transition as a brand-new ticket — a 404 means
+  // no branch, a genuinely new ticket; 200 means resume instead. GET
+  // /repos/{owner}/{repo}/branches/{branch} rather than githubGet() (which
+  // throws on any non-2xx) since a 404 here is an expected, meaningful
+  // answer, not an error.
+  async branchExists(owner: string, repo: string, branch: string): Promise<boolean> {
+    const res = await fetch(`${config.github.apiUrl}/repos/${owner}/${repo}/branches/${encodeURIComponent(branch)}`, {
+      headers: {
+        Authorization: `Bearer ${config.GITHUB_TOKEN}`,
+        Accept: 'application/vnd.github+json',
+      },
+    });
+    if (res.status === 404) return false;
+    if (!res.ok) {
+      const responseBody = await res.text();
+      throw new GithubApiError(`GitHub API request failed (${res.status}): ${responseBody}`);
+    }
+    return true;
   }
 
   // Inline (per-line) review comments — the only comment type that can anchor

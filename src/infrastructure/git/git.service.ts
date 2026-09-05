@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { resolve } from 'node:path';
-import type { IGitService, PreflightCleanupResult } from '../../domain/interfaces/git.interface.js';
+import type { IGitService, PreflightCleanupResult, WorkspaceStatus } from '../../domain/interfaces/git.interface.js';
 import { config } from '../../config/index.js';
 import { GitError, ValidationError } from '../../domain/errors/app-errors.js';
 import { logger } from '../logging/logger.js';
@@ -149,5 +149,20 @@ export class GitService implements IGitService {
     logger.info('Preflight cleanup complete', undefined, { targetDir, baseBranch, hadUncommittedChanges });
 
     return { hadUncommittedChanges, branchBeforeReset, headCommitBeforeReset, statusBeforeReset };
+  }
+
+  async getHeadCommit(targetDir: string): Promise<string> {
+    return (await runGit(['rev-parse', 'HEAD'], targetDir)).trim();
+  }
+
+  async getWorkspaceStatus(targetDir: string, workspaceRoot?: string): Promise<WorkspaceStatus> {
+    assertInsideWorkspace(targetDir, workspaceRoot);
+    const statusOutput = (await runGit(['status', '--short'], targetDir)).trim();
+    return { hasUncommittedChanges: statusOutput.length > 0, statusOutput };
+  }
+
+  async diffStat(targetDir: string, fromSha: string, toSha: string, workspaceRoot?: string): Promise<string> {
+    assertInsideWorkspace(targetDir, workspaceRoot);
+    return (await runGit(['diff', `${fromSha}..${toSha}`, '--stat'], targetDir)).trim();
   }
 }

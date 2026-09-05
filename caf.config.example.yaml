@@ -57,6 +57,12 @@ projects:
     workspaceDir: /tmp/caf-orchestrator/workspace/your-project
     agents:
       modelOverrides: {}
+    # Optional per-repo override of orchestration.maxOrchestrationRetries
+    # (below) — how many cross-invocation retries this repo's tickets get
+    # before the pipeline stops offering automatic retry. Omit to use the
+    # global default.
+    # orchestration:
+    #   maxOrchestrationRetries: 3
 
 queue:
   jobTtlSeconds: 86400
@@ -66,6 +72,14 @@ queue:
   backoffDelayMs: 10000
   # Concurrent Claude Code agent processes per worker.
   workerConcurrency: 1
+
+# Global fallback for repo entries above that don't set their own
+# orchestration.maxOrchestrationRetries — caps cross-invocation pipeline
+# retries (e.g. via /caf-retry-pipeline) before automatic retry stops being
+# offered. Distinct from agents.qa/reviewer maxRetries below, which are
+# per-invocation gate retries reset on every orchestrator run.
+orchestration:
+  maxOrchestrationRetries: 2
 
 agents:
   # Pipeline gate retries: how many times to re-run implementation agents

@@ -5,11 +5,27 @@ export interface CreatePullRequestInput {
   base: string;
   title: string;
   body: string;
+  // Opens the PR in draft state (CAF-RETRYPIPELINE-01 gate-exhaustion path) —
+  // omitted/false keeps the pre-existing ready-for-review behavior.
+  draft?: boolean;
 }
 
 export interface CreatePullRequestResult {
   url: string;
   number: number;
+}
+
+export interface FindPullRequestByHeadInput {
+  owner: string;
+  repo: string;
+  head: string;
+}
+
+export interface UpdatePullRequestInput {
+  owner: string;
+  repo: string;
+  prNumber: number;
+  body: string;
 }
 
 export interface ReplyToReviewCommentInput {
@@ -54,4 +70,9 @@ export interface IVcsClient {
   // class's doc comment. Any other failure (including other 422 causes)
   // throws GithubApiError as usual.
   createPullRequestReview(input: CreatePullRequestReviewInput): Promise<CreatePullRequestReviewResult>;
+  // CAF-RETRYPIPELINE-01: lets a gate-exhaustion push check for an already-open
+  // PR on this branch (e.g. from an earlier gate's exhaustion in a prior run)
+  // before opening a new one — undefined when none is open.
+  findOpenPullRequestByHead(input: FindPullRequestByHeadInput): Promise<CreatePullRequestResult | undefined>;
+  updatePullRequest(input: UpdatePullRequestInput): Promise<CreatePullRequestResult>;
 }
