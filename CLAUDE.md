@@ -41,13 +41,17 @@ Clean/hexagonal layering under `src/`:
 2. Run `planner` agent → must produce `.ai/tasks/<TICKET-KEY>/tasks.md`.
 3. `task-router.ts` parses `tasks.md` for `## Frontend Tasks` / `## Backend Tasks` headers to decide which implementation agent(s) run (order: frontend, then backend).
 4. Run implementation agent(s) against their section of `tasks.md`.
-5. Read `.ai/tasks/<TICKET-KEY>/verify-report.md` — if status is `NEEDS_HUMAN`, stop and comment on the ticket.
-6. Run `qa` agent → produces `qa-report.md`. On `FAIL`, retry implementation once (`MAX_QA_RETRIES = 1`), then stop-and-comment if still failing.
-7. Run `reviewer` agent → produces `review-notes.md` with a `Verdict:` line (`APPROVE` / `CHANGES_REQUESTED` / `DEFER`). On `CHANGES_REQUESTED`, retry implementation once (`MAX_REVIEWER_RETRIES = 1`), then stop-and-comment if still requested.
+5. Read `.ai/tasks/<TICKET-KEY>/verify-report.md` — if status is `NEEDS_HUMAN`, push + open (or update) a **Draft PR** and stop-and-comment on the ticket (CAF-RETRYPIPELINE-01).
+6. Run `qa` agent → produces `qa-report.md`. On `FAIL`, retry implementation once (`MAX_QA_RETRIES = 1`), then push + open/update a Draft PR and stop-and-comment if still failing.
+7. Run `reviewer` agent → produces `review-notes.md` with a `Verdict:` line (`APPROVE` / `CHANGES_REQUESTED` / `DEFER`). On `CHANGES_REQUESTED`, retry implementation once (`MAX_REVIEWER_RETRIES = 1`), then push + open/update a Draft PR and stop-and-comment if still requested.
 8. If `## Docs Tasks` section has real content (see `hasDocsTasks`), run `documentation` agent. **Docs failures never fail the job** — caught and reduced to a note, since a docs error would otherwise trigger a full BullMQ job retry of the whole pipeline.
 9. Commit all, push branch, **create a GitHub PR** via `IVcsClient.createPullRequest`, then post final comment to Linear ticket with the PR URL + QA + reviewer report bodies.
 
 Every stage's stop conditions are gates that **return early** (not throw) to end the job cleanly with a human-review comment; unexpected agent crashes/timeouts throw and let BullMQ's retry policy handle it.
+
+### Gate-exhaustion Draft PR (CAF-RETRYPIPELINE-01)
+
+Steps 5-7's `NEEDS_HUMAN` gates never leave work stranded in the workspace only: before posting the human-facing comment, `pushAndOpenGatePr()` commits + pushes the branch, then opens a **Draft PR** (`createPullRequest({ draft: true })`) or, if one is already open on this branch (`findOpenPullRequestByHead`), updates its description instead (`updatePullRequest`) rather than creating a duplicate. The PR body reformats whichever artifact the failing gate already produced (`verify-report.md`/`qa-report.md`/`review-notes.md`) — no new text generated, same report-contract convention as everywhere else. This push+PR step deliberately never throws: a GitHub/git failure here is logged and noted in the comment ("Could not push/open a Draft PR automatically: ..."), but the gate's `return` contract is preserved — a push failure must not turn into a BullMQ retry.
 
 ### Dynamic agent skip (`AGENT_SKIP_ENABLED`)
 
