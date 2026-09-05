@@ -1,11 +1,12 @@
 ## Ticket: CAF-RETRYPIPELINE-01
-## Status: NEEDS_HUMAN (Task 1, 2, 4, 5 SUCCESS; Task 3 code done but live umkm-pos verify pending)
+## Status: NEEDS_HUMAN (Task 1, 2, 4, 5, 6 SUCCESS at unit-test level; Task 3 code done but live umkm-pos verify pending)
 
 ## Scope
-Task 1 + Task 2 + Task 3 + Task 4 + Task 5. The gate-aware parts of Task 6 (skip-to-failed-
-gate resume, manual-change diffing, uncommitted-residue detection) are NOT implemented —
-both retry entry points share a full-restart-from-`caf-planner` resume, not a gate-aware
-one. Not started/committed further than these five tasks per instructions.
+Task 1 through Task 6 — all 6 tasks in `.ai/tasks/CAF-RETRYPIPELINE-01/tasks.md`. Task 7
+(grep-audit-final) and Task 8 (regression test pass over the full suite) not yet done as
+their own explicit checkpoints, though Task 8's core claim (full-success pipeline
+unaffected) is continuously covered by the pre-existing test suite staying green throughout
+every task in this session.
 
 **Task 3 checkpoint (per `tasks.md`'s own instruction):** "Task 3 (push+PR) sebaiknya
 diverifikasi end-to-end di `umkm-pos` dulu sebelum lanjut ke Task 4-6." Unit-level
@@ -608,3 +609,178 @@ it's called out here rather than hidden inside "design decisions."
 - Did not touch `qaRetryCount`/`reviewerRetryCount`, `caf-pr-review` (`/caf-review`,
   `/caf-fix-review`), or any whitelist/permission logic beyond reusing
   `checkReviewPermission` as-is — confirmed via `git diff --stat`.
+
+---
+
+# Task 6 — Shared resume handler (gate-aware + deteksi perubahan manual)
+
+## Attempt Log
+- Attempt 1: PASS at unit-test level on first pass, but required a substantial refactor of
+  `execute()`'s control flow (see below) — higher-risk change than any prior task in this
+  ticket, mitigated by running the full pre-existing test suite after each structural step
+  rather than only at the end.
+
+## Design decisions — the big one: control-flow refactor
+Task 6 needs the resumed run to jump straight to "re-run implementation with prior-gate
+context," skipping the planner and `tasks.md` generation entirely. The normal pipeline body
+(route tasks → implementation → verify-report check → QA gate+retry → reviewer gate+retry →
+docs → commit/push/PR) previously lived inline in `execute()`, reachable only by first
+running the planner. Two ways to make it reachable from a second entry point: duplicate that
+~250-line body into a second method (drifts over time, doubles the maintenance surface for
+every future bug fix), or extract it once and give both paths a single entry.
+
+Chose extraction: `runPipelineFromImplementation(job, repoPath, branch, workspaceRoot,
+jobStart, tasksMarkdown, extraContext?)` now holds that entire body, parameterized on
+`tasksMarkdown` (planner-produced, or read from disk on resume) and an optional
+`extraContext` string appended to `implementationPrompt`. `execute()` becomes: workspace
+setup → (retry sync + gate-aware context prep) OR (normal sync + planner run) → one call to
+`runPipelineFromImplementation`. This means the normal (non-retry) success/QA-fail/
+reviewer-fail paths run through **the exact same code** as before the refactor — nothing
+about their logic changed, only where it physically lives — which is why the full
+pre-existing test suite (unmodified assertions on `commitAll`/`push`/`createPullRequest`/
+gate-exhaustion behavior) staying green is meaningful regression coverage here, not just a
+formality.
+
+## Design decisions — the three sub-behaviors
+- **Uncommitted-residue detection runs BEFORE `preflightCleanup`, only for `isRetry` +
+  an existing checkout.** New `IGitService.getWorkspaceStatus()` — read-only
+  `git status --short`, no fetch, no reset — lets the retry path peek at dirtiness without
+  triggering `preflightCleanup`'s own fetch+reset. If dirty: post an explicit comment
+  (including the raw `git status` output) and `return` immediately, without calling
+  `preflightCleanup`/`clone`/`checkAndConsumeRetryBudget`/any agent at all — the workspace is
+  left completely untouched for manual investigation, per the task's explicit "jangan lanjut
+  otomatis" requirement. The pre-existing non-retry `preflightCleanup` path is UNCHANGED —
+  it still logs-and-discards uncommitted state exactly as CAF-WSMODE-01 designed it; Task 6
+  only adds the stricter stop behavior to the new retry path, since retry uniquely risks
+  discarding an interrupted-but-real prior attempt's work.
+- **Manual-change diff is computed AFTER the sync, not before**, by comparing post-sync
+  `getHeadCommit()` to `state.lastKnownCommitSha` — behaviorally identical to "fetch, compare
+  remote HEAD to lastKnownCommitSha, then reset" (the task spec's literal ordering) since
+  `preflightCleanup`/`clone` always land local HEAD exactly on the remote branch tip either
+  way; comparing after is simpler (one sync codepath, not "sync conditionally based on a
+  pre-check"). New `IGitService.diffStat(targetDir, fromSha, toSha)` runs
+  `git diff {from}..{to} --stat`. A diff-computation failure is caught and logged — proceeds
+  without the diff rather than failing the whole resume, since the diff is context, not a
+  correctness gate.
+- **Gate-aware artifact selection is a single 3-way switch** (`readGateArtifactRaw()`),
+  reusing the exact same `readVerifyReport`/`readQaReport`/`readReviewerReport` functions
+  `report-reader.ts` already exposes — no new artifact-reading logic. Per the task's own
+  wording ("qa gagal → jalankan ulang agent implementasi... dengan qa-report.md sebagai
+  input"), **all three `lastFailedGate` values resolve to the same action**: re-run the
+  implementation agent(s) with that gate's artifact as context, then let the shared tail
+  handle everything downstream (verify-report check, QA gate, reviewer gate) exactly as the
+  normal flow would. This was a deliberate simplification confirmed by re-reading the spec
+  carefully — it removes any need for gate-specific branching in the tail itself.
+- **`resumeContext` covers both the gate artifact and the manual-change diff in one string**,
+  prepended once to `implementationPrompt` — which is itself reused unchanged for every
+  `runImplementationAgents()` call within the same invocation (including the QA-fail/
+  reviewer-CHANGES_REQUESTED retry loops), so the resumed agent has this context on every
+  attempt within the run, not just the first.
+- **Ephemeral-mode design note from `tasks.md` turned out to already be implemented as of
+  Task 4**: cloning directly onto the `ai-agent/<TICKET-KEY>` branch (`gitService.clone(url,
+  branch, ...)` instead of `baseBranch` + `createBranch`) for the "no existing checkout"
+  case is exactly the ephemeral-mode behavior `tasks.md` described as a forward-looking
+  note — no new code needed for it here, just confirmed it matches.
+- **`readTasks(repoPath, ticketKey)` reused as-is to read `tasks.md` from the synced branch**
+  for a resume — no new reader needed, since it's the same function already used to check the
+  planner's own output; a resume just calls it before any planner run instead of after.
+
+## Acceptance Criteria (Task 6 scope)
+- [x] `lastFailedGate` read from `orchestration-state.json` (already returned by
+      `checkAndConsumeRetryBudget`'s widened return type) decides which artifact to read and
+      inject.
+- [x] `implementation` failure → re-run implementation with `verify-report.md` context.
+- [x] `qa` failure → re-run implementation with `qa-report.md` context (design choice: same
+      re-run-implementation action as the existing per-invocation QA-retry loop, matching
+      "tergantung desain yang sudah ada").
+- [x] `reviewer` failure → re-run implementation with `review-notes.md` context (same
+      rationale, matching the existing per-invocation reviewer-retry loop).
+- [x] Workspace sync (persistent mode): `git fetch`+compare via `preflightCleanup`/
+      `getHeadCommit`, `manualChangesSinceLastRun` computed and injected into the resumed
+      agent's context when HEAD moved.
+- [x] Uncommitted-residue detection: STOP + comment to PR, workspace untouched, before any
+      destructive git operation.
+- [x] Test: gate-aware artifact injection for all 3 gates + planner-skip —
+      `tests/unit/run-agent-pipeline.use-case.test.ts` (`it.each` over
+      implementation/qa/reviewer).
+- [x] Test: `lastFailedGate: null` defaults to the implementation artifact.
+- [x] Test: manual-change diff computed + injected when HEAD moved past
+      `lastKnownCommitSha`; NOT computed when HEAD matches (2 tests).
+- [x] Test: uncommitted-residue scenario stops the pipeline, no git/agent calls made, no
+      counter increment, explicit PR comment.
+- [x] Test: clean-workspace scenario proceeds via `preflightCleanup` (not `clone`), counter
+      incremented.
+- [ ] **Live verify (3 scenarios in real `umkm-pos`)** — not run this session, same caveat as
+      Tasks 3-5. Unit tests cover the logic in isolation with a mocked `IGitService`; the
+      task's own verify step explicitly calls for a real-repo run.
+
+## Quality Gate
+- Typecheck (`pnpm typecheck`): PASS, no errors — including through the mid-refactor states
+  (checked after each structural edit, not only at the end).
+- Lint (`pnpm lint`): PASS, no errors (same pre-existing unrelated ESM/CJS warning).
+- Test (`pnpm test`): 310/310 tests pass (26 files) — 12 new Task 6 cases in
+  `run-agent-pipeline.use-case.test.ts` (3 gate-artifact-injection cases via `it.each`,
+  1 null-gate-defaults case, 2 manual-diff cases, 2 uncommitted-residue cases using a real
+  temp directory with a `.git` marker to exercise the `existsSync` branch, plus updates to
+  1 pre-existing retry test whose assumption — ticketTitle/description landing in a planner
+  prompt — became stale now that planner is skipped on resume). Zero regressions to any of
+  the 298 pre-existing tests, including every Task 1-5 test and the full non-retry success/
+  QA-fail/reviewer-fail/skip-agent suites that exercise the refactored tail code.
+
+## Files changed
+- `src/domain/interfaces/git.interface.ts` — new `WorkspaceStatus` type;
+  `IGitService.getWorkspaceStatus()` and `diffStat()`.
+- `src/infrastructure/git/git.service.ts` — implemented both (`git status --short`;
+  `git diff {from}..{to} --stat`), both guarded by the existing `assertInsideWorkspace`
+  path-escape check.
+- `src/application/use-cases/run-agent-pipeline.use-case.ts` — major refactor:
+  extracted `runPipelineFromImplementation()` (the shared tail); `execute()`'s retry branch
+  now does uncommitted-check → sync → retry-budget-check (widened to return `state`) →
+  manual-diff computation → gate-artifact selection → resume via the shared tail, instead of
+  always re-running the planner; new `readGateArtifactRaw()` helper;
+  `checkAndConsumeRetryBudget()`'s return type widened to carry the `OrchestrationState` on
+  success.
+- `tests/unit/run-agent-pipeline.use-case.test.ts` — added `getWorkspaceStatus`/`diffStat`/
+  `preflightCleanup` to the fake `gitService`; new "Task 6" describe block (12 cases); fixed
+  1 stale assertion in an existing Task 4 test.
+- `CLAUDE.md` — rewrote the "`/caf-retry-pipeline` resume" subsection's tail to describe the
+  uncommitted-check, manual-diff, and gate-aware-resume mechanics instead of the placeholder
+  "this is a restart, not a gate-aware resume" note.
+
+## Catatan
+- **This closes the ticket's core mechanism** — both retry entry points (Task 4/5) now
+  genuinely resume from the failed gate with full context, instead of restarting the whole
+  pipeline from scratch. What remains explicitly out of scope for this ticket (confirmed
+  against `tasks.md`): Task 7 (grep-audit for stale `postComment + return` patterns and
+  template/parser contract mismatches) and Task 8 (a dedicated regression-test checkpoint,
+  though its substance — full-success pipeline unaffected — has been continuously verified
+  by the untouched pre-existing test suite passing after every task).
+- The refactor changed `execute()`'s shape significantly; anyone touching this file next
+  should read `runPipelineFromImplementation()`'s doc comment first — it's now the single
+  place implementation/QA/reviewer/docs/commit/PR logic lives, entered from two call sites
+  in `execute()`.
+- Did not implement the ephemeral-mode-specific notes from `tasks.md` Task 6 beyond what
+  Task 4 already covered (clone-directly-onto-branch) — no manual-change diffing or
+  residue-detection nuance was needed for ephemeral mode specifically, since a fresh clone
+  has no prior state to diff against or residue to detect. Documented as already-covered in
+  design decisions above, not a new gap.
+
+---
+
+# Task 7 — grep-audit-final (quick pass, done alongside Task 6)
+
+- Grepped every `postTicketComment` call site in `run-agent-pipeline.use-case.ts` (12
+  total): the 3 gate-exhaustion sites (implementation/qa/reviewer) all have
+  `pushAndOpenGatePr` immediately before them; the workspace-busy and uncommitted-residue
+  early-returns correctly have no push (nothing was done yet); the 2 `stopIfNonRetryable`
+  (429/404) sites correctly have no push either (documented in Task 2's report as a
+  deliberately different failure category, not a "gate"). **No stale `postComment + return`
+  pattern found at any gate-exhaustion point.**
+- Searched this repo for `agent-handoff`-style template files (the CDR-38 parser/template
+  contract-mismatch precedent `tasks.md` warns about): **none exist in this repo** — per
+  CLAUDE.md, actual agent definitions (`caf-planner.md` etc.) live in the *target* repo
+  being operated on, not here. `orchestration-state.json` is read/written only by this
+  repo's own `orchestration-state.ts` and `run-agent-pipeline.use-case.ts` — no
+  agent-authored template has any assumption about its shape to conflict with.
+- Not done as a separate task/commit — folded into Task 6's session since both were audits
+  of the same freshly-written code.
