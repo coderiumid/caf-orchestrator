@@ -38,8 +38,16 @@ orchestrator dipanggil ulang — sehingga tidak ada batas atas untuk retry linta
   `review-notes.md`) — bukan generate ulang teks baru.
 - Extend `caf-config.yaml`: field `orchestration.maxOrchestrationRetries` per entry repo di
   repo registry (fallback ke default global jika tidak diisi).
-- File state baru per ticket: `.ai/tasks/{TICKET-ID}/orchestration-state.json` — menyimpan
-  `orchestrationRetryCount`, `lastFailedGate`, `lastFailedAt`, `lastKnownCommitSha`.
+- File state baru per ticket: `.caf/tasks/{ticketKey}/orchestration-state.json` **di dalam
+  repo target** (`repoPath`) — ikut convention existing (`report-reader.ts` `taskDir()`,
+  sejalur dengan `verify-report.md`/`qa-report.md`/`review-notes.md`). Ini bukan
+  `.ai/tasks/{TICKET-ID}/` seperti disebut versi awal dokumen ini — koreksi berdasarkan audit
+  kode saat Task 2 dikerjakan: `.ai/tasks/` adalah namespace dev-doc planning untuk ticket
+  `caf-orchestrator` itu sendiri (dokumen yang sedang kamu baca ini), bukan runtime artifact
+  pipeline. Menyimpan `orchestrationRetryCount`, `lastFailedGate`, `lastFailedAt`,
+  `lastKnownCommitSha`. Path di dalam `repoPath` ini wajib supaya ikut `git fetch`/`reset` di
+  mode `persistent` dan ikut ke branch/PR — kalau ditaruh di luar repo target, seluruh
+  mekanisme deteksi `lastKnownCommitSha` di Task 6 tidak akan berfungsi.
 - Command baru `/caf-retry-pipeline` via webhook `issue_comment` pada Draft PR.
 - Trigger retry kedua: perubahan status ticket Linear kembali ke "Ready for AI" pada ticket
   yang branch `ai-agent/{TICKET-ID}`-nya sudah ada — diarahkan ke resume handler yang sama
@@ -87,7 +95,7 @@ orchestrator dipanggil ulang — sehingga tidak ada batas atas untuk retry linta
 - [ ] Ticket yang gate-nya habis (implementasi/QA/Reviewer) menghasilkan Draft PR berisi kode
       yang sudah dikerjakan, bukan hanya comment di Linear/Jira.
 - [ ] PR description memuat: gate yang gagal, attempt log, acceptance criteria yang
-      terpenuhi/belum, dan link ke folder `.ai/tasks/{TICKET-ID}/`.
+      terpenuhi/belum, dan link ke folder `.caf/tasks/{ticketKey}/` di repo target.
 - [ ] Draft PR tidak bisa di-merge tanpa konversi manual ke "Ready for review" (native GitHub
       behavior untuk draft — diverifikasi, bukan diasumsikan).
 - [ ] `maxOrchestrationRetries` terbaca dari `caf-config.yaml` per repo, dengan default yang

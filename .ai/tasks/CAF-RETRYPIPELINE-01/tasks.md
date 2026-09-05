@@ -21,7 +21,11 @@
   dengan pola verifikasi "2 repo paralel tanpa interferensi" di Priority A).
 
 ### Task 2 — `orchestration-state.json` per ticket
-- Definisikan struktur file: `.ai/tasks/{TICKET-ID}/orchestration-state.json`
+- Definisikan struktur file: `.caf/tasks/{ticketKey}/orchestration-state.json` **di dalam
+  repo target (`repoPath`)** — konsisten dengan `taskDir()` di `report-reader.ts`, sejalur
+  dengan `verify-report.md`/`qa-report.md`/`review-notes.md`. (Koreksi dari versi awal
+  requirements.md yang salah tulis `.ai/tasks/` — itu namespace dev-doc planning ticket ini
+  sendiri, bukan runtime artifact pipeline.)
   ```json
   {
     "orchestrationRetryCount": 0,
