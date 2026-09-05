@@ -1,10 +1,18 @@
 ## Ticket: CAF-RETRYPIPELINE-01
-## Status: SUCCESS (Task 1 + Task 2)
+## Status: NEEDS_HUMAN (Task 1 + Task 2 SUCCESS; Task 3 code done, live umkm-pos verify pending)
 
 ## Scope
-Task 1 + Task 2. No push/PR logic at gate exhaustion (Task 3), no `/caf-retry-pipeline`
-command or webhook handlers (Task 4-5), no resume/manual-change-detection logic (Task 6).
-Not started/committed further than these two tasks per instructions.
+Task 1 + Task 2 + Task 3. No `/caf-retry-pipeline` command or webhook handlers (Task 4-5),
+no resume/manual-change-detection logic (Task 6). Not started/committed further than these
+three tasks per instructions.
+
+**Task 3 checkpoint (per `tasks.md`'s own instruction):** "Task 3 (push+PR) sebaiknya
+diverifikasi end-to-end di `umkm-pos` dulu sebelum lanjut ke Task 4-6." Unit-level
+verification (below) is done and green, but the actual live GitHub check — a real QA-fail
+run against `umkm-pos` producing a visible Draft PR with a correct, non-mergeable-without-
+manual-conversion state — has **not** been run from this session (no live umkm-pos pipeline
+trigger available here). Recommend the developer runs that scenario against `umkm-pos`
+before Task 4 starts, since Task 4-6 depend on a correctly-formed Draft PR from Task 3.
 
 ---
 
@@ -209,3 +217,113 @@ this session).
 - `.ai/tasks/CAF-RETRYPIPELINE-01/requirements.md`, `tasks.md` — path corrected by
   user directly in IDE after the `AskUserQuestion` resolution (not edited by this
   session).
+
+---
+
+# Task 3 — Push + Draft PR pada gate exhaustion
+
+## Attempt Log
+- Attempt 1: PASS at unit-test level on first pass. Live end-to-end verification against
+  the real `umkm-pos` repo (the task's own explicit verify step) not run from this
+  session — see NEEDS_HUMAN note above.
+
+## Design decisions
+- **Idempotency via `findOpenPullRequestByHead` + `updatePullRequest`** (both new on
+  `IVcsClient`): before opening a PR, check GitHub for an already-open PR on this branch
+  (`GET /pulls?head=owner:branch&state=open`). If found, `PATCH` its body instead of
+  `POST`ing a new PR — satisfies the explicit "jangan buat PR duplikat" requirement.
+  Within a single `execute()` call at most one of the 3 gates can fire (each `return`s
+  immediately), so this mainly guards a *future* invocation reusing the same branch
+  (Task 4-6's resume path) rather than anything reachable today.
+- **`draft: true` added to `CreatePullRequestInput`**, plumbed through to GitHub's REST
+  `POST /pulls` body — defaults to `false` when omitted, so the existing full-success PR
+  creation path (`buildPrBody`/`createPullRequest` call near the end of `execute()`,
+  untouched by this task) keeps opening ready-for-review PRs exactly as before.
+- **PR body is a pure reformat, not new text** (`buildGateExhaustionPrBody`): ticket
+  header + a short fixed "gate exhausted: X" note + links to the task folder + the raw
+  content of whichever single artifact that gate produced
+  (`verify-report.md`/`qa-report.md`/`review-notes.md`). No LLM-generated summary — matches
+  CLAUDE.md's report-contract convention and the explicit "tidak generate teks baru"
+  instruction.
+- **Push/PR failure never becomes a `throw`.** `pushAndOpenGatePr()` wraps the whole
+  commit→push→find→create-or-update sequence in one try/catch; a failure at any step is
+  logged and turned into a note appended to the human-facing comment ("Could not push/open
+  a Draft PR automatically: ..."), but the calling gate still `return`s cleanly — the
+  return-vs-throw contract flagged as sensitive in `tasks.md` is unchanged. This was the
+  main design risk called out for this task; verified by a dedicated test
+  (`gitService.push` rejecting) that asserts `execute()` still resolves rather than
+  rejecting.
+- **Commit message is gate-specific**: `AI agent pipeline: {ticketKey} (needs human review
+  — {gate} gate)`, distinct from the plain `AI agent pipeline: {ticketKey}` success-path
+  message, so `git log` on a gate-exhaustion branch is self-explanatory without needing to
+  open the PR.
+- **No change to the full-success path's PR creation** (still unconditional
+  `createPullRequest`, no idempotency check there) — out of scope for Task 3, which is
+  about the gate-exhaustion path specifically; the tasks.md breakdown doesn't ask for
+  draft→ready conversion or duplicate-guarding on the success path anywhere in the 8
+  tasks, so left untouched rather than adding unrequested behavior.
+
+## Acceptance Criteria (Task 3 scope)
+- [x] Gate exhaustion (implementation/QA/reviewer) now does
+      `recordGateFailure` → `commit + push + open-or-update Draft PR` → `postComment` →
+      `return`, replacing the old `postComment + return`.
+- [x] Return-vs-throw contract preserved — all 3 gates still `return`, verified by
+      existing + new tests (`await expect(useCase.execute(...)).resolves...`).
+- [x] PR description generator reformats the gate-specific artifact
+      (`buildGateExhaustionPrBody`) — no new text, links to
+      `.caf/tasks/{ticketKey}/`.
+- [x] Duplicate-PR guard — `findOpenPullRequestByHead` checked before create;
+      `updatePullRequest` used when one is already open. Test:
+      "updates an already-open Draft PR instead of creating a duplicate on gate
+      exhaustion".
+- [ ] **Live verify in `umkm-pos` (real repo)** — NOT done this session. Needs a real
+      QA-fail-after-retry run to confirm: Draft PR actually appears on GitHub, description
+      renders correctly, PR is in draft state and GitHub blocks merging without manual
+      "Ready for review" conversion (task explicitly says "diverifikasi, bukan
+      diasumsikan").
+
+## Quality Gate
+- Typecheck (`pnpm typecheck`): PASS, no errors.
+- Lint (`pnpm lint`): PASS, no errors (same pre-existing unrelated ESM/CJS warning as
+  Task 1/2, not touched by this task).
+- Test (`pnpm test`): 283/283 tests pass (26 files) — 9 new cases in `github-service.test.ts`
+  (draft flag, `findOpenPullRequestByHead`, `updatePullRequest`), 2 new gate-exhaustion
+  scenario tests (duplicate-PR guard, push-failure-doesn't-throw) plus updated assertions
+  on the 3 pre-existing NEEDS_HUMAN gate tests (which previously asserted `commitAll`/`push`
+  were *not* called — now correctly assert they *are*, with the gate-specific message and
+  the resulting Draft PR/PR-update call). Zero regressions elsewhere.
+
+## Files changed
+- `src/domain/interfaces/vcs-client.interface.ts` — `CreatePullRequestInput.draft?:
+  boolean`; new `FindPullRequestByHeadInput`/`UpdatePullRequestInput` types; new
+  `IVcsClient.findOpenPullRequestByHead()`/`updatePullRequest()` methods.
+- `src/infrastructure/vcs/github.service.ts` — `createPullRequest` now sends
+  `draft: draft ?? false`; new `findOpenPullRequestByHead()` (`GET /pulls?head=...&state=open`)
+  and `updatePullRequest()` (`PATCH /pulls/{number}`) implementations.
+- `src/application/use-cases/run-agent-pipeline.use-case.ts` — new
+  `GATE_ARTIFACT_FILE` map + `buildGateExhaustionPrBody()`; new private
+  `pushAndOpenGatePr()` and `appendPushResultNote()` methods; wired into all 3
+  NEEDS_HUMAN gate branches (implementation/QA/reviewer).
+- `tests/unit/github-service.test.ts` — 9 new cases for `createPullRequest` draft flag,
+  `findOpenPullRequestByHead`, `updatePullRequest`.
+- `tests/unit/run-agent-pipeline.use-case.test.ts` — added `findOpenPullRequestByHead`/
+  `updatePullRequest` to the fake `vcsClient`; updated the 3 existing NEEDS_HUMAN gate
+  tests' `commitAll`/`push` assertions; added 2 new tests (duplicate-PR update,
+  push-failure-doesn't-throw).
+- `CLAUDE.md` — documented the gate-exhaustion Draft PR behavior in the pipeline-flow
+  section (steps 5-7) and a new "Gate-exhaustion Draft PR" subsection.
+
+## Catatan
+- Did not touch Task 2's state-file write ordering — `recordGateExhaustion()` (reads HEAD,
+  writes `orchestration-state.json`) still runs *before* `pushAndOpenGatePr()` at every
+  gate, so `orchestration-state.json`'s `lastKnownCommitSha` reflects the commit at the
+  moment of failure detection, consistent with Task 2's contract; the state file itself is
+  not yet part of the pushed commit's diff at the time it's written (a filesystem write
+  happens before `commitAll`, so it *is* included when `commitAll`/`push` run right after —
+  confirmed by reading the code path, not by a dedicated test, since Task 2's tests already
+  cover `recordGateFailure`'s file-write behavior in isolation).
+- Left the pre-existing `.ai/tasks/` vs `.caf/tasks/` inconsistency in `CLAUDE.md`'s
+  pipeline-flow steps 2/5 untouched (unrelated pre-existing doc bug predating this ticket,
+  same one flagged during Task 2's `AskUserQuestion`) — only added new text using the
+  correct `.caf/tasks/` path, didn't "fix" the surrounding unrelated lines to keep this
+  diff scoped to Task 3.
