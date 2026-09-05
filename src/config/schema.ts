@@ -197,6 +197,17 @@ const yamlSchema = z.object({
     allowedModels: [],
   })),
 
+  // Global fallback for repo-registry entries that don't set their own
+  // orchestration.maxOrchestrationRetries (see project-config.schema.ts) —
+  // caps how many times CAF-RETRYPIPELINE-01's cross-invocation retry
+  // (orchestrationRetryCount, persisted in orchestration-state.json) may
+  // re-run before the pipeline stops offering automatic retry. Distinct from
+  // agents.qa/reviewer maxRetries above, which are per-invocation gate
+  // retries reset on every orchestrator run.
+  orchestration: z.object({
+    maxOrchestrationRetries: z.coerce.number().int().nonnegative().default(2),
+  }).default(() => ({ maxOrchestrationRetries: 2 })),
+
   // Bull Board dashboard at /admin/queues, basic-auth gated. Off by default —
   // fail-safe, must be explicitly enabled.
   dashboard: z.object({

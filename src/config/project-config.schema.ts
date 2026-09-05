@@ -23,6 +23,15 @@ export const projectConfigSchema = z.object({
       modelOverrides: z.record(z.string(), z.string()).default({}),
     })
     .default(() => ({ modelOverrides: {} })),
+  // Per-repo override for orchestration.maxOrchestrationRetries (schema.ts).
+  // Left unset (undefined) when a repo doesn't need its own value — callers
+  // fall back to the global default, they never see a Zod-injected number
+  // here that could be mistaken for an explicit per-repo choice.
+  orchestration: z
+    .object({
+      maxOrchestrationRetries: z.coerce.number().int().nonnegative().optional(),
+    })
+    .default(() => ({})),
 });
 
 export type ProjectConfig = z.infer<typeof projectConfigSchema>;

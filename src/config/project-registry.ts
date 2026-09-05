@@ -57,3 +57,8 @@ export class ProjectRegistry {
     return [...this.byPrefix.values()];
   }
 }
+
+/** Per-repo orchestration.maxOrchestrationRetries wins when set; otherwise falls back to the global default (config.orchestration.maxOrchestrationRetries). */
+export function resolveMaxOrchestrationRetries(project: ProjectConfig, globalDefault: number): number {
+  return project.orchestration.maxOrchestrationRetries ?? globalDefault;
+}
