@@ -140,6 +140,8 @@ describe('RunAgentPipelineUseCase', () => {
       replyToReviewComment: vi.fn().mockResolvedValue(undefined),
       postIssueComment: vi.fn().mockResolvedValue(undefined),
       createPullRequestReview: vi.fn().mockResolvedValue({ url: 'https://github.com/ganjardbc/umkm-pos/pull/1#review-1', id: 1 }),
+      findOpenPullRequestByHead: vi.fn().mockResolvedValue(undefined),
+      updatePullRequest: vi.fn().mockResolvedValue({ url: 'https://github.com/ganjardbc/umkm-pos/pull/1', number: 1 }),
     };
 
     notifier = {
@@ -496,16 +498,65 @@ describe('RunAgentPipelineUseCase', () => {
 
     expect(agentRunner.run).not.toHaveBeenCalledWith('caf-qa', expect.anything(), expect.anything());
     expect(readQaReportMock).not.toHaveBeenCalled();
-    expect(gitService.commitAll).not.toHaveBeenCalled();
-    expect(gitService.push).not.toHaveBeenCalled();
+    expect(gitService.commitAll).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.stringContaining('needs human review — implementation gate'),
+      expect.any(String),
+    );
+    expect(gitService.push).toHaveBeenCalledTimes(1);
+    expect(vcsClient.findOpenPullRequestByHead).toHaveBeenCalledTimes(1);
+    expect(vcsClient.createPullRequest).toHaveBeenCalledWith(expect.objectContaining({ draft: true }));
+    expect(vcsClient.updatePullRequest).not.toHaveBeenCalled();
     expect(notifier.notifyPipelineComplete).not.toHaveBeenCalled();
     expect(linearClient.postComment).toHaveBeenCalledWith(
       expect.any(String),
       expect.stringContaining('needs human review'),
     );
+    expect(linearClient.postComment).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.stringContaining('Draft PR: https://github.com/ganjardbc/umkm-pos/pull/1'),
+    );
     expect(notifier.notifyPipelineNeedsHuman).toHaveBeenCalledTimes(1);
     expect(recordGateFailureMock).toHaveBeenCalledWith(expect.any(String), 'CAF-123', 'implementation', 'deadbeef');
     expect(resetOrchestrationStateMock).not.toHaveBeenCalled();
+  });
+
+  it('updates an already-open Draft PR instead of creating a duplicate on gate exhaustion', async () => {
+    (agentRunner.run as ReturnType<typeof vi.fn>).mockResolvedValue(makeAgentResult({ exitCode: 0 }));
+    readVerifyReportMock.mockResolvedValue({ status: 'NEEDS_HUMAN', raw: 'NEEDS_HUMAN: manual check required' });
+    (vcsClient.findOpenPullRequestByHead as ReturnType<typeof vi.fn>).mockResolvedValue({
+      url: 'https://github.com/ganjardbc/umkm-pos/pull/7',
+      number: 7,
+    });
+    (vcsClient.updatePullRequest as ReturnType<typeof vi.fn>).mockResolvedValue({
+      url: 'https://github.com/ganjardbc/umkm-pos/pull/7',
+      number: 7,
+    });
+
+    const useCase = new RunAgentPipelineUseCase({ gitService, workspaceManager, agentRunner, linearClient, vcsClient, notifier });
+    await useCase.execute(makeJob());
+
+    expect(vcsClient.updatePullRequest).toHaveBeenCalledWith(expect.objectContaining({ prNumber: 7 }));
+    expect(vcsClient.createPullRequest).not.toHaveBeenCalled();
+    expect(linearClient.postComment).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.stringContaining('Draft PR: https://github.com/ganjardbc/umkm-pos/pull/7'),
+    );
+  });
+
+  it('does not throw when push/PR fails on gate exhaustion — notes the failure in the comment instead', async () => {
+    (agentRunner.run as ReturnType<typeof vi.fn>).mockResolvedValue(makeAgentResult({ exitCode: 0 }));
+    readVerifyReportMock.mockResolvedValue({ status: 'NEEDS_HUMAN', raw: 'NEEDS_HUMAN: manual check required' });
+    (gitService.push as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('network unreachable'));
+
+    const useCase = new RunAgentPipelineUseCase({ gitService, workspaceManager, agentRunner, linearClient, vcsClient, notifier });
+    await expect(useCase.execute(makeJob())).resolves.toBeUndefined();
+
+    expect(linearClient.postComment).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.stringContaining('Could not push/open a Draft PR automatically: network unreachable'),
+    );
+    expect(notifier.notifyPipelineNeedsHuman).toHaveBeenCalledTimes(1);
   });
 
   it('posts the NEEDS_HUMAN comment to the GitHub issue instead of Linear when ticketSource is github', async () => {
@@ -575,8 +626,13 @@ describe('RunAgentPipelineUseCase', () => {
     expect(backendCalls).toHaveLength(2);
     expect(qaCalls).toHaveLength(2);
     expect(docsCalls).toHaveLength(0);
-    expect(gitService.commitAll).not.toHaveBeenCalled();
-    expect(gitService.push).not.toHaveBeenCalled();
+    expect(gitService.commitAll).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.stringContaining('needs human review — qa gate'),
+      expect.any(String),
+    );
+    expect(gitService.push).toHaveBeenCalledTimes(1);
+    expect(vcsClient.createPullRequest).toHaveBeenCalledWith(expect.objectContaining({ draft: true }));
     expect(notifier.notifyPipelineComplete).not.toHaveBeenCalled();
     expect(linearClient.postComment).toHaveBeenCalledWith(
       expect.any(String),
@@ -681,8 +737,13 @@ describe('RunAgentPipelineUseCase', () => {
     expect(backendCalls).toHaveLength(2);
     expect(qaCalls).toHaveLength(1);
     expect(docsCalls).toHaveLength(0);
-    expect(gitService.commitAll).not.toHaveBeenCalled();
-    expect(gitService.push).not.toHaveBeenCalled();
+    expect(gitService.commitAll).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.stringContaining('needs human review — reviewer gate'),
+      expect.any(String),
+    );
+    expect(gitService.push).toHaveBeenCalledTimes(1);
+    expect(vcsClient.createPullRequest).toHaveBeenCalledWith(expect.objectContaining({ draft: true }));
     expect(notifier.notifyPipelineComplete).not.toHaveBeenCalled();
     expect(linearClient.postComment).toHaveBeenCalledWith(
       expect.any(String),
