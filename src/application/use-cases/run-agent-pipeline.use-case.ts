@@ -22,6 +22,11 @@ import {
   type QaReport,
   type ReviewerReport,
 } from '../../infrastructure/reports/report-reader.js';
+import {
+  recordGateFailure,
+  resetOrchestrationState,
+  type OrchestrationGate,
+} from '../../infrastructure/reports/orchestration-state.js';
 import { parseGithubRepo } from '../../infrastructure/vcs/github.service.js';
 import { logger } from '../../infrastructure/logging/logger.js';
 import { parseApiError, formatResetDelay, NonRetryableApiError } from '../../infrastructure/agent/api-error.js';
@@ -312,6 +317,7 @@ export class RunAgentPipelineUseCase {
       }
 
       if (verifyReport.status === 'NEEDS_HUMAN') {
+        await this.recordGateExhaustion(repoPath, job, 'implementation');
         await this.postTicketComment(
           job,
           `Agent pipeline needs human review:\n\n${verifyReport.raw}`,
@@ -356,6 +362,7 @@ export class RunAgentPipelineUseCase {
       }
 
       if (qaReport.status === 'FAIL') {
+        await this.recordGateExhaustion(repoPath, job, 'qa');
         await this.postTicketComment(
           job,
           `Agent pipeline needs human review (QA failed after retry):\n\n${qaReport.raw}`,
@@ -406,6 +413,7 @@ export class RunAgentPipelineUseCase {
       }
 
       if (reviewerReport.verdict === 'CHANGES_REQUESTED') {
+        await this.recordGateExhaustion(repoPath, job, 'reviewer');
         await this.postTicketComment(
           job,
           `Agent pipeline needs human review (reviewer requested changes after retry):\n\n${reviewerReport.raw}`,
@@ -487,6 +495,15 @@ export class RunAgentPipelineUseCase {
         }
       }
 
+      try {
+        await resetOrchestrationState(repoPath, job.ticketKey);
+      } catch (err) {
+        logger.error('Failed to reset orchestration-state.json on pipeline success', err instanceof Error ? err : new Error(String(err)), {
+          jobId: job.jobId,
+          ticketKey: job.ticketKey,
+        });
+      }
+
       await gitService.commitAll(repoPath, `AI agent pipeline: ${job.ticketKey}`, workspaceRoot);
       await gitService.push(repoPath, branch, workspaceRoot);
 
@@ -547,6 +564,27 @@ export class RunAgentPipelineUseCase {
       throw err;
     } finally {
       await workspaceManager.cleanupWorkspace(workspacePath, workspaceRoot, workspacePurpose);
+    }
+  }
+
+  /**
+   * Stamps orchestration-state.json with the gate that just exhausted its
+   * retries (CAF-RETRYPIPELINE-01 Task 2) — read by the future resume handler
+   * (Task 6) to know which agent/artifact to resume with, and by
+   * /caf-retry-pipeline (Task 4) to enforce maxOrchestrationRetries. Failure
+   * to read HEAD (e.g. a git error) must not crash the pipeline here — the
+   * human-facing NEEDS_HUMAN comment this precedes still needs to go out.
+   */
+  private async recordGateExhaustion(repoPath: string, job: ExistingJobPayload, gate: OrchestrationGate): Promise<void> {
+    try {
+      const commitSha = await this.deps.gitService.getHeadCommit(repoPath);
+      await recordGateFailure(repoPath, job.ticketKey, gate, commitSha);
+    } catch (err) {
+      logger.error('Failed to write orchestration-state.json on gate exhaustion', err instanceof Error ? err : new Error(String(err)), {
+        jobId: job.jobId,
+        ticketKey: job.ticketKey,
+        gate,
+      });
     }
   }
 

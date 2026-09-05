@@ -25,6 +25,8 @@ export interface IGitService {
    * being discarded, so the loss is auditable, not silent.
    */
   preflightCleanup(targetDir: string, baseBranch: string, workspaceRoot?: string): Promise<PreflightCleanupResult>;
+  /** Current HEAD commit sha of targetDir (`git rev-parse HEAD`) — used to stamp `lastKnownCommitSha` in orchestration-state.json on gate exhaustion (CAF-RETRYPIPELINE-01). */
+  getHeadCommit(targetDir: string): Promise<string>;
 }
 
 /**

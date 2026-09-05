@@ -150,4 +150,8 @@ export class GitService implements IGitService {
 
     return { hadUncommittedChanges, branchBeforeReset, headCommitBeforeReset, statusBeforeReset };
   }
+
+  async getHeadCommit(targetDir: string): Promise<string> {
+    return (await runGit(['rev-parse', 'HEAD'], targetDir)).trim();
+  }
 }

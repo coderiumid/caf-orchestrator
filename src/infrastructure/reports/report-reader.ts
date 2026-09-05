@@ -9,7 +9,7 @@ async function readIfExists(path: string): Promise<string | undefined> {
   }
 }
 
-function taskDir(workspacePath: string, ticketKey: string): string {
+export function taskDir(workspacePath: string, ticketKey: string): string {
   return join(workspacePath, '.caf', 'tasks', ticketKey);
 }
 
