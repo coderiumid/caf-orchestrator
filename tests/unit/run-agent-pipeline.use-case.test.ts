@@ -39,6 +39,14 @@ vi.mock('../../src/infrastructure/reports/report-reader.js', () => ({
   readQaReport: readQaReportMock,
   readReviewerReport: readReviewerReportMock,
   appendSkipNote: appendSkipNoteMock,
+  taskDir: (workspacePath: string, ticketKey: string) => `${workspacePath}/.caf/tasks/${ticketKey}`,
+}));
+
+const recordGateFailureMock = vi.fn();
+const resetOrchestrationStateMock = vi.fn();
+vi.mock('../../src/infrastructure/reports/orchestration-state.js', () => ({
+  recordGateFailure: recordGateFailureMock,
+  resetOrchestrationState: resetOrchestrationStateMock,
 }));
 
 // AGENT_SKIP_ENABLED defaults false to match the real schema default — tests
@@ -106,7 +114,11 @@ describe('RunAgentPipelineUseCase', () => {
       createBranch: vi.fn().mockResolvedValue(undefined),
       commitAll: vi.fn().mockResolvedValue(undefined),
       push: vi.fn().mockResolvedValue(undefined),
+      getHeadCommit: vi.fn().mockResolvedValue('deadbeef'),
     };
+
+    recordGateFailureMock.mockResolvedValue(undefined);
+    resetOrchestrationStateMock.mockResolvedValue(undefined);
 
     workspaceManager = {
       createWorkspace: vi.fn().mockResolvedValue('/tmp/workspace-1'),
@@ -162,6 +174,8 @@ describe('RunAgentPipelineUseCase', () => {
     expect(notifier.notifyPipelineComplete).toHaveBeenCalledTimes(1);
     expect(notifier.notifyPipelineFailed).not.toHaveBeenCalled();
     expect(loggerErrorMock).not.toHaveBeenCalled();
+    expect(resetOrchestrationStateMock).toHaveBeenCalledWith(expect.any(String), 'CAF-123');
+    expect(recordGateFailureMock).not.toHaveBeenCalled();
   });
 
   it('notifies notifyAgentStarted for every agent stage that actually runs (planner, backend, qa, reviewer)', async () => {
@@ -490,6 +504,8 @@ describe('RunAgentPipelineUseCase', () => {
       expect.stringContaining('needs human review'),
     );
     expect(notifier.notifyPipelineNeedsHuman).toHaveBeenCalledTimes(1);
+    expect(recordGateFailureMock).toHaveBeenCalledWith(expect.any(String), 'CAF-123', 'implementation', 'deadbeef');
+    expect(resetOrchestrationStateMock).not.toHaveBeenCalled();
   });
 
   it('posts the NEEDS_HUMAN comment to the GitHub issue instead of Linear when ticketSource is github', async () => {
@@ -567,6 +583,8 @@ describe('RunAgentPipelineUseCase', () => {
       expect.stringContaining('needs human review (QA failed after retry)'),
     );
     expect(notifier.notifyPipelineNeedsHuman).toHaveBeenCalledTimes(1);
+    expect(recordGateFailureMock).toHaveBeenCalledWith(expect.any(String), 'CAF-123', 'qa', 'deadbeef');
+    expect(resetOrchestrationStateMock).not.toHaveBeenCalled();
   });
 
   it('throws when qa-report.md is not produced', async () => {
@@ -671,6 +689,8 @@ describe('RunAgentPipelineUseCase', () => {
       expect.stringContaining('needs human review (reviewer requested changes after retry)'),
     );
     expect(notifier.notifyPipelineNeedsHuman).toHaveBeenCalledTimes(1);
+    expect(recordGateFailureMock).toHaveBeenCalledWith(expect.any(String), 'CAF-123', 'reviewer', 'deadbeef');
+    expect(resetOrchestrationStateMock).not.toHaveBeenCalled();
   });
 
   it('throws when review-notes.md is not produced', async () => {
