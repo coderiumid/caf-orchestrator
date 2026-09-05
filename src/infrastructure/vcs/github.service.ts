@@ -250,6 +250,27 @@ export class GithubService implements IVcsClient {
     return json.head.ref;
   }
 
+  // CAF-RETRYPIPELINE-01 Task 5: the Linear webhook checks this before
+  // treating a "Ready for AI" transition as a brand-new ticket — a 404 means
+  // no branch, a genuinely new ticket; 200 means resume instead. GET
+  // /repos/{owner}/{repo}/branches/{branch} rather than githubGet() (which
+  // throws on any non-2xx) since a 404 here is an expected, meaningful
+  // answer, not an error.
+  async branchExists(owner: string, repo: string, branch: string): Promise<boolean> {
+    const res = await fetch(`${config.github.apiUrl}/repos/${owner}/${repo}/branches/${encodeURIComponent(branch)}`, {
+      headers: {
+        Authorization: `Bearer ${config.GITHUB_TOKEN}`,
+        Accept: 'application/vnd.github+json',
+      },
+    });
+    if (res.status === 404) return false;
+    if (!res.ok) {
+      const responseBody = await res.text();
+      throw new GithubApiError(`GitHub API request failed (${res.status}): ${responseBody}`);
+    }
+    return true;
+  }
+
   // Inline (per-line) review comments — the only comment type that can anchor
   // a SCOPED fix (has path/line/in_reply_to_id). See plan.md (caf-initiator) §4.
   async listReviewComments(owner: string, repo: string, prNumber: number): Promise<GithubReviewComment[]> {

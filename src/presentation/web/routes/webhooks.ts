@@ -132,7 +132,8 @@ async function handleRetryPipelineCommand(payload: GithubIssueCommentPayload, re
     ticketDescription: '',
     projectConfig: toJobProjectContext(project),
     isRetry: true,
-    retryContext: { owner, repo, prNumber, maxOrchestrationRetries },
+    maxOrchestrationRetries,
+    retryContext: { owner, repo, prNumber },
   };
 
   const queuedId = await pipelineQueue.addJob('agent-pipeline', jobData as unknown as Record<string, unknown>);
@@ -396,6 +397,46 @@ export async function webhookRoutes(app: FastifyInstance): Promise<void> {
         prefix,
       });
       return reply.status(200).send({ status: 'ignored', reason: 'No project registered for ticket prefix' });
+    }
+
+    // CAF-RETRYPIPELINE-01 Task 5: a ticket re-entering "Ready for AI" whose
+    // ai-agent/{ticketKey} branch already exists (from an earlier gate
+    // exhaustion) is a resume, not a new ticket — route it through the exact
+    // same isRetry/retryContext/checkAndConsumeRetryBudget path as Task 4's
+    // /caf-retry-pipeline, sharing its counter and its NOT-gate-aware
+    // (full-restart) resume behavior. See CLAUDE.md's "/caf-retry-pipeline
+    // resume" section.
+    const { owner: ghOwner, repo: ghRepo } = parseGithubRepo(projectConfig.repoCloneUrl);
+    const retryBranch = `ai-agent/${payload.data.identifier}`;
+    const isResume = await githubService.branchExists(ghOwner, ghRepo, retryBranch);
+
+    if (isResume) {
+      const openPr = await githubService.findOpenPullRequestByHead({ owner: ghOwner, repo: ghRepo, head: retryBranch });
+      const maxOrchestrationRetries = resolveMaxOrchestrationRetries(projectConfig, config.orchestration.maxOrchestrationRetries);
+
+      const resumeJobId = `linear-retry-${randomUUID()}`;
+      const resumeJobData: ExistingJobPayload = {
+        jobId: resumeJobId,
+        ticketId: payload.data.id,
+        ticketKey: payload.data.identifier,
+        ticketTitle: payload.data.title,
+        ticketDescription: payload.data.description ?? '',
+        projectConfig: toJobProjectContext(projectConfig),
+        isRetry: true,
+        maxOrchestrationRetries,
+        retryContext: openPr ? { owner: ghOwner, repo: ghRepo, prNumber: openPr.number } : undefined,
+      };
+
+      const queuedResumeId = await pipelineQueue.addJob('agent-pipeline', resumeJobData as unknown as Record<string, unknown>);
+
+      logger.info('Linear ticket re-entered Ready for AI on an existing branch — resuming', undefined, {
+        jobId: queuedResumeId,
+        ticketKey: payload.data.identifier,
+        branch: retryBranch,
+        hasOpenPr: !!openPr,
+      });
+
+      return reply.status(202).send({ status: 'enqueued', jobId: queuedResumeId });
     }
 
     const jobId = `linear-${randomUUID()}`;

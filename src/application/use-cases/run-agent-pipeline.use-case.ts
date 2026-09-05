@@ -693,7 +693,7 @@ export class RunAgentPipelineUseCase {
       return { allowed: false };
     }
 
-    const maxRetries = job.retryContext?.maxOrchestrationRetries ?? 0;
+    const maxRetries = job.maxOrchestrationRetries ?? 0;
     if (state.orchestrationRetryCount >= maxRetries) {
       await this.postTicketComment(
         job,

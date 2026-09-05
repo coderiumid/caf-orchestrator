@@ -20,19 +20,22 @@ export interface JobProjectContext {
 }
 
 /**
- * CAF-RETRYPIPELINE-01: carried on a resume job — either from
- * `/caf-retry-pipeline` (Task 4) or a Linear ticket re-entering "Ready for AI"
- * on a branch that already exists (Task 5). Both trigger paths resolve the
- * same open PR (via `findOpenPullRequestByHead`) and route every status
- * comment for this run there, rather than back to the original Linear
- * ticket/GitHub issue — that PR thread is where the human who triggered the
- * retry is actually watching.
+ * CAF-RETRYPIPELINE-01: carried on a resume job when an open PR was found for
+ * the branch (via `findOpenPullRequestByHead`) — either from
+ * `/caf-retry-pipeline` (Task 4, always has one, since the command itself is
+ * a PR comment) or a Linear ticket re-entering "Ready for AI" on a branch
+ * that already exists (Task 5, may not have one if the branch exists but no
+ * PR was ever opened). When present, every status comment for this run
+ * (including the eventual success comment) is routed to this PR instead of
+ * back to the original Linear ticket/GitHub issue — that PR thread is where
+ * the human who triggered the retry is actually watching. When absent
+ * (Task 5, no open PR), comments fall back to the normal `ticketSource`-based
+ * routing.
  */
 export interface RetryContext {
   owner: string;
   repo: string;
   prNumber: number;
-  maxOrchestrationRetries: number;
 }
 
 export interface ExistingJobPayload {
@@ -54,6 +57,11 @@ export interface ExistingJobPayload {
   // creating a new one off baseBranch) and gates the run on
   // orchestration-state.json's retry counter before any agent runs.
   isRetry?: boolean;
+  // Resolved once at trigger time (webhook layer has the full ProjectConfig;
+  // the worker only ever sees this one number) via
+  // resolveMaxOrchestrationRetries() — per-repo `orchestration.maxOrchestrationRetries`
+  // override falling back to the global default. Required whenever isRetry is true.
+  maxOrchestrationRetries?: number;
   retryContext?: RetryContext;
 }
 
