@@ -122,3 +122,8 @@ openai:
 dashboard:
   enabled: false
   # basicAuthUser: admin
+
+# SQLite file backing the CAF-DASHBOARD-01 pipeline-history store
+# (pipeline_runs/agent_events). Separate from the dashboard.* block above.
+db:
+  path: ./data/caf-dashboard.sqlite

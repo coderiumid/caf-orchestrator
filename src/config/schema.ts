@@ -214,6 +214,13 @@ const yamlSchema = z.object({
     enabled: z.boolean().default(false),
     basicAuthUser: z.string().min(1).optional(),
   }).default(() => ({ enabled: false })),
+
+  // SQLite-backed pipeline history store for the CAF-DASHBOARD-01 monitoring
+  // dashboard (agent_events/pipeline_runs — separate from the dashboard.*
+  // block above, which gates Bull Board at /admin/queues, not this).
+  db: z.object({
+    path: z.string().min(1).default('./data/caf-dashboard.sqlite'),
+  }).default(() => ({ path: './data/caf-dashboard.sqlite' })),
 });
 
 export const configSchema = envSchema.extend(yamlSchema.shape).superRefine((data, ctx) => {

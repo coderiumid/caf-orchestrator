@@ -5,3 +5,4 @@ dist/
 coverage/
 .codegraph
 caf.config.yaml
+/data/
