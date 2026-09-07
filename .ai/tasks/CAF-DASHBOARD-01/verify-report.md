@@ -1,4 +1,4 @@
-# Verify Report: CAF-DASHBOARD-01 (Task 1 + Task 2 + Task 3 + Task 4 + Task 5)
+# Verify Report: CAF-DASHBOARD-01 (Task 1 + Task 2 + Task 3 + Task 4 + Task 5 + Task 6)
 
 Status: SUCCESS
 
@@ -6,8 +6,113 @@ Status: SUCCESS
 
 Prior sessions covered **Task 1** (DB schema & migration), **Task 2** (cost
 tracking investigation), **Task 3** (event writer at existing orchestration
-points), and **Task 4** (file watcher + SSE stream). This update adds
-**Task 5 (REST endpoints)**. Task 6 onward not started.
+points), **Task 4** (file watcher + SSE stream), and **Task 5** (REST
+endpoints). This update adds **Task 6 (frontend SPA)**. Task 7 onward not
+started.
+
+---
+
+## Task 6 — Frontend SPA
+
+### Attempt Log
+
+1. Found a real gap before writing any UI: Task 5's `GET /api/pipelines`
+   summary row (`repoId, ticketId, ticketTitle, startedAt, endedAt,
+   finalStatus, status`) has none of the columns Task 6 needs (current PIV
+   phase, retry count per gate, running cost, artifact link) — those only
+   exist on `agent_events`. Extended `pipelines.ts` (not a new file) rather
+   than treating this as a Task 5 regression: added
+   `PipelineRunRepository.getEventsForRun(pipelineRunId)` and a
+   `summarizeEvents()` helper computing `currentPivPhase` (phase of the
+   latest event), `retryCounts` (per-agent-name, taking the max `retryCount`
+   seen — each `'retry'` event already carries the retry loop's own running
+   counter, so this is a max, not a row count), `totalCostUsd` (sum of every
+   event's `costUsd`, or `null` — not `0` — when no event has cost data yet,
+   so a client can tell "no data" from "genuinely free"), and
+   `lastArtifactLink` (most recent event with one). Applied to both
+   `GET /api/pipelines` and the detail endpoint so the shape stays uniform
+   (Task 5's "response shape konsisten" AC extends naturally to this).
+   Costs one extra `getEventsForRun` query per row in the list endpoint —
+   accepted given the ticket's own "skala VPS kecil" framing.
+2. `src/presentation/web/ui/dashboard-page.ts` — the whole SPA as one
+   exported HTML string: vanilla JS (no framework, no bundler, no build
+   step — satisfies "tanpa build step berat" literally), inline `<style>`,
+   dark theme. On load: `fetch('/api/pipelines')` renders the table (repo,
+   ticket+title, phase, retry counts, cost or "belum tersedia", status
+   badge, artifact link). `new EventSource('/api/events/stream')`
+   reconnects automatically (native `EventSource` behavior) and, on any
+   message, refetches the table plus the open detail panel — Task 4's SSE
+   events are a "something changed" signal, not a full payload, so refetch
+   is the correct reaction, not an attempt to patch client state from a
+   partial event. Clicking a row fetches
+   `/api/pipelines/:repoId/:ticketId` and renders its `events` as a
+   timeline (agent, event type, retry #, phase, cost, artifact, timestamp).
+   A connection-status dot reflects `EventSource.onopen`/`onerror`.
+3. `src/presentation/web/routes/dashboard-ui.ts` — `GET /dashboard` serves
+   the page. Named `dashboard-ui.ts`, not `dashboard.ts`, to avoid clashing
+   with the existing Bull Board route file. Same gating pattern as
+   `pipelines.ts`/`events.ts`: `config.dashboard.enabled` +
+   `registerDashboardBasicAuth` (Task 5's shared helper) — no new auth
+   code, no separate credential.
+4. Registered in `app.ts`.
+5. No client-side auth code needed: the page itself sits behind the same
+   basic auth, so once the browser has the credentials cached for the
+   realm (from loading `/dashboard` itself), plain `fetch()`/`EventSource`
+   calls to same-origin `/api/*` automatically carry them.
+6. Browser-verified per CLAUDE.md's UI-change rule — actually ran the app,
+   not just unit tests:
+   - Started `pnpm dev` against the real (dev) config/DB, confirmed via
+     `curl`: `/dashboard` → 401 with no auth, 200 with correct Basic Auth;
+     `/api/pipelines` → `[]` on an empty DB.
+   - Seeded 3 realistic rows (one running with a retry, one `SUCCESS`, one
+     `NEEDS_HUMAN` with an artifact link) directly into the dev SQLite file
+     via a throwaway script (deleted after).
+   - Chrome's native HTTP Basic Auth dialog isn't a page element — CDP
+     screenshot/input can't drive it (confirmed: `Frame with ID 0 is
+     showing error page` while the dialog was up, and typed keystrokes
+     didn't reach it). Basic-auth gating itself is already proven by
+     `dashboard-ui.test.ts`/`pipelines-route.test.ts`'s 401/200 assertions,
+     so for the visual/interaction check only, stood up a throwaway
+     unauthenticated proxy (`scratch-browser-harness.ts`, deleted after)
+     that served the exact same `DASHBOARD_HTML` and forwarded `/api/*`
+     calls to the real authenticated dev server with credentials attached
+     server-side — same rendering code, same real data, just without
+     fighting a native OS dialog in the automation harness.
+   - Screenshot 1: table renders all 3 rows correctly — phase `verify`,
+     `qa: 1` retry, `$0.1400` cost, `RUNNING` badge for the live one;
+     `belum tersedia` for the `NEEDS_HUMAN` row with no cost data yet and
+     its artifact path shown; `SUCCESS` badge + `$0.0700` for the finished
+     one. Connection dot shows "live" (real `EventSource` connected).
+   - Screenshot 2: clicked the running row — detail panel opens beside the
+     table, row highlights, timeline shows all 6 real events in order
+     (`caf-planner START/END`, `caf-backend START/END`, `caf-qa
+     START/RETRY #1`) with correct phase/cost/timestamp per line.
+   - Cleaned up: killed both dev processes, deleted the two scratch files
+     and the demo SQLite data dir — nothing left behind.
+
+### Verify
+
+- "Buka dashboard di browser, pipeline yang lagi jalan update tanpa refresh
+  manual" — the SSE wiring itself (reconnect, fan-out, correct tagging) was
+  already proven end-to-end in Task 4's tests; this session additionally
+  confirmed in a real browser that the page establishes the `EventSource`
+  connection and shows "live". Did not trigger a live orchestration-state.json
+  change against the dev server during this check (no project workspace was
+  actively running) — that combination (real pipeline run + open dashboard
+  tab) is Task 7's real-repo e2e scope, not re-claimed here.
+- "Klik row nampilin histori lengkap" — verified directly in the browser
+  (screenshot 2 above), not just asserted in a unit test.
+
+### Catatan
+
+- `retryCounts`/`totalCostUsd`/`currentPivPhase`/`lastArtifactLink` are
+  computed per-request from `agent_events`, not stored — keeps
+  `agent_events` the single source of truth instead of a second
+  denormalized copy on `pipeline_runs` that could drift.
+- The dashboard page has zero external dependencies (no CDN scripts, no
+  npm frontend packages) — everything is inline in one `.ts`-exported
+  string, matching "tanpa build step berat" as literally as possible.
+- Not touched: Task 7 (real-repo e2e), Task 8 (docs).
 
 ---
 
@@ -349,12 +454,14 @@ step that could produce divergent shapes.
 - `pnpm typecheck` — PASS
 - `pnpm lint` — PASS (pre-existing eslint.config.js module-type warning only,
   unrelated to this change)
-- `pnpm test` — PASS, 34 files / 343 tests (5 new for Task 5, plus
-  `events-route.test.ts` updated for the new auth requirement)
+- `pnpm test` — PASS, 35 files / 347 tests (7 new: 2 dashboard-ui route +
+  5 pipelines-route additions for the summary fields)
 - `pnpm db:migrate` — PASS against a clean `./data/` dir, run twice (idempotency
   confirmed)
 - Reran the timing-sensitive tests (watcher + SSE route) 3x back-to-back —
   no flakiness observed
+- Manual browser verification for Task 6 (see its Attempt Log #6) — real
+  `pnpm dev`, real seeded data, real screenshots, not just unit tests
 
 ## Catatan
 
@@ -372,9 +479,9 @@ step that could produce divergent shapes.
   Attempt Log #1 (ESM-only vs. this repo's CommonJS build target).
 - Task 5's live-vs-history data-source question (see Task 5's "Design
   decision" section above) was asked rather than guessed — the only
-  explicit user decision point across Tasks 1-5.
-- Not touched: Task 6 (frontend), Task 7 (real-repo e2e — the AC item
-  "Real-repo end-to-end test PASS di `umkm-pos`" in `requirements.md` is
-  explicitly that task, not claimed here) or Task 8 (docs).
+  explicit user decision point across Tasks 1-6.
+- Not touched: Task 7 (real-repo e2e — the AC item "Real-repo end-to-end
+  test PASS di `umkm-pos`" in `requirements.md` is explicitly that task,
+  not claimed here) or Task 8 (docs).
 
-**Ready for review. Awaiting go-ahead before starting Task 6.**
+**Ready for review. Awaiting go-ahead before starting Task 7.**
