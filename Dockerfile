@@ -53,6 +53,8 @@ WORKDIR /app
 
 COPY --from=pruner --chown=node:node /app/node_modules ./node_modules
 COPY --from=builder --chown=node:node /app/dist ./dist
+# Runtime reads this SQL file via __dirname; tsc does not copy non-TypeScript assets.
+COPY --from=builder --chown=node:node /app/src/infrastructure/db/schema.sql ./dist/infrastructure/db/schema.sql
 COPY --chown=node:node package.json ./
 COPY --chown=node:node caf.config.yaml ./
 
