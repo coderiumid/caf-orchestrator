@@ -1,7 +1,17 @@
 # syntax=docker/dockerfile:1
 
 # ─── Stage 1: Builder ─────────────────────────────────────────────────────────
-FROM node:22-alpine AS builder
+# node:22-slim (Debian/glibc), not -alpine: better-sqlite3 has no prebuilt
+# binaries and always compiles from source via node-gyp (needs python3 +
+# a C++ toolchain), AND the .node addon it produces must be ABI-compatible
+# with the runner stage below — which is also glibc-based. Building on
+# alpine (musl) would both lack python3/build tools out of the box and
+# produce a binary that likely can't even load in the glibc runner.
+FROM node:22-slim AS builder
+
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
+  python3 make g++ \
+  && rm -rf /var/lib/apt/lists/*
 
 RUN npm install -g pnpm@9
 
@@ -16,7 +26,11 @@ COPY src/ ./src/
 RUN pnpm build
 
 # ─── Stage 2: Pruner ──────────────────────────────────────────────────────────
-FROM node:22-alpine AS pruner
+FROM node:22-slim AS pruner
+
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
+  python3 make g++ \
+  && rm -rf /var/lib/apt/lists/*
 
 RUN npm install -g pnpm@9
 
