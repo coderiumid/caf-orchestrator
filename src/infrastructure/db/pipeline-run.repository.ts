@@ -129,6 +129,13 @@ export class PipelineRunRepository {
       });
   }
 
+  /** Marks a pipeline_runs row as concluded (success, a gate stop, or an error) without touching started_at. No-op if the row doesn't exist yet. */
+  finalizePipelineRun(id: string, endedAt: string, finalStatus: string): void {
+    this.db
+      .prepare('UPDATE pipeline_runs SET ended_at = ?, final_status = ? WHERE id = ?')
+      .run(endedAt, finalStatus, id);
+  }
+
   insertEvent(input: InsertEventInput): AgentEvent {
     const result = this.db
       .prepare(

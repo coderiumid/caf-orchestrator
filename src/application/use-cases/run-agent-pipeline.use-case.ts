@@ -35,6 +35,15 @@ import { logger } from '../../infrastructure/logging/logger.js';
 import { parseApiError, formatResetDelay, NonRetryableApiError } from '../../infrastructure/agent/api-error.js';
 import type { AgentRunResult } from '../../domain/interfaces/agent-runner.interface.js';
 import { config } from '../../config/index.js';
+import {
+  repoIdFromCloneUrl,
+  recordPipelineStarted,
+  finalizePipelineRun,
+  recordAgentEvent,
+  recordAgentEnd,
+  pivPhaseForAgent,
+} from '../../infrastructure/db/pipeline-instrumentation.js';
+import type { PivPhase } from '../../infrastructure/db/pipeline-run.repository.js';
 
 export interface RunAgentPipelineDeps {
   gitService: IGitService;
@@ -229,6 +238,9 @@ export class RunAgentPipelineUseCase {
       branch,
     });
 
+    const repoId = repoIdFromCloneUrl(job.projectConfig.repoCloneUrl);
+    recordPipelineStarted(repoId, job.ticketKey, job.ticketTitle);
+
     try {
       let tasksMarkdown: string;
       let resumeContext: string | undefined;
@@ -265,6 +277,7 @@ export class RunAgentPipelineUseCase {
               ticketKey: job.ticketKey,
               reason: 'Unexpected uncommitted changes in persistent workspace before retry sync',
             });
+            finalizePipelineRun(repoId, job.ticketKey, 'NEEDS_HUMAN');
             return;
           }
           // CAF-RETRYPIPELINE-01: resume onto the EXISTING ai-agent branch
@@ -277,7 +290,7 @@ export class RunAgentPipelineUseCase {
           await gitService.clone(job.projectConfig.repoCloneUrl, branch, repoPath, workspaceRoot);
         }
 
-        const retryGate = await this.checkAndConsumeRetryBudget(repoPath, job);
+        const retryGate = await this.checkAndConsumeRetryBudget(repoPath, job, repoId);
         if (!retryGate.allowed) {
           return;
         }
@@ -355,12 +368,14 @@ export class RunAgentPipelineUseCase {
         ].join('\n');
 
         void notifier?.notifyAgentStarted({ jobId: job.jobId, ticketKey: job.ticketKey, agentName: 'caf-planner' });
+        recordAgentEvent(repoId, job.ticketKey, 'caf-planner', 'plan', 'start');
         const plannerResult = await agentRunner.run(
           'caf-planner',
           repoPath,
           plannerPrompt,
           job.projectConfig.agents.modelOverrides['caf-planner'],
         );
+        recordAgentEnd(repoId, job.ticketKey, 'caf-planner', 'plan', plannerResult.stdout);
         logger.info('caf-planner agent run result', undefined, {
           jobId: job.jobId,
           ticketKey: job.ticketKey,
@@ -411,6 +426,7 @@ export class RunAgentPipelineUseCase {
       if (err instanceof NonRetryableApiError) {
         // Already reported via postComment + logger.info in stopIfNonRetryable.
         // Clean stop, same as the NEEDS_HUMAN/QA/reviewer gates — no BullMQ retry.
+        finalizePipelineRun(repoId, job.ticketKey, 'NEEDS_HUMAN');
         return;
       }
 
@@ -420,6 +436,12 @@ export class RunAgentPipelineUseCase {
         ticketKey: job.ticketKey,
         totalDurationMs: ms(jobStart),
       });
+
+      // A thrown (non-NonRetryableApiError) error means BullMQ will retry the
+      // whole job — 'ERROR' here just reflects this attempt's last known
+      // state on the dashboard; recordPipelineStarted() resets it to
+      // running/null on the next attempt.
+      finalizePipelineRun(repoId, job.ticketKey, 'ERROR');
 
       await notifier?.notifyPipelineFailed({
         jobId: job.jobId,
@@ -500,7 +522,8 @@ export class RunAgentPipelineUseCase {
       const baseImplementationPrompt = `Implement your assigned section of .caf/tasks/${job.ticketKey}/tasks.md for ticket ${job.ticketKey}.`;
       const implementationPrompt = extraContext ? `${baseImplementationPrompt}\n\n${extraContext}` : baseImplementationPrompt;
 
-      await this.runImplementationAgents(agentsToRun, repoPath, implementationPrompt, job);
+      const repoId = repoIdFromCloneUrl(job.projectConfig.repoCloneUrl);
+      await this.runImplementationAgents(agentsToRun, repoPath, implementationPrompt, job, repoId);
 
       const verifyReport = await readVerifyReport(repoPath, job.ticketKey);
       if (!verifyReport) {
@@ -516,7 +539,7 @@ export class RunAgentPipelineUseCase {
       }
 
       if (verifyReport.status === 'NEEDS_HUMAN') {
-        await this.recordGateExhaustion(repoPath, job, 'implementation');
+        await this.recordGateExhaustion(repoPath, job, repoId, 'implementation');
         const pushResult = await this.pushAndOpenGatePr(repoPath, job, branch, 'implementation', verifyReport.raw);
         await this.postTicketComment(
           job,
@@ -545,7 +568,7 @@ export class RunAgentPipelineUseCase {
         await notifier?.notifyAgentSkipped({ jobId: job.jobId, ticketKey: job.ticketKey, agentName: 'caf-qa', reason: qaSkipReason });
         qaReport = { status: 'PASS', raw: `QA Agent: SKIPPED — ${qaSkipReason}` };
       } else {
-        qaReport = await this.runQaGate(repoPath, job);
+        qaReport = await this.runQaGate(repoPath, job, repoId);
       }
 
       let qaRetryCount = 0;
@@ -557,12 +580,13 @@ export class RunAgentPipelineUseCase {
           ticketKey: job.ticketKey,
           qaRetryCount,
         });
-        await this.runImplementationAgents(agentsToRun, repoPath, implementationPrompt, job);
-        qaReport = await this.runQaGate(repoPath, job);
+        recordAgentEvent(repoId, job.ticketKey, 'caf-qa', 'verify', 'retry', { retryCount: qaRetryCount });
+        await this.runImplementationAgents(agentsToRun, repoPath, implementationPrompt, job, repoId);
+        qaReport = await this.runQaGate(repoPath, job, repoId);
       }
 
       if (qaReport.status === 'FAIL') {
-        await this.recordGateExhaustion(repoPath, job, 'qa');
+        await this.recordGateExhaustion(repoPath, job, repoId, 'qa');
         const pushResult = await this.pushAndOpenGatePr(repoPath, job, branch, 'qa', qaReport.raw);
         await this.postTicketComment(
           job,
@@ -597,7 +621,7 @@ export class RunAgentPipelineUseCase {
         });
         reviewerReport = { verdict: 'APPROVE', raw: `Reviewer Agent: SKIPPED — ${reviewerSkipReason}` };
       } else {
-        reviewerReport = await this.runReviewerGate(repoPath, job);
+        reviewerReport = await this.runReviewerGate(repoPath, job, repoId);
       }
 
       let reviewerRetryCount = 0;
@@ -609,12 +633,13 @@ export class RunAgentPipelineUseCase {
           ticketKey: job.ticketKey,
           reviewerRetryCount,
         });
-        await this.runImplementationAgents(agentsToRun, repoPath, implementationPrompt, job);
-        reviewerReport = await this.runReviewerGate(repoPath, job);
+        recordAgentEvent(repoId, job.ticketKey, 'caf-reviewer', 'verify', 'retry', { retryCount: reviewerRetryCount });
+        await this.runImplementationAgents(agentsToRun, repoPath, implementationPrompt, job, repoId);
+        reviewerReport = await this.runReviewerGate(repoPath, job, repoId);
       }
 
       if (reviewerReport.verdict === 'CHANGES_REQUESTED') {
-        await this.recordGateExhaustion(repoPath, job, 'reviewer');
+        await this.recordGateExhaustion(repoPath, job, repoId, 'reviewer');
         const pushResult = await this.pushAndOpenGatePr(repoPath, job, branch, 'reviewer', reviewerReport.raw);
         await this.postTicketComment(
           job,
@@ -700,6 +725,8 @@ export class RunAgentPipelineUseCase {
         }
       }
 
+      finalizePipelineRun(repoId, job.ticketKey, 'SUCCESS');
+
       try {
         await resetOrchestrationState(repoPath, job.ticketKey);
       } catch (err) {
@@ -756,7 +783,27 @@ export class RunAgentPipelineUseCase {
    * to read HEAD (e.g. a git error) must not crash the pipeline here — the
    * human-facing NEEDS_HUMAN comment this precedes still needs to go out.
    */
-  private async recordGateExhaustion(repoPath: string, job: ExistingJobPayload, gate: OrchestrationGate): Promise<void> {
+  private async recordGateExhaustion(
+    repoPath: string,
+    job: ExistingJobPayload,
+    repoId: string,
+    gate: OrchestrationGate,
+  ): Promise<void> {
+    const gateAgent: Record<OrchestrationGate, string> = {
+      implementation: 'implementation-agents',
+      qa: 'caf-qa',
+      reviewer: 'caf-reviewer',
+    };
+    const gatePhase: Record<OrchestrationGate, PivPhase> = {
+      implementation: 'implement',
+      qa: 'verify',
+      reviewer: 'verify',
+    };
+    recordAgentEvent(repoId, job.ticketKey, gateAgent[gate], gatePhase[gate], 'gate_exhausted', {
+      artifactLink: `.caf/tasks/${job.ticketKey}/${GATE_ARTIFACT_FILE[gate]}`,
+    });
+    finalizePipelineRun(repoId, job.ticketKey, 'NEEDS_HUMAN');
+
     try {
       const commitSha = await this.deps.gitService.getHeadCommit(repoPath);
       await recordGateFailure(repoPath, job.ticketKey, gate, commitSha, {
@@ -792,6 +839,7 @@ export class RunAgentPipelineUseCase {
   private async checkAndConsumeRetryBudget(
     repoPath: string,
     job: ExistingJobPayload,
+    repoId: string,
   ): Promise<{ allowed: false } | { allowed: true; state: OrchestrationState }> {
     const state = await readOrchestrationState(repoPath, job.ticketKey);
     if (!state) {
@@ -803,6 +851,7 @@ export class RunAgentPipelineUseCase {
         jobId: job.jobId,
         ticketKey: job.ticketKey,
       });
+      finalizePipelineRun(repoId, job.ticketKey, 'NEEDS_HUMAN');
       return { allowed: false };
     }
 
@@ -818,6 +867,7 @@ export class RunAgentPipelineUseCase {
         orchestrationRetryCount: state.orchestrationRetryCount,
         maxRetries,
       });
+      finalizePipelineRun(repoId, job.ticketKey, 'NEEDS_HUMAN');
       return { allowed: false };
     }
 
@@ -987,17 +1037,21 @@ export class RunAgentPipelineUseCase {
     repoPath: string,
     implementationPrompt: string,
     job: ExistingJobPayload,
+    repoId: string,
   ): Promise<void> {
     const { agentRunner, notifier } = this.deps;
 
     for (const agentName of agentsToRun) {
       void notifier?.notifyAgentStarted({ jobId: job.jobId, ticketKey: job.ticketKey, agentName });
+      const phase = pivPhaseForAgent(agentName) ?? 'implement';
+      recordAgentEvent(repoId, job.ticketKey, agentName, phase, 'start');
       const result = await agentRunner.run(
         agentName,
         repoPath,
         implementationPrompt,
         job.projectConfig.agents.modelOverrides[agentName],
       );
+      recordAgentEnd(repoId, job.ticketKey, agentName, phase, result.stdout);
       logger.info(`${agentName} agent run result`, undefined, {
         jobId: job.jobId,
         ticketKey: job.ticketKey,
@@ -1030,10 +1084,11 @@ export class RunAgentPipelineUseCase {
     }
   }
 
-  private async runQaGate(repoPath: string, job: ExistingJobPayload): Promise<QaReport> {
+  private async runQaGate(repoPath: string, job: ExistingJobPayload, repoId: string): Promise<QaReport> {
     const { agentRunner, notifier } = this.deps;
 
     void notifier?.notifyAgentStarted({ jobId: job.jobId, ticketKey: job.ticketKey, agentName: 'caf-qa' });
+    recordAgentEvent(repoId, job.ticketKey, 'caf-qa', 'verify', 'start');
     const qaPrompt = `Run QA against .caf/tasks/${job.ticketKey}/tasks.md for ticket ${job.ticketKey} and write .caf/tasks/${job.ticketKey}/qa-report.md.`;
     const qaResult = await agentRunner.run(
       'caf-qa',
@@ -1041,6 +1096,7 @@ export class RunAgentPipelineUseCase {
       qaPrompt,
       job.projectConfig.agents.modelOverrides['caf-qa'],
     );
+    recordAgentEnd(repoId, job.ticketKey, 'caf-qa', 'verify', qaResult.stdout);
     logger.info('caf-qa agent run result', undefined, {
       jobId: job.jobId,
       ticketKey: job.ticketKey,
@@ -1079,10 +1135,11 @@ export class RunAgentPipelineUseCase {
     return qaReport;
   }
 
-  private async runReviewerGate(repoPath: string, job: ExistingJobPayload): Promise<ReviewerReport> {
+  private async runReviewerGate(repoPath: string, job: ExistingJobPayload, repoId: string): Promise<ReviewerReport> {
     const { agentRunner, notifier } = this.deps;
 
     void notifier?.notifyAgentStarted({ jobId: job.jobId, ticketKey: job.ticketKey, agentName: 'caf-reviewer' });
+    recordAgentEvent(repoId, job.ticketKey, 'caf-reviewer', 'verify', 'start');
     const reviewerPrompt = `Review implementasi untuk ticket ${job.ticketKey} sesuai .caf/tasks/${job.ticketKey}/ dan tulis .caf/tasks/${job.ticketKey}/review-notes.md.`;
     const reviewerResult = await agentRunner.run(
       'caf-reviewer',
@@ -1090,6 +1147,7 @@ export class RunAgentPipelineUseCase {
       reviewerPrompt,
       job.projectConfig.agents.modelOverrides['caf-reviewer'],
     );
+    recordAgentEnd(repoId, job.ticketKey, 'caf-reviewer', 'verify', reviewerResult.stdout);
     logger.info('caf-reviewer agent run result', undefined, {
       jobId: job.jobId,
       ticketKey: job.ticketKey,
