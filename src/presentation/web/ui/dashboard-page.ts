@@ -5,14 +5,21 @@
  * stream (/api/events/stream); both require the same basic auth this page
  * itself sits behind, so the browser's cached credentials cover every fetch
  * here automatically — no auth code needed in the page itself.
+ *
+ * `renderDashboardHtml` (not a plain constant) because helmet's default CSP
+ * blocks inline <style>/<script> outright — dashboard-ui.ts passes the
+ * per-request nonces @fastify/helmet generates (`reply.cspNonce`) so the
+ * matching CSP header (also built per-request) allows exactly this page's
+ * own inline tags, nothing else.
  */
-export const DASHBOARD_HTML = `<!doctype html>
+export function renderDashboardHtml(nonces: { script: string; style: string }): string {
+  return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>CAF Orchestrator — Pipeline Dashboard</title>
-<style>
+<style nonce="${nonces.style}">
   :root {
     color-scheme: light dark;
     --bg: #0f1115;
@@ -129,7 +136,7 @@ export const DASHBOARD_HTML = `<!doctype html>
     <ul class="timeline" id="detail-timeline"></ul>
   </div>
 </main>
-<script>
+<script nonce="${nonces.script}">
 (function () {
   var rowsEl = document.getElementById('rows');
   var emptyEl = document.getElementById('empty-state');
@@ -289,3 +296,4 @@ export const DASHBOARD_HTML = `<!doctype html>
 </body>
 </html>
 `;
+}

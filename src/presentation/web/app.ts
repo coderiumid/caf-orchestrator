@@ -23,7 +23,11 @@ export function buildApp() {
     requestTimeout: 30_000,
   });
 
-  app.register(helmet);
+  // enableCSPNonces: the dashboard page (dashboard-ui.ts) is one inline
+  // <style>/<script> document with no build step — helmet's default CSP
+  // blocks inline script/style outright, so it needs a per-request nonce
+  // rather than the blanket (and weaker) 'unsafe-inline'.
+  app.register(helmet, { enableCSPNonces: true });
 
   app.addHook('onRequest', (request, _reply, done) => {
     request.startAt = process.hrtime.bigint();
