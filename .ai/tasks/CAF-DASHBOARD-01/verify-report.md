@@ -1,21 +1,22 @@
-# Verify Report: CAF-DASHBOARD-01 (Task 1 + Task 2 + Task 3 + Task 4 + Task 5 + Task 6 + Task 7)
+# Verify Report: CAF-DASHBOARD-01 (Task 1 through Task 8)
 
 Status: NEEDS_HUMAN
 
-Tasks 1-6's own work is SUCCESS (unchanged from before, all gates still
-green). Task 7 is marked NEEDS_HUMAN because its real-repo end-to-end test
-against `umkm-pos` — an explicit `requirements.md` acceptance criterion — was
-deliberately not run this session; see Task 7's section below for why and
-what's needed to close it.
+Tasks 1-6 and 8's own work is SUCCESS (unchanged from before, all gates
+still green). The overall status stays NEEDS_HUMAN because Task 7's
+real-repo end-to-end test against `umkm-pos` — an explicit `requirements.md`
+acceptance criterion — was deliberately not run this session; see Task 7's
+section below for why and what's needed to close it. Everything else in
+`tasks.md` (Tasks 1-6, 8) is complete.
 
 ## Scope
 
 Prior sessions covered **Task 1** (DB schema & migration), **Task 2** (cost
 tracking investigation), **Task 3** (event writer at existing orchestration
 points), **Task 4** (file watcher + SSE stream), **Task 5** (REST
-endpoints), and **Task 6** (frontend SPA). This update covers **Task 7
-(verify & real-repo test)** — partially: unit-level verify done, real-repo
-e2e deliberately deferred (asked, not guessed). Task 8 not started.
+endpoints), **Task 6** (frontend SPA), and **Task 7** (verify — unit-level
+done, real-repo e2e deliberately deferred, asked not guessed). This update
+adds **Task 8 (documentation)** — the last task in `tasks.md`.
 
 ---
 
@@ -532,6 +533,54 @@ them correctly with `repoId` filtering and never mixes rows.
 
 ---
 
+## Task 8 — Dokumentasi
+
+### Attempt Log
+
+1. No `docs/` or `.caf/knowledge/` directory existed yet — created `docs/`.
+2. Wrote `docs/dashboard.md`: how to turn the feature on
+   (`dashboard.enabled` + `DASHBOARD_BASIC_AUTH_PASSWORD`), how to reach it
+   (`/dashboard`, same Basic Auth as Bull Board — explicit that it's the
+   same credentials, not a separate login), a column-by-column reading guide
+   for the table (Repo/Ticket/Phase/Retries/Cost/Status/Artifact), how
+   retries are counted (max seen per agent, not a row count — easy to
+   misread otherwise), and how the SSE live-update mechanism behaves (what
+   the connection-status dot means, why a refresh is never needed).
+3. **Cost caveat, corrected rather than copied from the ticket**: `tasks.md`
+   Task 8 asks to note "kalau instrumentasi cost ternyata cuma estimasi
+   (bukan angka pasti dari API)" — but Task 2's investigation (this same
+   ticket) found the opposite: `claude --output-format json` returns a real
+   `total_cost_usd`, not something this codebase estimates from token counts.
+   Documented the actual finding instead of the ticket's anticipated (and
+   now incorrect) caveat, with an explicit note that the original plan
+   assumed otherwise — so a future reader doesn't wonder why the "estimate"
+   caveat is missing.
+4. Added a "Known limitation" section pointing at Task 7's outstanding
+   real-repo e2e gap, linking to this same verify report — so a reader of
+   the docs isn't left thinking the feature is fully proven end-to-end when
+   one AC is still open.
+5. Added a two-line pointer + link from `README.md` (next to the existing
+   `CLAUDE.md` cross-reference) so `docs/dashboard.md` is discoverable from
+   the repo's front door, not an orphaned file.
+6. Did not touch `.caf/knowledge/` — this repo doesn't use that convention
+   anywhere else (checked: no existing `.caf/` directory), so `docs/`
+   matches how the rest of the repo is organized (`docs/dashboard.md`
+   alongside `README.md`/`CLAUDE.md` at the root, not a new top-level
+   convention).
+
+### Verify
+
+"Dokumen bisa diikuti orang lain (bukan cuma Ganjar)" — self-reviewed for
+exactly that: every step assumes no prior context beyond having the repo
+checked out (states which config keys to set and where, names the actual
+URL path, explains what the browser will do when it hits Basic Auth,
+defines every column instead of assuming familiarity with the schema).
+Not literally tested by having a second person follow it — no second
+person available in this session — but written to that standard rather
+than as shorthand notes to self.
+
+---
+
 ## Quality Gate
 
 - `pnpm typecheck` — PASS
@@ -545,6 +594,8 @@ them correctly with `repoId` filtering and never mixes rows.
   no flakiness observed
 - Manual browser verification for Task 6 (see its Attempt Log #6) — real
   `pnpm dev`, real seeded data, real screenshots, not just unit tests
+- Task 8: no code changed, `pnpm typecheck`/`pnpm lint`/`pnpm test` reran
+  anyway as a sanity check — unaffected, still 35 files / 347 tests
 
 ## Catatan
 
@@ -566,9 +617,12 @@ them correctly with `repoId` filtering and never mixes rows.
 - **Outstanding gap**: real-repo + multi-repo end-to-end test against
   `umkm-pos` (Task 7's own AC, `requirements.md`'s last AC item) —
   deliberately deferred this session; see Task 7's "What's needed to close
-  this gap" above for exactly what running it requires.
-- Not touched: Task 8 (docs).
+  this gap" above for exactly what running it requires. This is the **only**
+  outstanding item in the entire `tasks.md` breakdown (Tasks 1-6, 8 all
+  complete).
+- Documentation lives at [`docs/dashboard.md`](../../../docs/dashboard.md),
+  linked from `README.md`.
 
-**NEEDS_HUMAN: real-repo e2e (Task 7's AC) still outstanding — see Task 7's
-section above for what's needed to close it. Everything else through Task 7
-is ready for review; Task 8 (docs) not started.**
+**All of `tasks.md` is done except Task 7's real-repo e2e AC — see Task 7's
+section above for exactly what's needed to close it. Nothing else is
+pending review.**
