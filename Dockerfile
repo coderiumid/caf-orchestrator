@@ -44,6 +44,11 @@ COPY --chown=node:node caf.config.yaml ./
 
 RUN mkdir -p /workspace && chown node:node /workspace
 RUN mkdir -p /home/node/.ssh && chown node:node /home/node/.ssh
+# CAF-DASHBOARD-01: db.path (caf.config.yaml) resolves to /app/data — must
+# exist and be node-owned before the dashboard_db volume mounts over it
+# (docker-compose.yml), otherwise the mount point defaults to root-owned and
+# the non-root `node` user below can't write the SQLite file.
+RUN mkdir -p /app/data && chown node:node /app/data
 
 USER node
 
