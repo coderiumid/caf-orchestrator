@@ -1,12 +1,109 @@
-# Verify Report: CAF-DASHBOARD-01 (Task 1 + Task 2 + Task 3)
+# Verify Report: CAF-DASHBOARD-01 (Task 1 + Task 2 + Task 3 + Task 4)
 
 Status: SUCCESS
 
 ## Scope
 
-Session 1 covered **Task 1 (DB schema & migration)** and **Task 2 (cost
-tracking investigation)**. This update adds **Task 3 (event writer at
-existing orchestration points)**. Task 4 onward not started.
+Prior sessions covered **Task 1** (DB schema & migration), **Task 2** (cost
+tracking investigation), and **Task 3** (event writer at existing
+orchestration points). This update adds **Task 4 (file watcher + SSE
+stream)**. Task 5 onward not started.
+
+---
+
+## Task 4 — File watcher + SSE stream
+
+### Attempt Log
+
+1. Added `chokidar` — pinned to `^3.6.0`, not the current `^5.x`: chokidar 5
+   ships ESM-only, and this repo compiles as CommonJS (no `"type": "module"`
+   in `package.json` — see Task 1's `connection.ts` note about the same
+   constraint). `pnpm typecheck` caught this immediately (TS1479) when first
+   tried against 5.0.0; 3.6.0 is CJS and needs no import-style workaround.
+2. Design question resolved before coding: `requirements.md`'s "Sumber data
+   live status: orchestration-state.json per repo, di-watch" only makes literal
+   sense as a *live PIV-phase* feed if read in isolation — that file is only
+   ever written on a gate failure/retry (`recordGateFailure`,
+   `incrementOrchestrationRetryCount`) or deleted on success
+   (`resetOrchestrationState`), never on phase start. Read together with
+   `tasks.md` Task 4 (which only asks to relay raw file-change events tagged
+   with `repoId`) and Task 5 ("merge live (state.json) + histori (DB)"), the
+   design is coherent: Task 4 is a coarse "something changed, go refetch"
+   push signal; Task 5's REST layer is where the richer live/historical merge
+   happens. Not treated as a STOP-worthy ambiguity — proceeded on this
+   reading rather than guessing a richer per-phase watch design.
+3. `src/infrastructure/watch/orchestration-state-watcher.ts` —
+   `startOrchestrationStateWatchers(projects, onEvent)`: one chokidar watcher
+   per configured project (`ProjectRegistry.getAll()`), globbed at
+   `${project.workspaceDir}/**/.caf/tasks/*/orchestration-state.json`. Each
+   project's `workspaceDir` is unique and never nested (enforced by
+   `project-config.schema.ts`'s cross-project check), so a watcher's events
+   are unambiguously that project's repo — no path-parsing heuristics needed
+   to tell repos apart. `repoId` reuses Task 3's `repoIdFromCloneUrl`, so the
+   same `owner/repo` string ties an SSE event to its `pipeline_runs`/
+   `agent_events` rows. Works under both `workspace.mode`s: persistent
+   (`persistent-<repo>/...`, stable across runs) and ephemeral
+   (`job-<uuid>/...`, exists only for the run's duration — the glob still
+   matches while a run is live; `cleanupWorkspace` only deletes the directory
+   after `execute()` returns, by which point any change already broadcast).
+4. `src/presentation/web/sse/event-broadcaster.ts` — `EventBroadcaster`: a
+   `Set<{write}>` of connected clients, `broadcast()` frames each event as
+   `data: <json>\n\n` and writes to every client, dropping (catch, not
+   throw) any whose `write` fails so one dead connection can't break the
+   fan-out to the rest.
+5. `src/presentation/web/routes/events.ts` — `GET /api/events/stream`:
+   `reply.hijack()`s the connection, writes SSE headers, subscribes to the
+   broadcaster, unsubscribes on the request socket's `close` event.
+   Deliberately **no auth** on this route — Task 5 is the ticket's own
+   explicit owner of "reuse basic auth middleware yang sama dengan Bull
+   Board" across the dashboard surface; adding it here piecemeal would
+   pre-empt that and risk a second, drifting auth wrapper.
+6. Wired into `app.ts` (route registration) and `server.ts` (watcher
+   startup/shutdown). Watchers are started in `server.ts`, not inside
+   `buildApp()` — `buildApp()` is reused by the test suite via `Fastify`
+   injection, and starting real filesystem watchers against project
+   `workspaceDir`s that don't exist in a test environment would be an
+   unwanted side effect of just building the app. `shutdown()` closes every
+   watcher before closing the Fastify app.
+7. Tests:
+   - `tests/unit/orchestration-state-watcher.test.ts` (2 cases): real
+     chokidar against real tmp directories for two different projects —
+     asserts each project's file writes produce an event tagged with that
+     project's own `repoId`, and that deleting the file emits `eventType:
+     'unlink'`.
+   - `tests/unit/event-broadcaster.test.ts` (4 cases): fan-out to multiple
+     clients, unsubscribe stops delivery, a throwing client is dropped
+     without affecting others, `clientCount` accuracy.
+   - `tests/unit/events-route.test.ts` (2 cases): a real Fastify instance
+     with only `eventsRoutes` registered, listening on a real TCP port —
+     two real SSE HTTP connections, `eventBroadcaster.broadcast()` called
+     with two differently-tagged events, both connections' raw received
+     bytes asserted to contain the correctly-tagged `data: ...` frames; a
+     second case confirms `clientCount` drops to 0 after a client
+     disconnects (proves the `close`-handler unsubscribe actually runs, not
+     just that the code exists).
+
+### Verify
+
+- "Buka 2 SSE client, ubah state.json di 2 repo berbeda, konfirmasi tiap
+  client terima event dengan repoId yang benar" — covered by two tests
+  together: `orchestration-state-watcher.test.ts` proves the watcher→event
+  path tags by `repoId` correctly per-repo; `events-route.test.ts` proves
+  the broadcaster→HTTP path delivers to every connected client. (Not
+  re-run as one single top-to-bottom manual scenario against a live server,
+  since the two seams are already independently verified and the full
+  wiring in `server.ts` is a two-line composition of both.)
+
+### Catatan
+
+- SSE fan-out is not filtered per-client server-side — every connected
+  client receives every repo's events; filtering by `repoId` is left to the
+  frontend (Task 6), matching the AC wording ("Multi-repo: ... tampil
+  terpisah, tidak tercampur" reads as a **display** requirement, not a
+  server-side subscription-scoping one).
+- No auth on `/api/events/stream` yet — intentional, deferred to Task 5 (see
+  Attempt Log #5). The AC "Dashboard terproteksi basic auth" isn't fully met
+  until Task 5 lands.
 
 ---
 
@@ -173,9 +270,12 @@ existing orchestration points)**. Task 4 onward not started.
 - `pnpm typecheck` — PASS
 - `pnpm lint` — PASS (pre-existing eslint.config.js module-type warning only,
   unrelated to this change)
-- `pnpm test` — PASS, 30 files / 329 tests
+- `pnpm test` — PASS, 33 files / 337 tests (8 new: 2 watcher + 4 broadcaster +
+  2 route)
 - `pnpm db:migrate` — PASS against a clean `./data/` dir, run twice (idempotency
   confirmed)
+- Reran the new timing-sensitive tests (watcher + SSE route) 3x back-to-back —
+  no flakiness observed
 
 ## Catatan
 
@@ -189,9 +289,11 @@ existing orchestration points)**. Task 4 onward not started.
   duplicate — no new field needed on `ExistingJobPayload` for this.
 - No ambiguity found in existing folder/naming conventions — `src/infrastructure/db/`
   follows the same flat-adapter pattern as `git/`, `linear/`, `vcs/`, etc.
-- Not touched: Task 4 (SSE/chokidar), Task 5 (REST endpoints), Task 6
-  (frontend), Task 7 (real-repo e2e — the AC item "Real-repo end-to-end test
-  PASS di `umkm-pos`" in `requirements.md` is explicitly that task, not
-  claimed here) or Task 8 (docs).
+- `chokidar` pinned to `3.6.0`, not the current `5.x` line — see Task 4's
+  Attempt Log #1 (ESM-only vs. this repo's CommonJS build target).
+- Not touched: Task 5 (REST endpoints + auth), Task 6 (frontend), Task 7
+  (real-repo e2e — the AC item "Real-repo end-to-end test PASS di
+  `umkm-pos`" in `requirements.md` is explicitly that task, not claimed
+  here) or Task 8 (docs).
 
-**Ready for review. Awaiting go-ahead before starting Task 4.**
+**Ready for review. Awaiting go-ahead before starting Task 5.**
