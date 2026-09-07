@@ -6,6 +6,7 @@ import { healthRoutes } from './routes/health.js';
 import { webhookRoutes } from './routes/webhooks.js';
 import { dashboardRoutes } from './routes/dashboard.js';
 import { eventsRoutes } from './routes/events.js';
+import { pipelinesRoutes } from './routes/pipelines.js';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -100,6 +101,7 @@ export function buildApp() {
   app.register(webhookRoutes, { prefix: '/webhooks' });
   app.register(dashboardRoutes);
   app.register(eventsRoutes);
+  app.register(pipelinesRoutes);
 
   return app;
 }

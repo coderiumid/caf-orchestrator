@@ -10,15 +10,24 @@ import { eventBroadcaster, type DashboardEvent } from '../../src/presentation/we
 // orchestration-state-watcher.test.ts; this exercises the actual HTTP route
 // end to end — two real SSE connections over a real socket, asserting each
 // receives the broadcast event with the correct repoId.
+//
+// Task 5 added auth to this route (reusing Bull Board's basic-auth) — these
+// credentials match caf.config.yaml's `dashboard.basicAuthUser: admin` and
+// tests/setup.ts's default DASHBOARD_BASIC_AUTH_PASSWORD.
+const AUTH_HEADER = `Basic ${Buffer.from('admin:test-dashboard-password').toString('base64')}`;
 
-function connectSse(port: number): Promise<{ res: IncomingMessage; frames: () => string[] }> {
+function connectSse(port: number, authorization = AUTH_HEADER): Promise<{ res: IncomingMessage; frames: () => string[] }> {
   return new Promise((resolve, reject) => {
-    const req = get(`http://127.0.0.1:${port}/api/events/stream`, (res) => {
-      const chunks: string[] = [];
-      res.on('data', (chunk: Buffer) => chunks.push(chunk.toString('utf-8')));
-      // Give the connection handshake a moment before the caller starts asserting.
-      setTimeout(() => resolve({ res, frames: () => chunks }), 50);
-    });
+    const req = get(
+      `http://127.0.0.1:${port}/api/events/stream`,
+      { headers: { authorization } },
+      (res) => {
+        const chunks: string[] = [];
+        res.on('data', (chunk: Buffer) => chunks.push(chunk.toString('utf-8')));
+        // Give the connection handshake a moment before the caller starts asserting.
+        setTimeout(() => resolve({ res, frames: () => chunks }), 50);
+      },
+    );
     req.on('error', reject);
   });
 }
@@ -86,6 +95,15 @@ describe('GET /api/events/stream', () => {
 
     clientA.res.destroy();
     clientB.res.destroy();
+  });
+
+  it('rejects a connection with no auth header (401)', async () => {
+    const response = await new Promise<IncomingMessage>((resolve, reject) => {
+      const req = get(`http://127.0.0.1:${port}/api/events/stream`, resolve);
+      req.on('error', reject);
+    });
+    expect(response.statusCode).toBe(401);
+    response.destroy();
   });
 
   it('stops the broadcaster from writing to a client after it disconnects', async () => {

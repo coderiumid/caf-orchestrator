@@ -1,13 +1,22 @@
 import type { FastifyInstance } from 'fastify';
+import { config } from '../../../config/index.js';
+import { registerDashboardBasicAuth } from '../auth/dashboard-basic-auth.js';
 import { eventBroadcaster } from '../sse/event-broadcaster.js';
 
 /**
- * CAF-DASHBOARD-01 Task 4: SSE push endpoint. Auth deliberately not added here —
- * Task 5 (REST endpoints) is the explicit task that reuses Bull Board's basic-auth
- * middleware across the whole dashboard surface; adding it piecemeal here would
- * pre-empt that and risk a second, drifting auth wrapper.
+ * CAF-DASHBOARD-01 Task 4: SSE push endpoint. Gated + auth-protected here in
+ * Task 5, which is when this dashboard's auth story (reuse Bull Board's
+ * basic-auth) actually lands across the whole surface — Task 4 deliberately
+ * left this route open, see verify-report.md.
  */
 export async function eventsRoutes(app: FastifyInstance): Promise<void> {
+  if (!config.dashboard.enabled) {
+    return;
+  }
+
+  await registerDashboardBasicAuth(app);
+  app.addHook('onRequest', app.basicAuth);
+
   app.get('/api/events/stream', (request, reply) => {
     // Fastify would otherwise try to manage/send its own reply — hijack()
     // hands full control of the underlying response to us for the life of
