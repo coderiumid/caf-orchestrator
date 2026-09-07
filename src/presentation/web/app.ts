@@ -5,6 +5,9 @@ import { logger } from '../../infrastructure/logging/logger.js';
 import { healthRoutes } from './routes/health.js';
 import { webhookRoutes } from './routes/webhooks.js';
 import { dashboardRoutes } from './routes/dashboard.js';
+import { eventsRoutes } from './routes/events.js';
+import { pipelinesRoutes } from './routes/pipelines.js';
+import { dashboardUiRoutes } from './routes/dashboard-ui.js';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -20,7 +23,11 @@ export function buildApp() {
     requestTimeout: 30_000,
   });
 
-  app.register(helmet);
+  // enableCSPNonces: the dashboard page (dashboard-ui.ts) is one inline
+  // <style>/<script> document with no build step — helmet's default CSP
+  // blocks inline script/style outright, so it needs a per-request nonce
+  // rather than the blanket (and weaker) 'unsafe-inline'.
+  app.register(helmet, { enableCSPNonces: true });
 
   app.addHook('onRequest', (request, _reply, done) => {
     request.startAt = process.hrtime.bigint();
@@ -98,6 +105,9 @@ export function buildApp() {
   app.register(healthRoutes);
   app.register(webhookRoutes, { prefix: '/webhooks' });
   app.register(dashboardRoutes);
+  app.register(eventsRoutes);
+  app.register(pipelinesRoutes);
+  app.register(dashboardUiRoutes);
 
   return app;
 }

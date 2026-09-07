@@ -1,10 +1,21 @@
-import { config } from '../../config/index.js';
+import { config, projectRegistry } from '../../config/index.js';
 import { logger } from '../../infrastructure/logging/logger.js';
 import { buildApp } from './app.js';
 import { pipelineQueue } from '../../infrastructure/queue/client.js';
 import { closeRedisConnection } from '../../infrastructure/queue/connection.js';
+import { startOrchestrationStateWatchers } from '../../infrastructure/watch/orchestration-state-watcher.js';
+import { eventBroadcaster } from './sse/event-broadcaster.js';
 
 const app = buildApp();
+
+// CAF-DASHBOARD-01 Task 4: one watcher per configured project, feeding every
+// orchestration-state.json add/change/unlink to the SSE broadcaster. Started
+// here (not in buildApp()) so tests that build the app via buildApp() don't
+// spin up real filesystem watchers against project workspaceDirs that may
+// not exist in a test environment.
+const stateWatchers = startOrchestrationStateWatchers(projectRegistry.getAll(), (event) =>
+  eventBroadcaster.broadcast(event),
+);
 
 async function start(): Promise<void> {
   try {
@@ -19,6 +30,7 @@ async function start(): Promise<void> {
 async function shutdown(signal: string): Promise<void> {
   logger.info(`Received ${signal}, shutting down gracefully`);
   try {
+    await Promise.all(stateWatchers.map((watcher) => watcher.close()));
     await app.close();
     await pipelineQueue.close();
     await closeRedisConnection();

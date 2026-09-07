@@ -13,7 +13,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "db:migrate": "tsx src/infrastructure/db/migrate.ts"
   },
   "engines": {
     "node": ">=22.0.0"
@@ -21,6 +22,7 @@
   "keywords": [],
   "license": "MIT",
   "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
     "@types/fs-extra": "^11.0.4",
     "@types/node": "^26.0.1",
     "@types/supertest": "^7.2.0",
@@ -38,7 +40,9 @@
     "@bull-board/fastify": "^8.1.2",
     "@fastify/basic-auth": "^6.2.0",
     "@fastify/helmet": "^13.0.2",
+    "better-sqlite3": "^13.0.3",
     "bullmq": "^5.79.1",
+    "chokidar": "^3.6.0",
     "dotenv": "^17.4.2",
     "fastify": "^5.8.5",
     "fs-extra": "^11.3.5",

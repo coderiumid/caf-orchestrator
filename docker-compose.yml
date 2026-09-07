@@ -31,6 +31,11 @@ services:
     volumes:
       - workspace:/workspace
       - /home/ubuntu/workspace/caf-orchestrator-workspaces:/home/ubuntu/workspace/caf-orchestrator-workspaces
+      # CAF-DASHBOARD-01: db.path (caf.config.yaml) resolves to /app/data
+      # inside the container (WORKDIR /app, Dockerfile). Shared with worker
+      # below — both must see the same SQLite file, since worker writes
+      # pipeline_runs/agent_events and api reads them for the dashboard.
+      - dashboard_db:/app/data
     depends_on:
       redis:
         condition: service_healthy
@@ -55,6 +60,7 @@ services:
       - /home/ubuntu/workspace/caf-orchestrator-workspaces:/home/ubuntu/workspace/caf-orchestrator-workspaces
       - /home/ubuntu/.ssh/id_ed25519:/home/node/.ssh/id_ed25519:ro
       - /home/ubuntu/.ssh/id_ed25519.pub:/home/node/.ssh/id_ed25519.pub:ro
+      - dashboard_db:/app/data
     depends_on:
       redis:
         condition: service_healthy
@@ -72,3 +78,4 @@ networks:
 volumes:
   redis_data:
   workspace:
+  dashboard_db:
