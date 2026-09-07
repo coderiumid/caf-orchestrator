@@ -5,6 +5,7 @@ import { logger } from '../../infrastructure/logging/logger.js';
 import { healthRoutes } from './routes/health.js';
 import { webhookRoutes } from './routes/webhooks.js';
 import { dashboardRoutes } from './routes/dashboard.js';
+import { eventsRoutes } from './routes/events.js';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -98,6 +99,7 @@ export function buildApp() {
   app.register(healthRoutes);
   app.register(webhookRoutes, { prefix: '/webhooks' });
   app.register(dashboardRoutes);
+  app.register(eventsRoutes);
 
   return app;
 }
