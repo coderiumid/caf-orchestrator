@@ -1,14 +1,21 @@
-# Verify Report: CAF-DASHBOARD-01 (Task 1 + Task 2 + Task 3 + Task 4 + Task 5 + Task 6)
+# Verify Report: CAF-DASHBOARD-01 (Task 1 + Task 2 + Task 3 + Task 4 + Task 5 + Task 6 + Task 7)
 
-Status: SUCCESS
+Status: NEEDS_HUMAN
+
+Tasks 1-6's own work is SUCCESS (unchanged from before, all gates still
+green). Task 7 is marked NEEDS_HUMAN because its real-repo end-to-end test
+against `umkm-pos` — an explicit `requirements.md` acceptance criterion — was
+deliberately not run this session; see Task 7's section below for why and
+what's needed to close it.
 
 ## Scope
 
 Prior sessions covered **Task 1** (DB schema & migration), **Task 2** (cost
 tracking investigation), **Task 3** (event writer at existing orchestration
-points), **Task 4** (file watcher + SSE stream), and **Task 5** (REST
-endpoints). This update adds **Task 6 (frontend SPA)**. Task 7 onward not
-started.
+points), **Task 4** (file watcher + SSE stream), **Task 5** (REST
+endpoints), and **Task 6** (frontend SPA). This update covers **Task 7
+(verify & real-repo test)** — partially: unit-level verify done, real-repo
+e2e deliberately deferred (asked, not guessed). Task 8 not started.
 
 ---
 
@@ -449,6 +456,82 @@ step that could produce divergent shapes.
 
 ---
 
+## Task 7 — Verify & real-repo test
+
+### Decision (asked, not guessed)
+
+Task 7 asks for a real end-to-end run against `umkm-pos` (1 ticket, full
+pipeline) plus a multi-repo test (2 tickets, 2 different repos, in
+parallel). Both mean: clone a real repo, spawn real `claude --agent ...`
+processes (real token spend, ~30+ min per run per `CLAUDE_AGENT_TIMEOUT_MS`),
+push a real branch, and open a real PR on GitHub — genuine external
+side effects, not something to trigger unilaterally. Asked the user how to
+proceed (I trigger it and verify, you trigger it and I verify, or skip and
+report the gap). **Chosen: skip real-repo e2e, report the gap, move on** —
+so this task closes with the unit-level half done and the real-repo half
+explicitly outstanding, not silently claimed.
+
+### Attempt Log
+
+1. Re-ran the full suite as Task 7's own "Unit test: DB query layer, SSE
+   event emission" line item — both already have dedicated coverage from
+   prior tasks (`pipeline-run.repository.test.ts` for the query layer;
+   `event-broadcaster.test.ts` + `orchestration-state-watcher.test.ts` +
+   `events-route.test.ts` for SSE emission end to end). No new tests needed
+   here — confirmed still green: `pnpm typecheck`/`pnpm lint`/`pnpm test`
+   all pass (35 files / 347 tests).
+2. Went through every `requirements.md` Acceptance Criteria line
+   individually against what's actually been built and tested (not just
+   assumed done because a task number was checked off):
+   - "Dashboard menampilkan pipeline yang sedang berjalan, live, tanpa
+     refresh manual (SSE)" — mechanism built and browser-verified (Task 6:
+     real `EventSource` connects, shows "live"). **Not** verified against
+     an actual in-flight real pipeline run reaching the dashboard live —
+     that combination is exactly the real-repo e2e being deferred here.
+   - "Multi-repo: 2 pipeline paralel di repo berbeda tampil terpisah,
+     tidak tercampur" — mechanism verified in isolation (watcher tags
+     `repoId` correctly per project, `repoId` query-param filtering
+     tested) but never proven against two *actually concurrent* real
+     pipeline runs. Deferred with the same gap as above.
+   - "Histori pipeline run tersimpan di DB dan bisa di-query lewat REST
+     endpoint" — fully done and tested (Tasks 1, 3, 5).
+   - "Tiap pipeline run menampilkan: fase PIV..., retry count per gate,
+     cost..., link ke artifact" — fully done and tested (Task 6).
+   - "Dashboard terproteksi basic auth yang sama dengan Bull Board" —
+     fully done and tested across all three dashboard routes (Task 5).
+   - "DB write di titik instrumentasi tidak boleh menjatuhkan pipeline
+     utama kalau gagal" — fully done and tested (Task 3).
+   - "Real-repo end-to-end test PASS di `umkm-pos`" — **not done**, per
+     the decision above.
+3. Did not check any boxes in `requirements.md` itself — that file is the
+   ticket spec, not this report; leaving the checklist accounting here
+   instead of editing the source document.
+
+### What's needed to close this gap
+
+To actually finish Task 7's real-repo criterion: pick (or create) one real
+`umkm-pos` ticket, flip it to "Ready for AI" (or trigger manually), run
+`pnpm dev` + `pnpm dev:worker` against real Redis/GitHub/Linear credentials,
+and watch `/dashboard` while it runs — confirming the PIV phase updates live
+without a manual refresh, and that `pipeline_runs`/`agent_events` end up
+correct once it finishes (success or a gate stop, either is a valid PASS
+for this AC). For the multi-repo half, the same thing twice, concurrently,
+against two different configured projects, confirming the dashboard splits
+them correctly with `repoId` filtering and never mixes rows.
+
+### Verify
+
+- `pnpm typecheck` / `pnpm lint` / `pnpm test` — all PASS (unit-level half
+  of Task 7's own verify line).
+- Real-repo / multi-repo e2e — **not run this session** (see Decision
+  above). Everything downstream of the actual `claude` agent spawn point
+  (DB writes, SSE push, REST reads, UI rendering) has been exercised with
+  realistic fixture data end-to-end (Task 6's browser check), but the one
+  thing not exercised is a real agent process actually producing that data
+  through the full pipeline.
+
+---
+
 ## Quality Gate
 
 - `pnpm typecheck` — PASS
@@ -477,11 +560,15 @@ step that could produce divergent shapes.
   follows the same flat-adapter pattern as `git/`, `linear/`, `vcs/`, etc.
 - `chokidar` pinned to `3.6.0`, not the current `5.x` line — see Task 4's
   Attempt Log #1 (ESM-only vs. this repo's CommonJS build target).
-- Task 5's live-vs-history data-source question (see Task 5's "Design
-  decision" section above) was asked rather than guessed — the only
-  explicit user decision point across Tasks 1-6.
-- Not touched: Task 7 (real-repo e2e — the AC item "Real-repo end-to-end
-  test PASS di `umkm-pos`" in `requirements.md` is explicitly that task,
-  not claimed here) or Task 8 (docs).
+- Task 5's live-vs-history data-source question and Task 7's real-repo
+  e2e question were both asked rather than guessed — the two explicit user
+  decision points across Tasks 1-7.
+- **Outstanding gap**: real-repo + multi-repo end-to-end test against
+  `umkm-pos` (Task 7's own AC, `requirements.md`'s last AC item) —
+  deliberately deferred this session; see Task 7's "What's needed to close
+  this gap" above for exactly what running it requires.
+- Not touched: Task 8 (docs).
 
-**Ready for review. Awaiting go-ahead before starting Task 7.**
+**NEEDS_HUMAN: real-repo e2e (Task 7's AC) still outstanding — see Task 7's
+section above for what's needed to close it. Everything else through Task 7
+is ready for review; Task 8 (docs) not started.**
