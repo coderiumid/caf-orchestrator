@@ -1,13 +1,92 @@
-# Verify Report: CAF-DASHBOARD-01 (Task 1 + Task 2 + Task 3 + Task 4)
+# Verify Report: CAF-DASHBOARD-01 (Task 1 + Task 2 + Task 3 + Task 4 + Task 5)
 
 Status: SUCCESS
 
 ## Scope
 
 Prior sessions covered **Task 1** (DB schema & migration), **Task 2** (cost
-tracking investigation), and **Task 3** (event writer at existing
-orchestration points). This update adds **Task 4 (file watcher + SSE
-stream)**. Task 5 onward not started.
+tracking investigation), **Task 3** (event writer at existing orchestration
+points), and **Task 4** (file watcher + SSE stream). This update adds
+**Task 5 (REST endpoints)**. Task 6 onward not started.
+
+---
+
+## Task 5 — REST endpoints
+
+### Design decision (asked, not guessed)
+
+`tasks.md` Task 5 says `GET /api/pipelines` should "merge live (state.json) +
+histori (DB)". But `orchestration-state.json` is only ever written on a gate
+failure/retry and deleted on success (never on phase start), and under the
+default `workspace.mode: 'ephemeral'` its containing folder is deleted by
+`cleanupWorkspace` the moment `execute()` returns — so reading it from disk
+at REST-query time (as opposed to Task 4's push-time watch) can't reliably
+reflect anything for the default config. Task 3 already gives a real,
+mode-independent "is this running right now" signal: a `pipeline_runs` row
+with `final_status IS NULL`. Asked the user which to use for
+`GET /api/pipelines`'s "live" half — chose **DB-only**: the endpoint reads
+only `pipeline_runs` (`final_status IS NULL` = running, set = history), no
+on-disk read of `orchestration-state.json` in this endpoint at all. This also
+means Task 5's other AC ("response shape konsisten antara data live dan data
+histori") is automatically satisfied — live and history rows come from the
+exact same query against the exact same table, so there's no separate merge
+step that could produce divergent shapes.
+
+### Attempt Log
+
+1. Extracted `src/presentation/web/auth/dashboard-basic-auth.ts`
+   (`registerDashboardBasicAuth`) out of `dashboard.ts`, which used to inline
+   the `@fastify/basic-auth` setup + timing-safe compare. Same credentials
+   (`config.dashboard.basicAuthUser` / `DASHBOARD_BASIC_AUTH_PASSWORD`), same
+   validate logic — now one function three route files call, instead of a
+   second copy that could drift. `dashboard.ts` itself was refactored to call
+   it (behavior unchanged — same 3 existing dashboard tests still pass
+   unmodified).
+2. `src/presentation/web/routes/pipelines.ts`:
+   - `GET /api/pipelines?repoId=<optional>` → `PipelineRunRepository.getPipelineRuns(repoId)`,
+     mapped to a flat JSON shape (`repoId, ticketId, ticketTitle, startedAt,
+     endedAt, finalStatus, status`) where `status` is `finalStatus ??
+     'RUNNING'` — a convenience field, `finalStatus` itself stays `null` on a
+     running row so a client can tell "explicitly null" from "any other
+     value" without string-matching `'RUNNING'`.
+   - `GET /api/pipelines/:repoId/:ticketId` → `getPipelineDetail`, same flat
+     shape plus an `events` array (the row's `agent_events`, already
+     camelCase from the repository). 404 if no run matches. `repoId` is
+     `owner/repo` (contains a `/`) — callers percent-encode it
+     (`ganjardbc%2Fumkm-pos`) so it survives as one path segment; documented
+     in the route file's own comment.
+   - Both routes gated behind `config.dashboard.enabled` (same flag Bull
+     Board uses — `basicAuthUser`/`DASHBOARD_BASIC_AUTH_PASSWORD` are only
+     guaranteed set when that's true) and protected by
+     `registerDashboardBasicAuth` + an `onRequest` hook, same pattern as
+     `dashboard.ts`.
+3. Retrofitted the same gating + auth onto `events.ts` (Task 4's SSE route) —
+   Task 4 deliberately shipped it open, noting Task 5 as the auth owner; this
+   closes that gap. Registered in `app.ts` alongside the other dashboard
+   routes.
+4. Updated `tests/unit/events-route.test.ts` (now needs auth to connect) and
+   added a 401 case for it.
+5. New `tests/unit/pipelines-route.test.ts` (5 cases, real SQLite via a tmp
+   file, `app.inject()` against a bare Fastify instance registering only
+   `pipelinesRoutes`, config mocked the same way `dashboard.test.ts` already
+   does): rejects with no auth (401); a running row and a finished row in the
+   same response have identical key sets (proves the shape-consistency AC
+   directly, not just by construction); `repoId` query-param filtering;
+   detail endpoint returns `events`; 404 for an unknown pair.
+
+### Verify
+
+- "Endpoint reject request tanpa auth (401)" — covered for both
+  `/api/pipelines` and `/api/events/stream`.
+- "Response shape konsisten antara data live dan data histori" — covered by
+  the dedicated key-set-equality assertion in `pipelines-route.test.ts`
+  (not just implied by the DB-only design decision above).
+
+### Catatan
+
+- `/api/events/stream` now requires the same auth as `/api/pipelines*` — a
+  behavior change from Task 4's initial (intentionally open) version.
+- Not touched: Task 6 (frontend SPA), Task 7 (real-repo e2e), Task 8 (docs).
 
 ---
 
@@ -270,11 +349,11 @@ stream)**. Task 5 onward not started.
 - `pnpm typecheck` — PASS
 - `pnpm lint` — PASS (pre-existing eslint.config.js module-type warning only,
   unrelated to this change)
-- `pnpm test` — PASS, 33 files / 337 tests (8 new: 2 watcher + 4 broadcaster +
-  2 route)
+- `pnpm test` — PASS, 34 files / 343 tests (5 new for Task 5, plus
+  `events-route.test.ts` updated for the new auth requirement)
 - `pnpm db:migrate` — PASS against a clean `./data/` dir, run twice (idempotency
   confirmed)
-- Reran the new timing-sensitive tests (watcher + SSE route) 3x back-to-back —
+- Reran the timing-sensitive tests (watcher + SSE route) 3x back-to-back —
   no flakiness observed
 
 ## Catatan
@@ -291,9 +370,11 @@ stream)**. Task 5 onward not started.
   follows the same flat-adapter pattern as `git/`, `linear/`, `vcs/`, etc.
 - `chokidar` pinned to `3.6.0`, not the current `5.x` line — see Task 4's
   Attempt Log #1 (ESM-only vs. this repo's CommonJS build target).
-- Not touched: Task 5 (REST endpoints + auth), Task 6 (frontend), Task 7
-  (real-repo e2e — the AC item "Real-repo end-to-end test PASS di
-  `umkm-pos`" in `requirements.md` is explicitly that task, not claimed
-  here) or Task 8 (docs).
+- Task 5's live-vs-history data-source question (see Task 5's "Design
+  decision" section above) was asked rather than guessed — the only
+  explicit user decision point across Tasks 1-5.
+- Not touched: Task 6 (frontend), Task 7 (real-repo e2e — the AC item
+  "Real-repo end-to-end test PASS di `umkm-pos`" in `requirements.md` is
+  explicitly that task, not claimed here) or Task 8 (docs).
 
-**Ready for review. Awaiting go-ahead before starting Task 5.**
+**Ready for review. Awaiting go-ahead before starting Task 6.**
