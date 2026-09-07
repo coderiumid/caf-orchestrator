@@ -177,6 +177,14 @@ export class PipelineRunRepository {
     return rows.map(toPipelineRun);
   }
 
+  /** All agent_events for one pipeline_runs.id, chronological — the piece getPipelineDetail() already does by repoId+ticketId, exposed directly for callers (Task 6's summary aggregation) that already have the run's id. */
+  getEventsForRun(pipelineRunId: string): AgentEvent[] {
+    const rows = this.db
+      .prepare('SELECT * FROM agent_events WHERE pipeline_run_id = ? ORDER BY created_at ASC, id ASC')
+      .all(pipelineRunId) as AgentEventRow[];
+    return rows.map(toAgentEvent);
+  }
+
   /** Returns one pipeline run plus all its agent_events (chronological), or undefined if not found. */
   getPipelineDetail(
     repoId: string,

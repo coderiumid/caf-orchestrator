@@ -154,6 +154,86 @@ describe('GET /api/pipelines*', () => {
     await app.close();
   });
 
+  it('summarizes currentPivPhase, retryCounts, totalCostUsd, and lastArtifactLink from agent_events', async () => {
+    const { openDb } = await import('../../src/infrastructure/db/connection.js');
+    const { PipelineRunRepository } = await import('../../src/infrastructure/db/pipeline-run.repository.js');
+    const db = openDb(dbPath);
+    const repo = new PipelineRunRepository(db);
+
+    repo.upsertPipelineRun({
+      id: 'ganjardbc/umkm-pos:CAF-5',
+      repoId: 'ganjardbc/umkm-pos',
+      ticketId: 'CAF-5',
+      ticketTitle: 'Summary ticket',
+      startedAt: '2026-09-07T00:00:00.000Z',
+    });
+    repo.insertEvent({
+      pipelineRunId: 'ganjardbc/umkm-pos:CAF-5',
+      agentName: 'caf-backend',
+      pivPhase: 'implement',
+      eventType: 'end',
+      costUsd: 0.01,
+      createdAt: '2026-09-07T00:00:01.000Z',
+    });
+    repo.insertEvent({
+      pipelineRunId: 'ganjardbc/umkm-pos:CAF-5',
+      agentName: 'caf-qa',
+      pivPhase: 'verify',
+      eventType: 'retry',
+      retryCount: 1,
+      createdAt: '2026-09-07T00:00:02.000Z',
+    });
+    repo.insertEvent({
+      pipelineRunId: 'ganjardbc/umkm-pos:CAF-5',
+      agentName: 'caf-qa',
+      pivPhase: 'verify',
+      eventType: 'end',
+      costUsd: 0.02,
+      createdAt: '2026-09-07T00:00:03.000Z',
+    });
+    repo.insertEvent({
+      pipelineRunId: 'ganjardbc/umkm-pos:CAF-5',
+      agentName: 'caf-qa',
+      pivPhase: 'verify',
+      eventType: 'gate_exhausted',
+      artifactLink: '.caf/tasks/CAF-5/qa-report.md',
+      createdAt: '2026-09-07T00:00:04.000Z',
+    });
+    db.close();
+
+    const app = await buildTestApp();
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/pipelines/ganjardbc%2Fumkm-pos/CAF-5',
+      headers: { authorization: AUTH_HEADER },
+    });
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as Record<string, unknown>;
+    expect(body).toMatchObject({
+      currentPivPhase: 'verify',
+      retryCounts: { 'caf-qa': 1 },
+      totalCostUsd: 0.03,
+      lastArtifactLink: '.caf/tasks/CAF-5/qa-report.md',
+    });
+
+    await app.close();
+  });
+
+  it('reports totalCostUsd as null (not 0) when no event has cost data yet', async () => {
+    await seed();
+    const app = await buildTestApp();
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/pipelines/ganjardbc%2Fumkm-pos/CAF-1',
+      headers: { authorization: AUTH_HEADER },
+    });
+    const body = response.json() as Record<string, unknown>;
+    expect(body.totalCostUsd).toBeNull();
+
+    await app.close();
+  });
+
   it('returns 404 for an unknown repoId/ticketId pair', async () => {
     await seed();
     const app = await buildTestApp();
