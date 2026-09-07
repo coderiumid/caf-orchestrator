@@ -24,6 +24,8 @@ src/
 
 See [CLAUDE.md](./CLAUDE.md) for a detailed walkthrough of the pipeline stages, agent execution model, and report contract.
 
+A live pipeline-monitoring dashboard (PIV phase, retry counts, cost, artifact links, real-time via SSE) is available at `/dashboard` — see [docs/dashboard.md](./docs/dashboard.md) for access and how to read it.
+
 ## Requirements
 
 - Node.js >= 22
