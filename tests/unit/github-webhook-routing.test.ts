@@ -31,7 +31,6 @@ vi.mock('../../src/config/index.js', () => ({
 
 vi.mock('../../src/infrastructure/queue/client.js', () => ({
   pipelineQueue: { addJob: addJobMock, close: vi.fn() },
-  rawPipelineQueue: {},
 }));
 
 vi.mock('../../src/infrastructure/linear/delivery-dedupe.js', () => ({

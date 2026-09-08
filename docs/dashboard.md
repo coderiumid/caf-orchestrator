@@ -1,9 +1,8 @@
 # Pipeline Monitoring Dashboard
 
 CAF-DASHBOARD-01: a small operator dashboard for watching agent pipeline runs
-live and browsing their history — separate from the Bull Board queue view at
-`/admin/queues`, which only shows job-queue state, not pipeline-semantic
-state (PIV phase, retry counts, cost, artifacts).
+live and browsing their history — pipeline-semantic state (PIV phase, retry
+counts, cost, artifacts), not just raw job-queue state.
 
 ## Accessing it
 
@@ -22,8 +21,7 @@ state (PIV phase, retry counts, cost, artifacts).
    ```
 
    If `dashboard.enabled` is `false` (the default), the dashboard page and
-   its API/SSE endpoints don't exist at all — visiting them 404s, same as
-   Bull Board does when disabled.
+   its API/SSE endpoints don't exist at all — visiting them 404s.
 
 2. Start the web server (`pnpm dev` or `pnpm start` — the dashboard is
    served by the same Fastify app that receives Linear/GitHub webhooks; you
@@ -36,15 +34,13 @@ state (PIV phase, retry counts, cost, artifacts).
 
 4. The browser will show its native HTTP Basic Auth prompt. Use the
    `dashboard.basicAuthUser` / `DASHBOARD_BASIC_AUTH_PASSWORD` values from
-   step 1 — **the same credentials as Bull Board** (`/admin/queues`), not a
-   separate login. Once entered, the browser remembers them for the rest of
-   the session; you won't be asked again for API/SSE calls the page makes
-   in the background.
+   step 1. Once entered, the browser remembers them for the rest of the
+   session; you won't be asked again for API/SSE calls the page makes in
+   the background.
 
 If you're behind a reverse proxy, make sure `/dashboard`, `/api/pipelines*`,
 and `/api/events/stream` are all proxied and served over HTTPS — Basic Auth
-credentials are sent in plaintext-equivalent (base64) over the connection,
-same caveat as Bull Board.
+credentials are sent in plaintext-equivalent (base64) over the connection.
 
 ## Reading the table
 

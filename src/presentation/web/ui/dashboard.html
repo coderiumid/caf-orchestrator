@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>CAF Orchestrator — Mission control</title>
+<link rel="stylesheet" href="/dashboard/app.css" />
+</head>
+<body>
+<div class="shell">
+  <header class="topbar">
+    <div class="brand">
+      <img class="brand-mark" src="/dashboard/logo.png" alt="CAF" />
+      <div>
+        <div class="brand-name">Orchestrator</div>
+        <div class="brand-sub">Autonomous delivery system</div>
+      </div>
+    </div>
+    <div class="connection">
+      <span id="conn-dot" class="connection-dot"></span>
+      <span id="conn-label">connecting</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div>
+        <div class="eyebrow">Pipeline mission control</div>
+        <p class="hero-copy">Follow work as it moves from plan to implementation to verification. Open any run to inspect every agent handoff.</p>
+      </div>
+      <div class="hero-time">
+        <strong id="clock">--:--:--</strong>
+        <span id="today">local system time</span>
+      </div>
+    </section>
+
+    <section class="overview" aria-label="Pipeline overview">
+      <div class="stat">
+        <div class="label-row">
+          <span class="pulse"></span>
+          <span class="stat-label">Live activity</span>
+        </div>
+        <div class="activity-value">
+          <span class="stat-value" id="stat-running">—</span>
+          <span class="stat-label">active runs</span>
+        </div>
+      </div>
+      <div class="stat">
+        <span class="stat-label">Completed</span>
+        <span class="stat-value" id="stat-success">—</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">Needs attention</span>
+        <span class="stat-value" id="stat-attention">—</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">Recorded spend</span>
+        <span class="stat-value" id="stat-cost">—</span>
+      </div>
+    </section>
+
+    <div class="toolbar">
+      <div class="search-wrap">
+        <input id="run-search" type="search" placeholder="Search ticket, title, or repository…" aria-label="Search pipeline runs" />
+      </div>
+      <select id="status-filter" aria-label="Filter by status">
+        <option value="ALL">All statuses</option>
+        <option value="RUNNING">Running</option>
+        <option value="SUCCESS">Successful</option>
+        <option value="NEEDS_HUMAN">Needs attention</option>
+        <option value="ERROR">Error</option>
+      </select>
+      <select id="repo-filter" aria-label="Filter by repository">
+        <option value="ALL">All repositories</option>
+      </select>
+      <span id="result-count" class="count"></span>
+    </div>
+
+    <div class="section-head">
+      <h2>Pipeline map</h2>
+      <span>Plan · Implement · Verify</span>
+    </div>
+    <section id="run-grid" class="run-grid loading" aria-live="polite"></section>
+    <div id="empty-state" class="empty" hidden>
+      <strong>No runs in view</strong>
+      <span>Adjust the filters or wait for the next pipeline to begin.</span>
+    </div>
+  </main>
+</div>
+
+<div id="inspector-backdrop" class="inspector-backdrop" hidden></div>
+<aside id="inspector" class="inspector" aria-label="Pipeline details" hidden>
+  <div class="inspector-top">
+    <span>Run inspector</span>
+    <button id="close-inspector" class="close" type="button" aria-label="Close details">×</button>
+  </div>
+  <div id="detail-content"></div>
+</aside>
+
+<script src="/dashboard/app.js" defer></script>
+</body>
+</html>

@@ -96,7 +96,7 @@ const envSchema = z.object({
   // is the only auth path besides openai.useOpenai; see superRefine below.
   CLAUDE_CODE_OAUTH_TOKEN: z.string().min(1).optional(),
 
-  // Basic-auth password gating /admin/queues (Bull Board). Required in .env
+  // Basic-auth password gating /dashboard and its API routes. Required in .env
   // only when dashboard.enabled is true in caf.config.yaml — see superRefine
   // below, same pairing pattern as TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID.
   DASHBOARD_BASIC_AUTH_PASSWORD: z.string().min(1).optional(),
@@ -208,8 +208,8 @@ const yamlSchema = z.object({
     maxOrchestrationRetries: z.coerce.number().int().nonnegative().default(2),
   }).default(() => ({ maxOrchestrationRetries: 2 })),
 
-  // Bull Board dashboard at /admin/queues, basic-auth gated. Off by default —
-  // fail-safe, must be explicitly enabled.
+  // Pipeline monitoring dashboard at /dashboard, basic-auth gated. Off by
+  // default — fail-safe, must be explicitly enabled.
   dashboard: z.object({
     enabled: z.boolean().default(false),
     basicAuthUser: z.string().min(1).optional(),
@@ -217,7 +217,7 @@ const yamlSchema = z.object({
 
   // SQLite-backed pipeline history store for the CAF-DASHBOARD-01 monitoring
   // dashboard (agent_events/pipeline_runs — separate from the dashboard.*
-  // block above, which gates Bull Board at /admin/queues, not this).
+  // block above, which gates the /dashboard route itself, not this).
   db: z.object({
     path: z.string().min(1).default('./data/caf-dashboard.sqlite'),
   }).default(() => ({ path: './data/caf-dashboard.sqlite' })),
