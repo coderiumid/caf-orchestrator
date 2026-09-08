@@ -99,9 +99,9 @@ Agents communicate pipeline state by writing markdown files to `.ai/tasks/<TICKE
 
 Validates HMAC signature (`verifyLinearSignature`) and timestamp freshness before anything else, then dedupes by `Linear-Delivery` header via Redis (`delivery-dedupe.ts`) to survive Linear's at-least-once delivery. Only triggers the pipeline on an `Issue` `update` event where `updatedFrom` contains `stateId` (i.e. an actual state transition, not just any field edit) and the new `stateId` matches `LINEAR_READY_STATE_ID`. `ENABLE_PIPELINE_TRIGGER` is a kill switch checked after all validation.
 
-### Queue dashboard (`routes/dashboard.ts`)
+### Pipeline monitoring dashboard (`routes/dashboard-ui.ts`, `routes/events.ts`, `routes/pipelines.ts`)
 
-Bull Board UI for the `agent-pipeline` BullMQ queue, mounted at `/admin/queues` (not root), basic-auth gated. Off by default (`dashboard.enabled: false` in `caf.config.yaml`) — must be explicitly enabled, and `dashboard.basicAuthUser` (YAML) + `DASHBOARD_BASIC_AUTH_PASSWORD` (`.env`, secret) are both required once enabled (enforced via `superRefine`, same pairing pattern as the Telegram vars). Password comparison is timing-safe. If deployed behind a reverse proxy, ensure `/admin/queues` is proxied and served over HTTPS only — basic-auth credentials are plaintext over HTTP.
+Vanilla-JS SPA at `/dashboard`, backed by `/api/pipelines*` and an SSE stream at `/api/events/stream`, basic-auth gated. Off by default (`dashboard.enabled: false` in `caf.config.yaml`) — must be explicitly enabled, and `dashboard.basicAuthUser` (YAML) + `DASHBOARD_BASIC_AUTH_PASSWORD` (`.env`, secret) are both required once enabled (enforced via `superRefine`, same pairing pattern as the Telegram vars). Password comparison is timing-safe. If deployed behind a reverse proxy, ensure `/dashboard`, `/api/pipelines*`, and `/api/events/stream` are all proxied and served over HTTPS only — basic-auth credentials are plaintext over HTTP. See `docs/dashboard.md` for the full operator guide. (The previous Bull Board queue viewer at `/admin/queues` was removed — its client-side polling was adding load on top of an already resource-constrained VPS; this SSE-pushed dashboard is the queue-visibility surface now.)
 
 ### v1 scope constraints (intentional, not gaps)
 

@@ -5,9 +5,7 @@ import { renderDashboardHtml } from '../ui/dashboard-page.js';
 
 /**
  * CAF-DASHBOARD-01 Task 6: GET /dashboard serves the vanilla-JS SPA (see
- * dashboard-page.ts). Named dashboard-ui.ts (not dashboard.ts) to avoid
- * clashing with the existing Bull Board route file — different route
- * (`/dashboard` vs. `/admin/queues`), same auth reuse pattern.
+ * dashboard-page.ts).
  */
 export async function dashboardUiRoutes(app: FastifyInstance): Promise<void> {
   if (!config.dashboard.enabled) {

@@ -4,7 +4,6 @@ import { pinoLogger } from '../../infrastructure/logging/logger.js';
 import { logger } from '../../infrastructure/logging/logger.js';
 import { healthRoutes } from './routes/health.js';
 import { webhookRoutes } from './routes/webhooks.js';
-import { dashboardRoutes } from './routes/dashboard.js';
 import { eventsRoutes } from './routes/events.js';
 import { pipelinesRoutes } from './routes/pipelines.js';
 import { dashboardUiRoutes } from './routes/dashboard-ui.js';
@@ -104,7 +103,6 @@ export function buildApp() {
 
   app.register(healthRoutes);
   app.register(webhookRoutes, { prefix: '/webhooks' });
-  app.register(dashboardRoutes);
   app.register(eventsRoutes);
   app.register(pipelinesRoutes);
   app.register(dashboardUiRoutes);

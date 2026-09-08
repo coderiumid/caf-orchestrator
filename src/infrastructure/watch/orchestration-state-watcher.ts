@@ -37,7 +37,16 @@ export function startOrchestrationStateWatchers(
   return projects.map((project) => {
     const repoId = repoIdFromCloneUrl(project.repoCloneUrl);
     const pattern = `${project.workspaceDir}/**/.caf/tasks/*/orchestration-state.json`;
-    const watcher = chokidar.watch(pattern, { ignoreInitial: true });
+    // The glob root is workspaceDir — a cloned target repo, which can contain
+    // .git (thousands of loose objects) and node_modules if deps were
+    // installed. Without excluding these, chokidar recurses into and watches
+    // every one of those files/dirs too (inotify watch per dir on Linux),
+    // which can exhaust fs.inotify.max_user_watches or spike memory on a
+    // small VPS while a pipeline run is actively writing/checking out files.
+    const watcher = chokidar.watch(pattern, {
+      ignoreInitial: true,
+      ignored: ['**/.git/**', '**/node_modules/**'],
+    });
 
     for (const eventType of FS_EVENTS) {
       watcher.on(eventType, (path: string) => {

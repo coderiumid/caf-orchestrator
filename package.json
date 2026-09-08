@@ -36,8 +36,6 @@
     "vitest": "^4.1.9"
   },
   "dependencies": {
-    "@bull-board/api": "^8.1.2",
-    "@bull-board/fastify": "^8.1.2",
     "@fastify/basic-auth": "^6.2.0",
     "@fastify/helmet": "^13.0.2",
     "better-sqlite3": "^13.0.3",

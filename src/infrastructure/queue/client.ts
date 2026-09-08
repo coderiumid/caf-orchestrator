@@ -51,7 +51,3 @@ class AgentPipelineQueue implements IQueue {
 const agentPipelineQueue = new AgentPipelineQueue();
 
 export const pipelineQueue: IQueue = agentPipelineQueue;
-// Raw bullmq Queue, for infra-only consumers that need direct BullMQ access
-// (e.g. Bull Board's BullMQAdapter) — bypasses the IQueue port on purpose,
-// since that port is deliberately BullMQ-agnostic.
-export const rawPipelineQueue: Queue = agentPipelineQueue.queue;

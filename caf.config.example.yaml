@@ -117,7 +117,7 @@ openai:
   #   - ag/gemini-3.5-flash-low
   allowedModels: []
 
-# Bull Board queue dashboard at /admin/queues, basic-auth gated. Off by default
+# Pipeline monitoring dashboard at /dashboard, basic-auth gated. Off by default
 # (fail-safe). If enabled, DASHBOARD_BASIC_AUTH_PASSWORD must be set in .env.
 dashboard:
   enabled: false
