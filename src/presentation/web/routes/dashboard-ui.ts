@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { config } from '../../../config/index.js';
 import { registerDashboardBasicAuth } from '../auth/dashboard-basic-auth.js';
-import { renderDashboardHtml, renderDashboardCss, renderDashboardJs } from '../ui/dashboard-page.js';
+import { renderDashboardHtml, renderDashboardCss, renderDashboardJs, renderDashboardLogo } from '../ui/dashboard-page.js';
 
 /**
  * CAF-DASHBOARD-01 Task 6: serves the vanilla-JS SPA (see dashboard-page.ts) —
@@ -26,5 +26,9 @@ export async function dashboardUiRoutes(app: FastifyInstance): Promise<void> {
 
   app.get('/dashboard/app.js', async (_request, reply) => {
     reply.type('application/javascript').send(renderDashboardJs());
+  });
+
+  app.get('/dashboard/logo.png', async (_request, reply) => {
+    reply.type('image/png').send(renderDashboardLogo());
   });
 }

@@ -18,6 +18,7 @@ import { join } from 'node:path';
 const dashboardHtml = readFileSync(join(__dirname, 'dashboard.html'), 'utf-8');
 const dashboardCss = readFileSync(join(__dirname, 'dashboard.css'), 'utf-8');
 const dashboardJs = readFileSync(join(__dirname, 'dashboard.js'), 'utf-8');
+const dashboardLogo = readFileSync(join(__dirname, '..', 'assets', 'logo.png'));
 
 export function renderDashboardHtml(): string {
   return dashboardHtml;
@@ -29,4 +30,8 @@ export function renderDashboardCss(): string {
 
 export function renderDashboardJs(): string {
   return dashboardJs;
+}
+
+export function renderDashboardLogo(): Buffer {
+  return dashboardLogo;
 }

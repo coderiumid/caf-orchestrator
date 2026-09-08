@@ -40,7 +40,7 @@ button { color: inherit; }
 .shell { width: min(1540px, 100%); margin: auto; padding: 0 32px 44px; }
 .topbar { height: 70px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); }
 .brand { display: flex; align-items: center; gap: 12px; }
-.brand-mark { width: 31px; height: 31px; border: 1px solid var(--cyan); border-radius: 50%; display: grid; place-items: center; color: var(--cyan); font: 700 10px var(--mono); box-shadow: inset 0 0 0 5px var(--cyanSoft); }
+.brand-mark { width: 31px; height: 31px; border-radius: 50%; object-fit: cover; box-shadow: 0 0 0 1px var(--cyan), inset 0 0 0 5px var(--cyanSoft); }
 .brand-name { font: 700 14px var(--display); letter-spacing: .14em; text-transform: uppercase; }
 .brand-sub { color: var(--faint); font: 10px var(--mono); }
 .connection { display: flex; align-items: center; gap: 8px; color: var(--muted); font: 11px var(--mono); text-transform: uppercase; letter-spacing: .08em; }
@@ -65,8 +65,9 @@ h1 { margin: 9px 0 8px; font: 600 clamp(26px, 3.2vw, 44px)/.94 var(--display); l
 .stat-label { color: var(--muted); font: 10px var(--mono); letter-spacing: .11em; text-transform: uppercase; }
 .stat-value { font: 600 31px/1 var(--display); }
 .stat-value small { color: var(--muted); font: 12px var(--body); }
+.label-row { display: flex; align-items: center; gap: 7px; }
 .activity-value { display: flex; align-items: baseline; gap: 10px; }
-.pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--cyan); box-shadow: 0 0 14px var(--cyan); animation: pulse 2s ease-out infinite; }
+.pulse { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--cyan); box-shadow: 0 0 14px var(--cyan); animation: pulse 2s ease-out infinite; }
 @keyframes pulse { 50% { box-shadow: 0 0 0 8px rgba(99, 212, 232, 0); } }
 
 /* ---- Toolbar (search + filters) ---- */
@@ -102,14 +103,21 @@ input:focus, select:focus, button:focus-visible { border-color: var(--cyan); box
 
 /* ---- Plan / Implement / Verify phase rail ---- */
 
-.phase-rail { display: grid; grid-template-columns: repeat(3, 1fr); position: relative; margin: 7px 5px 18px; }
-.phase-rail:before { content: ""; position: absolute; top: 7px; left: 12%; right: 12%; height: 1px; background: var(--line); }
-.phase { position: relative; text-align: center; color: var(--faint); font: 9px var(--mono); text-transform: uppercase; letter-spacing: .08em; padding-top: 20px; }
-.phase:before { content: ""; position: absolute; width: 9px; height: 9px; border: 2px solid var(--surface); border-radius: 50%; background: var(--line); top: 2px; left: calc(50% - 5px); z-index: 1; }
+.phase-rail { display: grid; grid-template-columns: repeat(3, 1fr); position: relative; margin: 14px 5px 26px; }
+.phase-rail:before { content: ""; position: absolute; top: 11px; left: 12%; right: 12%; height: 2px; background: var(--line); }
+.phase { position: relative; text-align: center; color: var(--faint); font: 12px var(--mono); text-transform: uppercase; letter-spacing: .09em; padding-top: 32px; }
+.phase:before { content: ""; position: absolute; width: 15px; height: 15px; border: 3px solid var(--surface); border-radius: 50%; background: var(--line); top: 2px; left: calc(50% - 8.5px); z-index: 1; }
 .phase.done, .phase.active { color: var(--ink); }
 .phase.done:before { background: var(--green); }
-.phase.active:before { background: var(--cyan); box-shadow: 0 0 0 5px var(--cyanSoft), 0 0 13px var(--cyan); }
+.phase.active:before { background: var(--cyan); box-shadow: 0 0 0 7px var(--cyanSoft), 0 0 18px var(--cyan); }
+.phase.active.running:before { animation: phasePulse 1.4s ease-out infinite; }
+.phase.active.running:after { content: ""; position: absolute; width: 15px; height: 15px; border-radius: 50%; background: var(--cyan); top: 2px; left: calc(50% - 8.5px); z-index: 0; animation: phaseRing 1.4s ease-out infinite; }
 .phase.failed:before { background: var(--red); }
+@keyframes phasePulse { 50% { box-shadow: 0 0 0 7px var(--cyanSoft), 0 0 18px var(--cyan), 0 0 0 13px rgba(99, 212, 232, .18); } }
+@keyframes phaseRing { from { transform: scale(1); opacity: .55; } to { transform: scale(2.6); opacity: 0; } }
+
+.phase-rail.running:before { background: linear-gradient(90deg, var(--line) 0%, var(--cyan) 50%, var(--line) 100%); background-size: 200% 100%; animation: railFlow 1.8s linear infinite; }
+@keyframes railFlow { from { background-position: 200% 0; } to { background-position: -200% 0; } }
 
 /* ---- Run meta row (elapsed / retries / cost) ---- */
 

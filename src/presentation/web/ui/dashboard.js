@@ -72,9 +72,11 @@
 
   function phaseRail(run) {
     var active = phaseIndex(run.currentPivPhase);
+    var running = run.status === 'RUNNING';
     return ['Plan', 'Implement', 'Verify'].map(function (label, i) {
       var cls = i < active || (run.status === 'SUCCESS' && i <= active) ? 'done' : i === active ? 'active' : '';
       if ((run.status === 'ERROR' || run.status === 'NEEDS_HUMAN') && i === active) cls += ' failed';
+      if (running && i === active) cls += ' running';
       return '<span class="phase ' + cls + '">' + label + '</span>';
     }).join('');
   }
@@ -92,7 +94,7 @@
         '</div>' +
         '<span class="status ' + esc(run.status) + '">' + esc(statusLabel(run.status)) + '</span>' +
       '</div>' +
-      '<div class="phase-rail">' + phaseRail(run) + '</div>' +
+      '<div class="phase-rail' + (run.status === 'RUNNING' ? ' running' : '') + '">' + phaseRail(run) + '</div>' +
       '<div class="run-meta">' +
         '<div class="meta-cell"><span class="meta-label">Elapsed</span><span class="meta-value">' + esc(elapsed(run)) + '</span></div>' +
         '<div class="meta-cell"><span class="meta-label">Retries</span><span class="meta-value">' + totalRetries(run.retryCounts) + '</span></div>' +
