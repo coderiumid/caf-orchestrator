@@ -17,7 +17,16 @@ export async function dashboardUiRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', app.basicAuth);
 
   app.get('/dashboard', async (_request, reply) => {
-    reply.type('text/html').send(renderDashboardHtml());
+    const auth = Buffer.from(
+      `${config.dashboard.basicAuthUser}:${config.DASHBOARD_BASIC_AUTH_PASSWORD}`,
+    ).toString('base64');
+    reply
+      .header(
+        'Set-Cookie',
+        `caf_dashboard_auth=${auth}; Path=/api; HttpOnly; SameSite=Lax; Max-Age=3600`,
+      )
+      .type('text/html')
+      .send(renderDashboardHtml());
   });
 
   app.get('/dashboard/app.css', async (_request, reply) => {

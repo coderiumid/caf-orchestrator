@@ -1,6 +1,5 @@
 import type { FastifyInstance } from 'fastify';
 import { config } from '../../../config/index.js';
-import { registerDashboardBasicAuth } from '../auth/dashboard-basic-auth.js';
 import { eventBroadcaster } from '../sse/event-broadcaster.js';
 
 /**
@@ -14,8 +13,31 @@ export async function eventsRoutes(app: FastifyInstance): Promise<void> {
     return;
   }
 
-  await registerDashboardBasicAuth(app);
-  app.addHook('onRequest', app.basicAuth);
+  // EventSource cannot set an Authorization header. The dashboard handler
+  // sets this same-origin cookie after Basic Auth succeeds; the browser sends
+  // it automatically with the long-lived SSE request.
+  app.addHook('onRequest', async (request, reply) => {
+    const cookie = request.headers.cookie
+      ?.split(';')
+      .map((part) => part.trim())
+      .find((part) => part.startsWith('caf_dashboard_auth='))
+      ?.slice('caf_dashboard_auth='.length);
+    const expected = Buffer.from(
+      `${config.dashboard.basicAuthUser}:${config.DASHBOARD_BASIC_AUTH_PASSWORD}`,
+    ).toString('base64');
+
+    if (cookie !== expected) {
+      return reply.code(401).send({
+        statusCode: 401,
+        error: 'Unauthorized',
+        message: 'Dashboard authentication required',
+      });
+    }
+  });
+
+  app.addHook('onSend', async (_request, reply) => {
+    reply.header('X-Accel-Buffering', 'no');
+  });
 
   app.get('/api/events/stream', (request, reply) => {
     // Fastify would otherwise try to manage/send its own reply — hijack()
