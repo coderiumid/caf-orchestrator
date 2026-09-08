@@ -50,12 +50,21 @@ export async function eventsRoutes(app: FastifyInstance): Promise<void> {
       'Cache-Control': 'no-cache',
       Connection: 'keep-alive',
     });
-    reply.raw.write(':connected\n\n');
+    // Send enough initial padding to force Cloudflare/Nginx to flush the SSE
+    // response immediately; a tiny `:connected` frame may remain buffered.
+    reply.raw.write(`:${' '.repeat(2048)}\n\n`);
+
+    const heartbeat = setInterval(() => {
+      if (!reply.raw.destroyed) reply.raw.write(':heartbeat\n\n');
+    }, 15000);
 
     const unsubscribe = eventBroadcaster.subscribe({
       write: (chunk: string) => reply.raw.write(chunk),
     });
 
-    request.raw.on('close', unsubscribe);
+    request.raw.on('close', () => {
+      clearInterval(heartbeat);
+      unsubscribe();
+    });
   });
 }
