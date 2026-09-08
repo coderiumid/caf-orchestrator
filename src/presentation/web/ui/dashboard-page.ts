@@ -1,299 +1,33 @@
-/**
- * CAF-DASHBOARD-01 Task 6: the whole SPA as one string — vanilla JS, no
- * build step, no bundler, no framework, served directly by dashboard-ui.ts.
- * Talks only to Task 5's REST endpoints (/api/pipelines*) and Task 4's SSE
- * stream (/api/events/stream); both require the same basic auth this page
- * itself sits behind, so the browser's cached credentials cover every fetch
- * here automatically — no auth code needed in the page itself.
- *
- * `renderDashboardHtml` (not a plain constant) because helmet's default CSP
- * blocks inline <style>/<script> outright — dashboard-ui.ts passes the
- * per-request nonces @fastify/helmet generates (`reply.cspNonce`) so the
- * matching CSP header (also built per-request) allows exactly this page's
- * own inline tags, nothing else.
- */
+/** Dependency-free operations view for CAF's Plan → Implement → Verify pipelines. */
 export function renderDashboardHtml(nonces: { script: string; style: string }): string {
   return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>CAF Orchestrator — Pipeline Dashboard</title>
+<html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>CAF Orchestrator — Mission control</title>
 <style nonce="${nonces.style}">
-  :root {
-    color-scheme: light dark;
-    --bg: #0f1115;
-    --panel: #171a21;
-    --border: #2a2e37;
-    --text: #e6e8eb;
-    --muted: #8b93a1;
-    --accent: #5b8cff;
-    --success: #3ecf8e;
-    --warn: #f2b84b;
-    --error: #f2635b;
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0;
-    background: var(--bg);
-    color: var(--text);
-    font: 14px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  }
-  header {
-    padding: 16px 24px;
-    border-bottom: 1px solid var(--border);
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 16px;
-    flex-wrap: wrap;
-  }
-  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
-  #conn-status { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
-  #conn-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); display: inline-block; }
-  #conn-dot.live { background: var(--success); }
-  #conn-dot.down { background: var(--error); }
-  .filter-bar { display: flex; gap: 8px; align-items: center; }
-  .filter-bar input {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    color: var(--text);
-    border-radius: 6px;
-    padding: 6px 10px;
-    font-size: 13px;
-    min-width: 220px;
-  }
-  .filter-bar button {
-    background: var(--accent);
-    border: none;
-    color: white;
-    border-radius: 6px;
-    padding: 6px 12px;
-    font-size: 13px;
-    cursor: pointer;
-  }
-  main { padding: 24px; display: grid; gap: 24px; grid-template-columns: 1fr; }
-  @media (min-width: 1100px) {
-    main.has-detail { grid-template-columns: 1.4fr 1fr; align-items: start; }
-  }
-  table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
-  th, td { text-align: left; padding: 10px 12px; font-size: 13px; border-bottom: 1px solid var(--border); }
-  th { color: var(--muted); font-weight: 500; text-transform: uppercase; font-size: 11px; letter-spacing: 0.04em; }
-  tbody tr { cursor: pointer; }
-  tbody tr:hover { background: rgba(255,255,255,0.03); }
-  tbody tr:last-child td { border-bottom: none; }
-  tbody tr.selected { background: rgba(91,140,255,0.12); }
-  .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
-  .badge.RUNNING { background: rgba(91,140,255,0.15); color: var(--accent); }
-  .badge.SUCCESS { background: rgba(62,207,142,0.15); color: var(--success); }
-  .badge.NEEDS_HUMAN { background: rgba(242,184,75,0.15); color: var(--warn); }
-  .badge.ERROR { background: rgba(242,99,91,0.15); color: var(--error); }
-  .muted { color: var(--muted); }
-  .empty { padding: 32px; text-align: center; color: var(--muted); }
-  #detail { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
-  #detail h2 { font-size: 14px; margin: 0 0 12px; }
-  #detail .placeholder { color: var(--muted); font-size: 13px; }
-  .timeline { list-style: none; margin: 0; padding: 0; }
-  .timeline li { padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
-  .timeline li:last-child { border-bottom: none; }
-  .timeline .t-head { display: flex; justify-content: space-between; gap: 8px; }
-  .timeline .t-agent { font-weight: 600; }
-  .timeline .t-time { color: var(--muted); font-size: 11px; white-space: nowrap; }
-  .timeline .t-meta { color: var(--muted); font-size: 12px; margin-top: 2px; }
-  a.artifact-link { color: var(--accent); text-decoration: none; }
-  a.artifact-link:hover { text-decoration: underline; }
-</style>
-</head>
-<body>
-<header>
-  <h1>CAF Orchestrator — Pipeline Dashboard</h1>
-  <div class="filter-bar">
-    <input id="repo-filter" type="text" placeholder="Filter by repoId (owner/repo)" />
-    <button id="apply-filter">Filter</button>
-  </div>
-  <div id="conn-status"><span id="conn-dot"></span><span id="conn-label">connecting…</span></div>
-</header>
-<main id="main">
-  <div>
-    <table>
-      <thead>
-        <tr>
-          <th>Repo</th>
-          <th>Ticket</th>
-          <th>Phase</th>
-          <th>Retries</th>
-          <th>Cost</th>
-          <th>Status</th>
-          <th>Artifact</th>
-        </tr>
-      </thead>
-      <tbody id="rows"></tbody>
-    </table>
-    <div id="empty-state" class="empty" hidden>No pipeline runs yet.</div>
-  </div>
-  <div id="detail" hidden>
-    <h2 id="detail-title"></h2>
-    <ul class="timeline" id="detail-timeline"></ul>
-  </div>
-</main>
-<script nonce="${nonces.script}">
-(function () {
-  var rowsEl = document.getElementById('rows');
-  var emptyEl = document.getElementById('empty-state');
-  var detailEl = document.getElementById('detail');
-  var detailTitleEl = document.getElementById('detail-title');
-  var detailTimelineEl = document.getElementById('detail-timeline');
-  var mainEl = document.getElementById('main');
-  var connDot = document.getElementById('conn-dot');
-  var connLabel = document.getElementById('conn-label');
-  var repoFilterInput = document.getElementById('repo-filter');
-  var applyFilterBtn = document.getElementById('apply-filter');
-
-  var selectedKey = null; // "repoId|ticketId"
-
-  function esc(s) {
-    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
-      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
-    });
-  }
-
-  function formatCost(v) {
-    return v == null ? 'belum tersedia' : ('$' + v.toFixed(4));
-  }
-
-  function formatRetries(retryCounts) {
-    var keys = Object.keys(retryCounts || {});
-    if (keys.length === 0) return '—';
-    return keys.map(function (k) { return k.replace('caf-', '') + ': ' + retryCounts[k]; }).join(', ');
-  }
-
-  function artifactHref(run) {
-    if (!run.lastArtifactLink) return null;
-    // Artifacts live inside the target repo's own workspace, not this
-    // server — no working link to build, so just show the relative path.
-    return run.lastArtifactLink;
-  }
-
-  function renderRows(runs) {
-    rowsEl.innerHTML = '';
-    emptyEl.hidden = runs.length > 0;
-
-    runs.forEach(function (run) {
-      var key = run.repoId + '|' + run.ticketId;
-      var tr = document.createElement('tr');
-      tr.dataset.repoId = run.repoId;
-      tr.dataset.ticketId = run.ticketId;
-      if (key === selectedKey) tr.className = 'selected';
-
-      var artifact = artifactHref(run);
-      tr.innerHTML =
-        '<td>' + esc(run.repoId) + '</td>' +
-        '<td>' + esc(run.ticketId) + '<div class="muted">' + esc(run.ticketTitle) + '</div></td>' +
-        '<td>' + esc(run.currentPivPhase || '—') + '</td>' +
-        '<td>' + esc(formatRetries(run.retryCounts)) + '</td>' +
-        '<td>' + esc(formatCost(run.totalCostUsd)) + '</td>' +
-        '<td><span class="badge ' + esc(run.status) + '">' + esc(run.status) + '</span></td>' +
-        '<td>' + (artifact ? '<span class="artifact-link">' + esc(artifact) + '</span>' : '<span class="muted">—</span>') + '</td>';
-
-      tr.addEventListener('click', function () {
-        selectedKey = key;
-        renderRows(runs);
-        loadDetail(run.repoId, run.ticketId);
-      });
-
-      rowsEl.appendChild(tr);
-    });
-  }
-
-  function eventLabel(event) {
-    var label = event.eventType.toUpperCase();
-    if (event.eventType === 'retry' && event.retryCount != null) label += ' #' + event.retryCount;
-    return label;
-  }
-
-  function renderDetail(data) {
-    detailEl.hidden = false;
-    mainEl.classList.add('has-detail');
-    detailTitleEl.textContent = data.repoId + ' / ' + data.ticketId + ' — ' + data.ticketTitle;
-
-    detailTimelineEl.innerHTML = '';
-    if (!data.events || data.events.length === 0) {
-      var li = document.createElement('li');
-      li.className = 'placeholder';
-      li.textContent = 'No agent events recorded yet.';
-      detailTimelineEl.appendChild(li);
-      return;
-    }
-
-    data.events.forEach(function (event) {
-      var li = document.createElement('li');
-      var metaParts = [event.pivPhase];
-      if (event.costUsd != null) metaParts.push('$' + event.costUsd.toFixed(4));
-      if (event.artifactLink) metaParts.push(event.artifactLink);
-
-      li.innerHTML =
-        '<div class="t-head">' +
-          '<span class="t-agent">' + esc(event.agentName) + ' — ' + esc(eventLabel(event)) + '</span>' +
-          '<span class="t-time">' + esc(new Date(event.createdAt).toLocaleString()) + '</span>' +
-        '</div>' +
-        '<div class="t-meta">' + esc(metaParts.join(' · ')) + '</div>';
-      detailTimelineEl.appendChild(li);
-    });
-  }
-
-  function loadDetail(repoId, ticketId) {
-    fetch('/api/pipelines/' + encodeURIComponent(repoId) + '/' + encodeURIComponent(ticketId))
-      .then(function (res) { return res.json(); })
-      .then(renderDetail)
-      .catch(function () { /* leave previous detail in place on transient failure */ });
-  }
-
-  var currentRuns = [];
-
-  function loadPipelines() {
-    var repoId = (repoFilterInput.value || '').trim();
-    var url = '/api/pipelines' + (repoId ? ('?repoId=' + encodeURIComponent(repoId)) : '');
-    return fetch(url)
-      .then(function (res) { return res.json(); })
-      .then(function (runs) {
-        currentRuns = runs;
-        renderRows(runs);
-      })
-      .catch(function () { /* keep last known table on a transient fetch failure */ });
-  }
-
-  applyFilterBtn.addEventListener('click', loadPipelines);
-  repoFilterInput.addEventListener('keydown', function (e) {
-    if (e.key === 'Enter') loadPipelines();
-  });
-
-  function setConnStatus(state) {
-    connDot.className = state;
-    connLabel.textContent = state === 'live' ? 'live' : (state === 'down' ? 'disconnected — retrying…' : 'connecting…');
-  }
-
-  function connectSse() {
-    var source = new EventSource('/api/events/stream');
-    source.onopen = function () { setConnStatus('live'); };
-    source.onerror = function () { setConnStatus('down'); };
-    // Task 4's events are a "something changed" signal (repoId/ticketId/eventType),
-    // not a full state payload — simplest correct reaction is to refetch the
-    // table (and the open detail panel, if any) rather than try to patch
-    // client-side state from a partial event.
-    source.onmessage = function () {
-      loadPipelines();
-      if (selectedKey) {
-        var parts = selectedKey.split('|');
-        loadDetail(parts[0], parts[1]);
-      }
-    };
-  }
-
-  loadPipelines();
-  connectSse();
-})();
-</script>
-</body>
-</html>
-`;
+:root{color-scheme:dark;--ink:#e9f0f4;--muted:#8ea0ad;--faint:#536673;--canvas:#071118;--surface:#0c1a23;--surface2:#11242f;--line:#1d3542;--cyan:#63d4e8;--cyanSoft:rgba(99,212,232,.12);--green:#72d6a0;--amber:#f2bd68;--red:#f17d78;--display:"Arial Narrow","Avenir Next Condensed",sans-serif;--body:"Avenir Next",Inter,system-ui,sans-serif;--mono:"SFMono-Regular",Consolas,monospace}
+*{box-sizing:border-box}[hidden]{display:none!important}body{margin:0;min-height:100vh;background:radial-gradient(circle at 72% -10%,rgba(53,118,136,.22),transparent 34rem),linear-gradient(rgba(99,212,232,.025) 1px,transparent 1px),linear-gradient(90deg,rgba(99,212,232,.025) 1px,transparent 1px),var(--canvas);background-size:auto,32px 32px,32px 32px,auto;color:var(--ink);font:14px/1.5 var(--body)}button,input,select{font:inherit}button{color:inherit}.shell{width:min(1540px,100%);margin:auto;padding:0 32px 44px}.topbar{height:70px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:12px}.brand-mark{width:31px;height:31px;border:1px solid var(--cyan);border-radius:50%;display:grid;place-items:center;color:var(--cyan);font:700 10px var(--mono);box-shadow:inset 0 0 0 5px var(--cyanSoft)}.brand-name{font:700 14px var(--display);letter-spacing:.14em;text-transform:uppercase}.brand-sub{color:var(--faint);font:10px var(--mono)}.connection{display:flex;align-items:center;gap:8px;color:var(--muted);font:11px var(--mono);text-transform:uppercase;letter-spacing:.08em}.connection-dot{width:7px;height:7px;border-radius:50%;background:var(--faint)}.connection-dot.live{background:var(--green);box-shadow:0 0 0 4px rgba(114,214,160,.12),0 0 12px var(--green)}.connection-dot.down{background:var(--red)}
+.hero{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:end;gap:28px;padding:44px 0 30px}.eyebrow{color:var(--cyan);font:11px var(--mono);letter-spacing:.15em;text-transform:uppercase}h1{margin:9px 0 8px;font:600 clamp(38px,5vw,68px)/.94 var(--display);letter-spacing:-.035em;text-transform:uppercase}.hero-copy{color:var(--muted);max-width:650px;margin:0;font-size:15px}.hero-time{text-align:right;color:var(--muted)}.hero-time strong{display:block;color:var(--ink);font:500 24px var(--mono)}
+.overview{display:grid;grid-template-columns:1.35fr repeat(3,1fr);margin-bottom:22px;border:1px solid var(--line);border-radius:14px;overflow:hidden;background:rgba(12,26,35,.72)}.stat{min-height:112px;padding:20px 22px;border-left:1px solid var(--line);display:flex;flex-direction:column;justify-content:space-between}.stat:first-child{border-left:0;background:linear-gradient(115deg,var(--cyanSoft),transparent 70%)}.stat-label{color:var(--muted);font:10px var(--mono);letter-spacing:.11em;text-transform:uppercase}.stat-value{font:600 31px/1 var(--display)}.stat-value small{color:var(--muted);font:12px var(--body)}.activity-value{display:flex;align-items:baseline;gap:10px}.pulse{width:8px;height:8px;border-radius:50%;background:var(--cyan);box-shadow:0 0 14px var(--cyan);animation:pulse 2s ease-out infinite}@keyframes pulse{50%{box-shadow:0 0 0 8px rgba(99,212,232,0)}}
+.toolbar{display:flex;align-items:center;gap:10px;margin-bottom:18px}.search-wrap{position:relative;flex:1}.search-wrap:before{content:"⌕";position:absolute;left:14px;top:9px;color:var(--muted);font-size:17px}input,select{height:42px;border:1px solid var(--line);border-radius:9px;background:rgba(12,26,35,.8);color:var(--ink);outline:none}input{width:100%;padding:0 14px 0 39px}select{min-width:150px;padding:0 32px 0 12px}input:focus,select:focus,button:focus-visible{border-color:var(--cyan);box-shadow:0 0 0 3px var(--cyanSoft);outline:none}.count{color:var(--muted);font:11px var(--mono);white-space:nowrap}.section-head{display:flex;justify-content:space-between;align-items:baseline;margin:26px 0 12px}.section-head h2{margin:0;font:600 18px var(--display);letter-spacing:.06em;text-transform:uppercase}.section-head span{color:var(--faint);font:10px var(--mono);text-transform:uppercase;letter-spacing:.09em}
+.run-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.run-card{position:relative;text-align:left;width:100%;border:1px solid var(--line);border-radius:14px;background:rgba(12,26,35,.9);padding:19px;cursor:pointer;transition:transform .18s,border-color .18s;overflow:hidden}.run-card:after{content:"";position:absolute;inset:auto 0 0;height:2px;background:var(--statusColor);opacity:.65}.run-card:hover{transform:translateY(-2px);border-color:#315367}.run-card.selected{border-color:var(--cyan)}.run-head{display:flex;justify-content:space-between;gap:14px;margin-bottom:18px}.ticket-key{color:var(--cyan);font:600 11px var(--mono)}.ticket-title{margin-top:5px;font:600 18px/1.2 var(--display)}.repo{color:var(--muted);font:10px var(--mono);margin-top:6px}.status{flex:none;align-self:start;border:1px solid currentColor;border-radius:999px;padding:4px 8px;font:700 9px var(--mono);letter-spacing:.08em}.status.RUNNING{color:var(--cyan)}.status.SUCCESS{color:var(--green)}.status.NEEDS_HUMAN{color:var(--amber)}.status.ERROR{color:var(--red)}
+.phase-rail{display:grid;grid-template-columns:repeat(3,1fr);position:relative;margin:7px 5px 18px}.phase-rail:before{content:"";position:absolute;top:7px;left:12%;right:12%;height:1px;background:var(--line)}.phase{position:relative;text-align:center;color:var(--faint);font:9px var(--mono);text-transform:uppercase;letter-spacing:.08em;padding-top:20px}.phase:before{content:"";position:absolute;width:9px;height:9px;border:2px solid var(--surface);border-radius:50%;background:var(--line);top:2px;left:calc(50% - 5px);z-index:1}.phase.done,.phase.active{color:var(--ink)}.phase.done:before{background:var(--green)}.phase.active:before{background:var(--cyan);box-shadow:0 0 0 5px var(--cyanSoft),0 0 13px var(--cyan)}.phase.failed:before{background:var(--red)}.run-meta{display:grid;grid-template-columns:repeat(3,1fr);border-top:1px solid var(--line);padding-top:14px}.meta-cell{border-left:1px solid var(--line);padding-left:13px}.meta-cell:first-child{border-left:0;padding-left:0}.meta-label{display:block;color:var(--faint);font:9px var(--mono);text-transform:uppercase;letter-spacing:.09em;margin-bottom:3px}.meta-value{color:var(--muted);font:11px var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.empty{border:1px dashed var(--line);border-radius:14px;padding:60px 20px;text-align:center;color:var(--muted)}.empty strong{display:block;color:var(--ink);font:600 20px var(--display);margin-bottom:5px}.loading{animation:shimmer 1.4s ease-in-out infinite}@keyframes shimmer{50%{opacity:.45}}
+.inspector-backdrop{position:fixed;inset:0;background:rgba(2,8,12,.68);backdrop-filter:blur(4px);z-index:10}.inspector{position:fixed;z-index:11;top:0;right:0;height:100vh;width:min(570px,100%);overflow:auto;background:#091720;border-left:1px solid var(--line);box-shadow:-25px 0 70px rgba(0,0,0,.38);padding:27px 28px 48px;animation:enter .22s ease-out}@keyframes enter{from{transform:translateX(24px);opacity:0}}.inspector-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:31px}.inspector-top span{color:var(--cyan);font:10px var(--mono);text-transform:uppercase;letter-spacing:.13em}.close{width:34px;height:34px;border:1px solid var(--line);border-radius:50%;background:transparent;cursor:pointer;font-size:20px}.detail-title{margin:0;font:600 29px/1.08 var(--display)}.detail-repo{color:var(--muted);font:11px var(--mono);margin:8px 0 25px}.detail-summary{display:grid;grid-template-columns:repeat(3,1fr);border:1px solid var(--line);border-radius:10px;margin-bottom:28px}.detail-summary>div{padding:13px;border-left:1px solid var(--line)}.detail-summary>div:first-child{border-left:0}.timeline-title{color:var(--muted);font:10px var(--mono);text-transform:uppercase;letter-spacing:.12em;margin-bottom:15px}.timeline{list-style:none;padding:0;margin:0}.timeline li{position:relative;margin-left:8px;padding:0 0 23px 26px;border-left:1px solid var(--line)}.timeline li:last-child{border-left-color:transparent}.timeline li:before{content:"";position:absolute;width:8px;height:8px;border-radius:50%;background:var(--eventColor,var(--cyan));left:-5px;top:5px;box-shadow:0 0 0 4px #091720}.event-head{display:flex;justify-content:space-between;gap:12px}.event-agent{font-weight:600}.event-type{color:var(--eventColor,var(--cyan));font:700 9px var(--mono);margin-left:7px;text-transform:uppercase}.event-time,.event-meta,.artifact{font:10px var(--mono)}.event-time{color:var(--faint);white-space:nowrap}.event-meta{color:var(--muted);margin-top:5px}.artifact{margin-top:6px;color:var(--cyan);overflow-wrap:anywhere}
+@media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}}@media(max-width:850px){.shell{padding:0 18px 30px}.hero{grid-template-columns:1fr;padding-top:30px}.hero-time{display:none}.overview{grid-template-columns:1fr 1fr}.stat{border-top:1px solid var(--line)}.stat:nth-child(odd){border-left:0}.run-grid{grid-template-columns:1fr}}@media(max-width:540px){.brand-sub,.count{display:none}h1{font-size:40px}.overview{grid-template-columns:1fr 1fr}.stat{min-height:93px;padding:15px}.toolbar{flex-wrap:wrap}.search-wrap{flex-basis:100%}select{flex:1;min-width:0}.run-meta{grid-template-columns:1fr 1fr}.meta-cell:last-child{display:none}.inspector{padding:22px 18px}.detail-summary{grid-template-columns:1fr}.detail-summary>div{border-left:0;border-top:1px solid var(--line)}}
+</style></head><body><div class="shell"><header class="topbar"><div class="brand"><div class="brand-mark">CAF</div><div><div class="brand-name">Orchestrator</div><div class="brand-sub">Autonomous delivery system</div></div></div><div class="connection"><span id="conn-dot" class="connection-dot"></span><span id="conn-label">connecting</span></div></header>
+<main><section class="hero"><div><div class="eyebrow">Pipeline mission control</div><h1>Agent operations,<br />at a glance.</h1><p class="hero-copy">Follow work as it moves from plan to implementation to verification. Open any run to inspect every agent handoff.</p></div><div class="hero-time"><strong id="clock">--:--:--</strong><span id="today">local system time</span></div></section>
+<section class="overview" aria-label="Pipeline overview"><div class="stat"><span class="stat-label">Live activity</span><div class="activity-value"><span class="pulse"></span><span class="stat-value" id="stat-running">—</span><span class="stat-label">active runs</span></div></div><div class="stat"><span class="stat-label">Completed</span><span class="stat-value" id="stat-success">—</span></div><div class="stat"><span class="stat-label">Needs attention</span><span class="stat-value" id="stat-attention">—</span></div><div class="stat"><span class="stat-label">Recorded spend</span><span class="stat-value" id="stat-cost">—</span></div></section>
+<div class="toolbar"><div class="search-wrap"><input id="run-search" type="search" placeholder="Search ticket, title, or repository…" aria-label="Search pipeline runs" /></div><select id="status-filter" aria-label="Filter by status"><option value="ALL">All statuses</option><option value="RUNNING">Running</option><option value="SUCCESS">Successful</option><option value="NEEDS_HUMAN">Needs attention</option><option value="ERROR">Error</option></select><select id="repo-filter" aria-label="Filter by repository"><option value="ALL">All repositories</option></select><span id="result-count" class="count"></span></div>
+<div class="section-head"><h2>Pipeline map</h2><span>Plan · Implement · Verify</span></div><section id="run-grid" class="run-grid loading" aria-live="polite"></section><div id="empty-state" class="empty" hidden><strong>No runs in view</strong><span>Adjust the filters or wait for the next pipeline to begin.</span></div></main></div>
+<div id="inspector-backdrop" class="inspector-backdrop" hidden></div><aside id="inspector" class="inspector" aria-label="Pipeline details" hidden><div class="inspector-top"><span>Run inspector</span><button id="close-inspector" class="close" type="button" aria-label="Close details">×</button></div><div id="detail-content"></div></aside>
+<script nonce="${nonces.script}">(function(){
+var grid=document.getElementById('run-grid'),empty=document.getElementById('empty-state'),search=document.getElementById('run-search'),statusFilter=document.getElementById('status-filter'),repoFilter=document.getElementById('repo-filter'),count=document.getElementById('result-count'),inspector=document.getElementById('inspector'),backdrop=document.getElementById('inspector-backdrop'),detail=document.getElementById('detail-content'),connDot=document.getElementById('conn-dot'),connLabel=document.getElementById('conn-label'),runs=[],selected=null;
+function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}function money(v){return v==null?'Pending':'$'+Number(v).toFixed(2)}function agent(v){return String(v||'').replace(/^caf-/,'').replace(/-/g,' ')}function phaseIndex(v){return{plan:0,implement:1,verify:2}[v]==null?-1:{plan:0,implement:1,verify:2}[v]}function elapsed(r){var end=r.endedAt?new Date(r.endedAt):new Date(),mins=Math.max(0,Math.round((end-new Date(r.startedAt))/60000));return mins<60?mins+'m':Math.floor(mins/60)+'h '+mins%60+'m'}function retries(c){return Object.keys(c||{}).reduce(function(s,k){return s+c[k]},0)}function statusColor(s){return s==='SUCCESS'?'var(--green)':s==='NEEDS_HUMAN'?'var(--amber)':s==='ERROR'?'var(--red)':'var(--cyan)'}function statusLabel(s){return s==='NEEDS_HUMAN'?'NEEDS ATTENTION':s}
+function rail(r){var active=phaseIndex(r.currentPivPhase);return['Plan','Implement','Verify'].map(function(label,i){var cls=i<active||(r.status==='SUCCESS'&&i<=active)?'done':i===active?'active':'';if((r.status==='ERROR'||r.status==='NEEDS_HUMAN')&&i===active)cls+=' failed';return'<span class="phase '+cls+'">'+label+'</span>'}).join('')}
+function card(r){var key=r.repoId+'|'+r.ticketId;return'<button type="button" class="run-card'+(key===selected?' selected':'')+'" data-repo="'+esc(r.repoId)+'" data-ticket="'+esc(r.ticketId)+'" style="--statusColor:'+statusColor(r.status)+'"><div class="run-head"><div><div class="ticket-key">'+esc(r.ticketId)+'</div><div class="ticket-title">'+esc(r.ticketTitle||'Untitled pipeline')+'</div><div class="repo">'+esc(r.repoId)+'</div></div><span class="status '+esc(r.status)+'">'+esc(statusLabel(r.status))+'</span></div><div class="phase-rail">'+rail(r)+'</div><div class="run-meta"><div class="meta-cell"><span class="meta-label">Elapsed</span><span class="meta-value">'+esc(elapsed(r))+'</span></div><div class="meta-cell"><span class="meta-label">Retries</span><span class="meta-value">'+retries(r.retryCounts)+'</span></div><div class="meta-cell"><span class="meta-label">Cost</span><span class="meta-value">'+esc(money(r.totalCostUsd))+'</span></div></div></button>'}
+function visible(){var q=search.value.trim().toLowerCase();return runs.filter(function(r){return(!q||[r.repoId,r.ticketId,r.ticketTitle].join(' ').toLowerCase().indexOf(q)!==-1)&&(statusFilter.value==='ALL'||r.status===statusFilter.value)&&(repoFilter.value==='ALL'||r.repoId===repoFilter.value)})}function render(){var list=visible();grid.classList.remove('loading');grid.innerHTML=list.map(card).join('');grid.hidden=!list.length;empty.hidden=!!list.length;count.textContent=list.length+' of '+runs.length+' runs';Array.prototype.forEach.call(grid.querySelectorAll('.run-card'),function(b){b.addEventListener('click',function(){openDetail(b.dataset.repo,b.dataset.ticket)})})}
+function stats(){var running=runs.filter(function(r){return r.status==='RUNNING'}).length,success=runs.filter(function(r){return r.status==='SUCCESS'}).length,attention=runs.filter(function(r){return r.status==='NEEDS_HUMAN'||r.status==='ERROR'}).length,cost=runs.reduce(function(s,r){return s+(r.totalCostUsd||0)},0);document.getElementById('stat-running').textContent=running;document.getElementById('stat-success').textContent=success;document.getElementById('stat-attention').textContent=attention;document.getElementById('stat-cost').innerHTML='$'+cost.toFixed(2)+' <small>USD</small>'}function repos(){var old=repoFilter.value,list=runs.map(function(r){return r.repoId}).filter(function(v,i,a){return a.indexOf(v)===i}).sort();repoFilter.innerHTML='<option value="ALL">All repositories</option>'+list.map(function(v){return'<option value="'+esc(v)+'">'+esc(v)+'</option>'}).join('');if(list.indexOf(old)!==-1)repoFilter.value=old}
+function eventColor(t){return t==='retry'?'var(--amber)':t==='gate_exhausted'?'var(--red)':t==='end'?'var(--green)':'var(--cyan)'}function renderDetail(d){detail.innerHTML='<h2 class="detail-title">'+esc(d.ticketTitle||d.ticketId)+'</h2><div class="detail-repo">'+esc(d.repoId)+' / '+esc(d.ticketId)+'</div><div class="detail-summary"><div><span class="meta-label">Status</span><span class="status '+esc(d.status)+'">'+esc(statusLabel(d.status))+'</span></div><div><span class="meta-label">Elapsed</span><span class="meta-value">'+esc(elapsed(d))+'</span></div><div><span class="meta-label">Cost · retries</span><span class="meta-value">'+esc(money(d.totalCostUsd))+' · '+retries(d.retryCounts)+'</span></div></div><div class="timeline-title">Agent event stream · '+(d.events||[]).length+' events</div><ol class="timeline">'+((d.events||[]).length?d.events.map(function(e){var meta=[e.pivPhase];if(e.costUsd!=null)meta.push('$'+Number(e.costUsd).toFixed(4));if(e.retryCount!=null)meta.push('attempt '+e.retryCount);return'<li style="--eventColor:'+eventColor(e.eventType)+'"><div class="event-head"><div><span class="event-agent">'+esc(agent(e.agentName))+'</span><span class="event-type">'+esc(e.eventType.replace('_',' '))+'</span></div><time class="event-time">'+esc(new Date(e.createdAt).toLocaleString())+'</time></div><div class="event-meta">'+esc(meta.join(' · '))+'</div>'+(e.artifactLink?'<div class="artifact">↳ '+esc(e.artifactLink)+'</div>':'')+'</li>'}).join(''):'<li><div class="event-meta">Waiting for the first agent event.</div></li>')+'</ol>'}
+function openDetail(repo,ticket){selected=repo+'|'+ticket;render();inspector.hidden=false;backdrop.hidden=false;detail.innerHTML='<div class="loading">Loading agent event stream…</div>';fetch('/api/pipelines/'+encodeURIComponent(repo)+'/'+encodeURIComponent(ticket)).then(function(r){if(!r.ok)throw Error();return r.json()}).then(renderDetail).catch(function(){detail.innerHTML='<div class="empty"><strong>Details unavailable</strong><span>The overview remains available.</span></div>'})}function close(){inspector.hidden=true;backdrop.hidden=true;selected=null;render()}document.getElementById('close-inspector').addEventListener('click',close);backdrop.addEventListener('click',close);document.addEventListener('keydown',function(e){if(e.key==='Escape'&&!inspector.hidden)close()});search.addEventListener('input',render);statusFilter.addEventListener('change',render);repoFilter.addEventListener('change',render);
+function load(){return fetch('/api/pipelines').then(function(r){if(!r.ok)throw Error();return r.json()}).then(function(data){runs=data;repos();stats();render()}).catch(function(){grid.classList.remove('loading');if(!runs.length)grid.innerHTML='<div class="empty"><strong>Unable to load pipelines</strong><span>Live updates will retry automatically.</span></div>'})}function connection(s){connDot.className='connection-dot '+s;connLabel.textContent=s==='live'?'live feed':s==='down'?'reconnecting':'connecting'}function connect(){var source=new EventSource('/api/events/stream');source.onopen=function(){connection('live')};source.onerror=function(){connection('down')};source.onmessage=function(){load();if(selected){var p=selected.split('|');openDetail(p[0],p[1])}}}function tick(){var n=new Date();document.getElementById('clock').textContent=n.toLocaleTimeString([],{hour12:false});document.getElementById('today').textContent=n.toLocaleDateString([],{weekday:'long',month:'short',day:'numeric'})}tick();setInterval(tick,1000);load();connect()})();</script></body></html>`;
 }
