@@ -5,6 +5,7 @@ import { pipelineQueue } from '../../infrastructure/queue/client.js';
 import { closeRedisConnection } from '../../infrastructure/queue/connection.js';
 import { startOrchestrationStateWatchers } from '../../infrastructure/watch/orchestration-state-watcher.js';
 import { eventBroadcaster } from './sse/event-broadcaster.js';
+import { subscribeDashboardEvents } from '../../infrastructure/queue/dashboard-events.js';
 
 const app = buildApp();
 
@@ -16,6 +17,11 @@ const app = buildApp();
 const stateWatchers = startOrchestrationStateWatchers(projectRegistry.getAll(), (event) =>
   eventBroadcaster.broadcast(event),
 );
+
+// Cross-process leg of the same fan-out: the worker process publishes real
+// agent-progress events (pipeline-instrumentation.ts) over Redis since it
+// has no access to this process's in-memory eventBroadcaster.
+const dashboardEventsSubscription = subscribeDashboardEvents((event) => eventBroadcaster.broadcast(event));
 
 async function start(): Promise<void> {
   try {
@@ -31,6 +37,7 @@ async function shutdown(signal: string): Promise<void> {
   logger.info(`Received ${signal}, shutting down gracefully`);
   try {
     await Promise.all(stateWatchers.map((watcher) => watcher.close()));
+    await dashboardEventsSubscription.close();
     await app.close();
     await pipelineQueue.close();
     await closeRedisConnection();

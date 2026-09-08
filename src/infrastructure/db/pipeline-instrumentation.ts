@@ -3,7 +3,7 @@ import { PipelineRunRepository, type PivPhase, type AgentEventType } from './pip
 import { parseAgentUsage } from '../agent/agent-cost-parser.js';
 import { logger } from '../logging/logger.js';
 import { parseGithubRepo } from '../vcs/github.service.js';
-import { eventBroadcaster } from '../../presentation/web/sse/event-broadcaster.js';
+import { publishDashboardEvent } from '../queue/dashboard-events.js';
 
 /**
  * CAF-DASHBOARD-01 Task 3: write-side of the dashboard's history store, called
@@ -53,14 +53,16 @@ function warnOnFailure(action: string, context: Record<string, unknown>, fn: () 
 }
 
 /**
- * Pushes an SSE nudge so the dashboard refetches immediately instead of
- * waiting for the next orchestration-state.json fs event (gate
- * failure/reset only) or a manual page reload — every DB write below is a
- * real progress change (agent start/end, pipeline start/finalize) the
- * dashboard should reflect live.
+ * Nudges the dashboard to refetch immediately instead of waiting for the
+ * next orchestration-state.json fs event (gate failure/reset only) or a
+ * manual page reload — every DB write below is a real progress change
+ * (agent start/end, pipeline start/finalize). This runs inside the BullMQ
+ * worker process, not the web server, so it can't call eventBroadcaster
+ * directly (separate process, separate memory) — publishDashboardEvent
+ * relays it over Redis to whichever process actually holds the SSE clients.
  */
 function broadcastChange(repoId: string, ticketId: string): void {
-  eventBroadcaster.broadcast({ repoId, ticketId, eventType: 'change', timestamp: new Date().toISOString() });
+  publishDashboardEvent({ repoId, ticketId, eventType: 'change', timestamp: new Date().toISOString() });
 }
 
 /** Creates or resets the pipeline_runs row for a new attempt (fresh run or a retry/resume). Clears ended_at/final_status on every call — a new attempt hasn't concluded yet. */
