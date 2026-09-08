@@ -3,6 +3,7 @@ import { PipelineRunRepository, type PivPhase, type AgentEventType } from './pip
 import { parseAgentUsage } from '../agent/agent-cost-parser.js';
 import { logger } from '../logging/logger.js';
 import { parseGithubRepo } from '../vcs/github.service.js';
+import { eventBroadcaster } from '../../presentation/web/sse/event-broadcaster.js';
 
 /**
  * CAF-DASHBOARD-01 Task 3: write-side of the dashboard's history store, called
@@ -51,6 +52,17 @@ function warnOnFailure(action: string, context: Record<string, unknown>, fn: () 
   }
 }
 
+/**
+ * Pushes an SSE nudge so the dashboard refetches immediately instead of
+ * waiting for the next orchestration-state.json fs event (gate
+ * failure/reset only) or a manual page reload — every DB write below is a
+ * real progress change (agent start/end, pipeline start/finalize) the
+ * dashboard should reflect live.
+ */
+function broadcastChange(repoId: string, ticketId: string): void {
+  eventBroadcaster.broadcast({ repoId, ticketId, eventType: 'change', timestamp: new Date().toISOString() });
+}
+
 /** Creates or resets the pipeline_runs row for a new attempt (fresh run or a retry/resume). Clears ended_at/final_status on every call — a new attempt hasn't concluded yet. */
 export function recordPipelineStarted(repoId: string, ticketId: string, ticketTitle: string): void {
   warnOnFailure('recordPipelineStarted', { repoId, ticketId }, () => {
@@ -62,12 +74,14 @@ export function recordPipelineStarted(repoId: string, ticketId: string, ticketTi
       startedAt: new Date().toISOString(),
     });
   });
+  broadcastChange(repoId, ticketId);
 }
 
 export function finalizePipelineRun(repoId: string, ticketId: string, finalStatus: string): void {
   warnOnFailure('finalizePipelineRun', { repoId, ticketId, finalStatus }, () => {
     repository().finalizePipelineRun(pipelineRunId(repoId, ticketId), new Date().toISOString(), finalStatus);
   });
+  broadcastChange(repoId, ticketId);
 }
 
 export interface RecordAgentEventOptions {
@@ -96,6 +110,7 @@ export function recordAgentEvent(
       createdAt: new Date().toISOString(),
     });
   });
+  broadcastChange(repoId, ticketId);
 }
 
 /** Convenience for the "end" event of an agent run — extracts cost/usage from stdout via parseAgentUsage (Task 2) so call sites don't have to. */
