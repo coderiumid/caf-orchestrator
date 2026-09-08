@@ -59,6 +59,7 @@ COPY --from=builder --chown=node:node /app/src/infrastructure/db/schema.sql ./di
 COPY --from=builder --chown=node:node /app/src/presentation/web/ui/dashboard.html ./dist/presentation/web/ui/dashboard.html
 COPY --from=builder --chown=node:node /app/src/presentation/web/ui/dashboard.css ./dist/presentation/web/ui/dashboard.css
 COPY --from=builder --chown=node:node /app/src/presentation/web/ui/dashboard.js ./dist/presentation/web/ui/dashboard.js
+COPY --from=builder --chown=node:node /app/src/presentation/web/assets/logo.png ./dist/presentation/web/assets/logo.png
 COPY --chown=node:node package.json ./
 COPY --chown=node:node caf.config.yaml ./
 
