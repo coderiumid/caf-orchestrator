@@ -43,11 +43,23 @@ export interface QaReport {
   raw: string;
 }
 
+// Line-anchored on the `Status:` line, same pattern as VERDICT_LINE below — a free `/\bPASS\b/`
+// scan over the whole report matched "PASS" anywhere (e.g. a table cell) and missed "PASSED"
+// (no trailing word boundary on "PASS" itself), both nondeterministic against a substantively
+// valid report. Case-sensitive on purpose: caf-qa.md's contract is the exact uppercase literal
+// `Status: PASS` / `Status: FAIL` (CAF-QAREPORT-01) — anything else, including a missing Status
+// line entirely, is fail-safe FAIL, never a silent PASS.
+const QA_STATUS_LINE = /^.*Status:\s*(.+)$/m;
+
 export async function readQaReport(workspacePath: string, ticketKey: string): Promise<QaReport | undefined> {
   const raw = await readIfExists(join(taskDir(workspacePath, ticketKey), 'qa-report.md'));
   if (raw === undefined) return undefined;
 
-  const status: QaStatus = /\bPASS\b/.test(raw) ? 'PASS' : 'FAIL';
+  // Exact match, not prefix: `/^PASS\b/` let an unfilled skeleton placeholder
+  // ("Status: PASS | FAIL") read as PASS, which is exactly the fail-safe case this parser
+  // exists to catch.
+  const statusLine = QA_STATUS_LINE.exec(raw)?.[1] ?? '';
+  const status: QaStatus = statusLine.trim() === 'PASS' ? 'PASS' : 'FAIL';
   return { status, raw };
 }
 
