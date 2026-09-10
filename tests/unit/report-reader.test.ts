@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readFixReviewLog, readInitialReviewReport, UnrecognizedVerdictError } from '../../src/infrastructure/reports/report-reader.js';
+import { readFixReviewLog, readInitialReviewReport, readQaReport, UnrecognizedVerdictError } from '../../src/infrastructure/reports/report-reader.js';
 
 const dirs: string[] = [];
 
@@ -12,6 +12,15 @@ function writeFixReviewLog(ticketKey: string, content: string): string {
   const taskDir = join(workspacePath, '.caf', 'tasks', ticketKey);
   mkdirSync(taskDir, { recursive: true });
   writeFileSync(join(taskDir, 'fix-review-log.md'), content);
+  return workspacePath;
+}
+
+function writeQaReport(ticketKey: string, content: string): string {
+  const workspacePath = mkdtempSync(join(tmpdir(), 'caf-orchestrator-report-reader-test-'));
+  dirs.push(workspacePath);
+  const taskDir = join(workspacePath, '.caf', 'tasks', ticketKey);
+  mkdirSync(taskDir, { recursive: true });
+  writeFileSync(join(taskDir, 'qa-report.md'), content);
   return workspacePath;
 }
 
@@ -140,6 +149,82 @@ describe('readFixReviewLog', () => {
 
     expect(result?.entries).toHaveLength(1);
     expect(result?.entries[0].note).toBe('catatan yang berlanjut lalu berhenti.');
+  });
+});
+
+describe('readQaReport', () => {
+  // CAF-QAREPORT-01: the old parser was a free /\bPASS\b/ scan over the whole file — matched a
+  // "PASS" table cell anywhere, missed "PASSED", and had no defined behavior for a missing/wrong
+  // Status line. This locks the line-anchored, fail-safe replacement down.
+  it('reads Status: PASS as PASS', async () => {
+    const md = ['## QA Report — GAN-114', 'Agent: caf-qa', 'Status: PASS'].join('\n');
+    const workspacePath = writeQaReport('GAN-114', md);
+
+    const result = await readQaReport(workspacePath, 'GAN-114');
+
+    expect(result?.status).toBe('PASS');
+  });
+
+  it('reads Status: FAIL as FAIL', async () => {
+    const md = ['## QA Report — GAN-114', 'Agent: caf-qa', 'Status: FAIL'].join('\n');
+    const workspacePath = writeQaReport('GAN-114', md);
+
+    const result = await readQaReport(workspacePath, 'GAN-114');
+
+    expect(result?.status).toBe('FAIL');
+  });
+
+  it('treats Status: SUCCESS (old/wrong contract) as FAIL, not a stray match', async () => {
+    const md = ['## QA Report — GAN-114', 'Status: SUCCESS'].join('\n');
+    const workspacePath = writeQaReport('GAN-114', md);
+
+    const result = await readQaReport(workspacePath, 'GAN-114');
+
+    expect(result?.status).toBe('FAIL');
+  });
+
+  it('treats an unfilled placeholder (Status: PASS | FAIL) as FAIL, not a prefix match', async () => {
+    const md = ['## QA Report — GAN-114', 'Status: PASS | FAIL'].join('\n');
+    const workspacePath = writeQaReport('GAN-114', md);
+
+    const result = await readQaReport(workspacePath, 'GAN-114');
+
+    expect(result?.status).toBe('FAIL');
+  });
+
+  it('treats "PASS" appearing in the body but not on the Status line as FAIL', async () => {
+    const md = [
+      '## QA Report — GAN-114',
+      'Status: FAIL',
+      '',
+      '### Verification Matrix',
+      '| # | Criteria | How Verified | Result |',
+      '| 1 | login works | manual | PASS |',
+      '| 2 | logout works | manual | FAIL |',
+    ].join('\n');
+    const workspacePath = writeQaReport('GAN-114', md);
+
+    const result = await readQaReport(workspacePath, 'GAN-114');
+
+    expect(result?.status).toBe('FAIL');
+  });
+
+  it('treats a missing Status line entirely as FAIL', async () => {
+    const md = ['## QA Report — GAN-114', 'Agent: caf-qa', '### Findings', 'None'].join('\n');
+    const workspacePath = writeQaReport('GAN-114', md);
+
+    const result = await readQaReport(workspacePath, 'GAN-114');
+
+    expect(result?.status).toBe('FAIL');
+  });
+
+  it('returns undefined when qa-report.md does not exist', async () => {
+    const workspacePath = mkdtempSync(join(tmpdir(), 'caf-orchestrator-report-reader-test-'));
+    dirs.push(workspacePath);
+
+    const result = await readQaReport(workspacePath, 'GAN-114');
+
+    expect(result).toBeUndefined();
   });
 });
 
