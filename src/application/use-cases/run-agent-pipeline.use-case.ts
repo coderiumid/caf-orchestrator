@@ -246,6 +246,40 @@ export class RunAgentPipelineUseCase {
       let resumeContext: string | undefined;
 
       if (job.isRetry) {
+        // CAF-RESUMEBRANCH-01: confirm ai-agent/{ticketKey} still exists on
+        // the remote BEFORE the destructive preflightCleanup/clone below
+        // assumes it does. A ticket can re-enter "Ready for AI" (or get a
+        // /caf-retry-pipeline comment) after its PR already merged, at which
+        // point GitHub's auto-delete-head-branch has already removed the
+        // branch — without this check that falls through to a raw `git
+        // reset`/`git clone` failure (exit 128, "unknown revision") instead
+        // of a clean, actionable stop. Governance: no auto-fallback to a
+        // fresh checkout off baseBranch here — that would silently restart
+        // an already-completed ticket without a human decision.
+        const branchExists = await gitService.remoteBranchExists(job.projectConfig.repoCloneUrl, branch, workspacePath);
+        if (!branchExists) {
+          logger.warn('Retry stopped: ai-agent branch not found on remote (likely already merged and deleted)', undefined, {
+            jobId: job.jobId,
+            ticketKey: job.ticketKey,
+            branch,
+          });
+          await this.postTicketComment(
+            job,
+            [
+              `🚫 Retry stopped: branch \`${branch}\` was not found on the remote.`,
+              'This usually means the ticket was already completed — its PR merged and GitHub auto-deleted the branch — before this retry was triggered.',
+              'Please check the ticket status in Linear before retriggering. Nothing was touched; no fresh checkout was started automatically.',
+            ].join('\n'),
+          );
+          await notifier?.notifyPipelineNeedsHuman({
+            jobId: job.jobId,
+            ticketKey: job.ticketKey,
+            reason: `Branch ${branch} not found on remote — likely already merged and deleted after completion. Check the ticket status in Linear before retriggering.`,
+          });
+          finalizePipelineRun(repoId, job.ticketKey, 'NEEDS_HUMAN');
+          return;
+        }
+
         // CAF-RETRYPIPELINE-01 Task 6: an existing persistent-mode checkout
         // must be inspected BEFORE preflightCleanup's destructive
         // fetch+reset — unexpected uncommitted residue (e.g. a PIV run

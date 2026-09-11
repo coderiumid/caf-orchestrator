@@ -129,6 +129,7 @@ describe('CAF-DASHBOARD-01 Task 3: pipeline_runs/agent_events instrumentation', 
       }),
       getWorkspaceStatus: vi.fn().mockResolvedValue({ hasUncommittedChanges: false, statusOutput: '' }),
       diffStat: vi.fn().mockResolvedValue(''),
+      remoteBranchExists: vi.fn().mockResolvedValue(true),
     };
 
     recordGateFailureMock.mockResolvedValue(undefined);

@@ -130,6 +130,7 @@ describe('RunAgentPipelineUseCase', () => {
       }),
       getWorkspaceStatus: vi.fn().mockResolvedValue({ hasUncommittedChanges: false, statusOutput: '' }),
       diffStat: vi.fn().mockResolvedValue(''),
+      remoteBranchExists: vi.fn().mockResolvedValue(true),
     };
 
     recordGateFailureMock.mockResolvedValue(undefined);
@@ -1086,6 +1087,59 @@ describe('RunAgentPipelineUseCase', () => {
       expect(gitService.clone).toHaveBeenCalledWith(expect.any(String), 'ai-agent/CAF-123', expect.any(String), expect.any(String));
       expect(gitService.createBranch).not.toHaveBeenCalled();
       expect(incrementOrchestrationRetryCountMock).toHaveBeenCalledWith(expect.any(String), 'CAF-123');
+    });
+
+    it('CAF-RESUMEBRANCH-01 regression: when the remote branch still exists, checks it before syncing and proceeds unchanged', async () => {
+      (agentRunner.run as ReturnType<typeof vi.fn>).mockResolvedValue(makeAgentResult({ exitCode: 0 }));
+      readOrchestrationStateMock.mockResolvedValue({
+        orchestrationRetryCount: 0,
+        lastFailedGate: 'qa',
+        lastFailedAt: '2026-01-01T00:00:00.000Z',
+        lastKnownCommitSha: 'sha-1',
+        ticketTitle: 'Stored title',
+        ticketDescription: 'Stored description',
+      });
+      (gitService.remoteBranchExists as ReturnType<typeof vi.fn>).mockResolvedValue(true);
+
+      const useCase = new RunAgentPipelineUseCase({ gitService, workspaceManager, agentRunner, linearClient, vcsClient, notifier });
+      await useCase.execute(makeRetryJob());
+
+      expect(gitService.remoteBranchExists).toHaveBeenCalledWith(expect.any(String), 'ai-agent/CAF-123', expect.any(String));
+      expect(gitService.clone).toHaveBeenCalledWith(expect.any(String), 'ai-agent/CAF-123', expect.any(String), expect.any(String));
+      expect(incrementOrchestrationRetryCountMock).toHaveBeenCalledWith(expect.any(String), 'CAF-123');
+      expect(notifier.notifyPipelineNeedsHuman).not.toHaveBeenCalled();
+    });
+
+    it('CAF-RESUMEBRANCH-01: when the remote branch is gone (e.g. already merged and auto-deleted), stops cleanly instead of falling through to a raw git error or a silent fresh checkout', async () => {
+      (gitService.remoteBranchExists as ReturnType<typeof vi.fn>).mockResolvedValue(false);
+
+      const useCase = new RunAgentPipelineUseCase({ gitService, workspaceManager, agentRunner, linearClient, vcsClient, notifier });
+      await useCase.execute(makeRetryJob());
+
+      // No destructive/re-sync git operation is ever attempted once the
+      // branch is confirmed missing.
+      expect(gitService.clone).not.toHaveBeenCalled();
+      expect(gitService.preflightCleanup).not.toHaveBeenCalled();
+      // And no silent fallback to a fresh checkout off baseBranch either.
+      expect(gitService.createBranch).not.toHaveBeenCalled();
+      expect(agentRunner.run).not.toHaveBeenCalled();
+      expect(incrementOrchestrationRetryCountMock).not.toHaveBeenCalled();
+
+      expect(notifier.notifyPipelineNeedsHuman).toHaveBeenCalledWith(
+        expect.objectContaining({
+          jobId: 'job-1',
+          ticketKey: 'CAF-123',
+          reason: expect.stringContaining('ai-agent/CAF-123'),
+        }),
+      );
+      expect(vcsClient.postIssueComment).toHaveBeenCalledWith(
+        expect.objectContaining({
+          owner: 'ganjardbc',
+          repo: 'umkm-pos',
+          issueNumber: 7,
+          body: expect.stringContaining('was not found on the remote'),
+        }),
+      );
     });
 
     it('rejects with a comment and does not run any agent when no orchestration state exists', async () => {
