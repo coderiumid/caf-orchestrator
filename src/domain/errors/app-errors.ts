@@ -22,6 +22,10 @@ export class UnauthorizedError extends AppError {
 export class GitError extends AppError {
   readonly code = 'GIT_ERROR';
   readonly statusCode = 500;
+
+  constructor(message: string, readonly exitCode?: number | null) {
+    super(message);
+  }
 }
 
 export class AgentSpawnError extends AppError {

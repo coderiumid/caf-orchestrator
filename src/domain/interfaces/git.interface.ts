@@ -44,6 +44,17 @@ export interface IGitService {
   getWorkspaceStatus(targetDir: string, workspaceRoot?: string): Promise<WorkspaceStatus>;
   /** `git diff {fromSha}..{toSha} --stat` — used to compute `manualChangesSinceLastRun` for a retry's resumed agent context (CAF-RETRYPIPELINE-01 Task 6). */
   diffStat(targetDir: string, fromSha: string, toSha: string, workspaceRoot?: string): Promise<string>;
+  /**
+   * `git ls-remote --exit-code --heads <repoUrl> <branch>` — checks a branch
+   * exists on the remote WITHOUT requiring a local clone (cwd only needs to
+   * exist as a directory to spawn `git` in). Used by a retry job to confirm
+   * `ai-agent/{ticketKey}` still exists before the destructive
+   * `preflightCleanup`/`clone` below assumes it does — a ticket re-triggered
+   * after its PR already merged (GitHub auto-deletes the head branch) would
+   * otherwise fail deep inside a `git reset`/`git clone` with a raw,
+   * unhelpful git error (CAF-RESUMEBRANCH-01).
+   */
+  remoteBranchExists(repoUrl: string, branch: string, cwd: string): Promise<boolean>;
 }
 
 /**

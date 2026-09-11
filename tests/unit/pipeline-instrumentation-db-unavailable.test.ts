@@ -126,6 +126,7 @@ describe('CAF-DASHBOARD-01 Task 3: pipeline runs normally when the history DB is
       }),
       getWorkspaceStatus: vi.fn().mockResolvedValue({ hasUncommittedChanges: false, statusOutput: '' }),
       diffStat: vi.fn().mockResolvedValue(''),
+      remoteBranchExists: vi.fn().mockResolvedValue(true),
     };
 
     recordGateFailureMock.mockResolvedValue(undefined);

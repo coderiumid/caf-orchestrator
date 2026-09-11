@@ -60,7 +60,7 @@ function runGit(args: string[], cwd: string): Promise<string> {
         resolvePromise(Buffer.concat(out).toString('utf-8'));
       } else {
         const msg = Buffer.concat(err).toString('utf-8').trim();
-        reject(new GitError(`git ${args[0]} failed (${code ?? signal}): ${msg}`));
+        reject(new GitError(`git ${args[0]} failed (${code ?? signal}): ${msg}`, code));
       }
     });
 
@@ -149,6 +149,24 @@ export class GitService implements IGitService {
     logger.info('Preflight cleanup complete', undefined, { targetDir, baseBranch, hadUncommittedChanges });
 
     return { hadUncommittedChanges, branchBeforeReset, headCommitBeforeReset, statusBeforeReset };
+  }
+
+  async remoteBranchExists(repoUrl: string, branch: string, cwd: string): Promise<boolean> {
+    assertSafeBranchName(branch);
+    const authenticatedUrl = getAuthenticatedRepoUrl(repoUrl);
+    try {
+      const out = await runGit(['ls-remote', '--exit-code', '--heads', authenticatedUrl, branch], cwd);
+      return out.trim().length > 0;
+    } catch (err) {
+      // exit code 2 = ls-remote ran fine but found no matching ref — the
+      // branch genuinely doesn't exist, distinct from an auth/network
+      // failure (other exit codes), which should propagate and let the
+      // normal error path handle it.
+      if (err instanceof GitError && err.exitCode === 2) {
+        return false;
+      }
+      throw err;
+    }
   }
 
   async getHeadCommit(targetDir: string): Promise<string> {
