@@ -126,6 +126,15 @@ describe('Agent Floor static files', () => {
     expect(read('adapter.js')).toContain("new EventSource('/api/events/stream')");
   });
 
+  it('agents stay seated: typing while working, coffee while idle, Docs on the pantry sofa without a desk', () => {
+    const render = read('render.js');
+    expect(render).toContain("else if(WORKING[st])pose='type';");
+    expect(render).toContain("else if(st==='idle'&&a.id!=='human')pose='coffee';");
+    expect(render).toContain("ORDER.forEach(function(id){if(id!=='docs')drawDesk(id,T);});");
+    // Docs is never given a working pose or state by the page itself.
+    expect(render).toContain("a.state=(id==='docs')?'offduty':'idle'");
+  });
+
   it('render exposes the prototype entry points, and demo/adapter go through them', () => {
     const render = read('render.js');
     for (const fn of ['setState', 'say', 'sendDoc', 'step', 'setStatus', 'log']) {
@@ -154,10 +163,12 @@ describe('Agent Floor static files', () => {
       expect(render).not.toMatch(/\bfetch\(|EventSource/);
     });
 
-    it('honours prefers-reduced-motion: starts paused, CSS animations off, and paused agents snap instead of walking', () => {
+    it('honours prefers-reduced-motion: starts paused, CSS animations off, and no state depends on movement', () => {
       const render = read('render.js');
       expect(render).toContain("matchMedia('(prefers-reduced-motion: reduce)')");
-      expect(render).toMatch(/if\(paused\)\{a\.x=dx;a\.y=dy;a\.path=\[\];return;\}/);
+      // Agents never walk: each has one fixed seat, so a paused page still shows the true state.
+      expect(render).toContain('function placeInitial(a){a.x=ST[a.id].cx;a.y=ST[a.id].fy;}');
+      expect(render).not.toMatch(/goTo\(|stepAgent|PANTRY/);
       expect(read('agent-floor.css')).toMatch(/@media \(prefers-reduced-motion:reduce\)\{[^}]*animation:none/);
       // Live data must keep arriving while paused: the live gap waits on real time, not simulation time.
       expect(read('adapter.js')).toContain('item.live?realDelay(item.delay):AF.wait(item.delay)');

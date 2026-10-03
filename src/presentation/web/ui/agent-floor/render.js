@@ -9,6 +9,8 @@
  *   reset, setRun, usage, checks                   (pelengkap: run_started, usage, bar verify demo)
  *   wait, ready, later, fire, celebrate            (koreografi waktu simulasi)
  *
+ * Agent tidak berjalan: semuanya duduk di tempat tetap (lihat placeInitial).
+ *
  * Pemanggilnya: demo.js (skenario mock) dan adapter.js (live dan replay).
  * Agent boleh dirujuk dengan id ('planner', 'backend', 'frontend', 'qa',
  * 'reviewer', 'docs', 'human') atau objeknya.
@@ -16,7 +18,7 @@
 (function(){
 'use strict';
 /* ====== konstanta dunia ====== */
-var W=400,H=300,CY=146,CS=1.5;
+var W=400,H=300,CS=1.5;
 var K=2;
 var CANCEL={cancel:true};
 var $=function(s){return document.querySelector(s)};
@@ -44,10 +46,9 @@ var ST={
  frontend:{cx:256,fy:84,door:226},
  qa:{cx:344,fy:84,door:304},
  reviewer:{cx:72,fy:210,door:118},
- docs:{cx:262,fy:262,door:262},
+ docs:{cx:216,fy:250,door:216},
  human:{cx:344,fy:240,door:344}
 };
-var PANTRY={planner:[156,200],backend:[176,214],frontend:[196,200],qa:[216,214],reviewer:[236,200]};
 var OUTBOX={x:344,y:174};
 
 var DEF={
@@ -88,13 +89,13 @@ function AG(a){return typeof a==='string'?A[a]:a;}
 
 /* ====== agent ====== */
 ORDER.forEach(function(id){
-  A[id]={id:id,def:DEF[id],x:0,y:0,path:[],moving:false,state:'idle',tone:'',destKey:'',bubble:null,checks:[0,0,0],attempt:'',cost:0,hasCost:false,tokens:null,activeMs:0,board:0,_bk:''};
+  A[id]={id:id,def:DEF[id],x:0,y:0,state:'idle',tone:'',bubble:null,checks:[0,0,0],attempt:'',cost:0,hasCost:false,tokens:null,activeMs:0,board:0,_bk:''};
 });
-function placeInitial(a){
-  var id=a.id,p;
-  if(PANTRY[id]){p=PANTRY[id];a.x=p[0];a.y=p[1];a.destKey='pantry';}
-  else {a.x=ST[id].cx;a.y=ST[id].fy;a.destKey='station';}
-}
+/* Setiap agent punya tempat tetap dan tidak pernah berpindah: lima agent dan
+   Ganjar di meja masing-masing, Docs di sofa pantry. Keadaan hanya terlihat
+   dari pose dan layar, sehingga perubahan state secepat apa pun tetap terbaca
+   (tidak ada perjalanan yang harus diselesaikan dulu). */
+function placeInitial(a){a.x=ST[a.id].cx;a.y=ST[a.id].fy;}
 
 /* ====== waktu simulasi ====== */
 function wait(ms){
@@ -105,44 +106,6 @@ function wait(ms){
 }
 function fire(p){ if(p&&p.catch)p.catch(function(){}); }
 function later(ms,fn){ var p=wait(ms).then(fn); fire(p); }
-
-/* ====== pergerakan ====== */
-var SPEED=52;
-function isAt(a,key){
-  var x,y;
-  if(key==='pantry'){x=PANTRY[a.id][0];y=PANTRY[a.id][1];} else {x=ST[a.id].cx;y=ST[a.id].fy;}
-  return Math.abs(a.x-x)<1.5&&Math.abs(a.y-y)<1.5;
-}
-function goTo(a,key){
-  if(a.id==='docs'||a.id==='human')return;
-  if(a.destKey===key&&(a.path.length||isAt(a,key)))return;
-  a.destKey=key;
-  var st=ST[a.id],dx,dy,door;
-  if(key==='pantry'){dx=PANTRY[a.id][0];dy=PANTRY[a.id][1];door=dx;}
-  else {dx=st.cx;dy=st.fy;door=st.door;}
-  /* Dijeda (termasuk prefers-reduced-motion, yang mulai dalam keadaan jeda):
-     agent langsung berada di tujuan, supaya posisinya tetap sesuai state
-     walau tidak ada gerakan. */
-  if(paused){a.x=dx;a.y=dy;a.path=[];return;}
-  if(Math.abs(a.x-dx)<1&&Math.abs(a.y-dy)<1){a.path=[];return;}
-  var pts=[],sx=a.x;
-  var atSt=Math.abs(a.x-st.cx)<2&&Math.abs(a.y-st.fy)<2;
-  if(atSt){pts.push({x:st.door,y:st.fy});sx=st.door;}
-  pts.push({x:sx,y:CY});
-  if(key==='station'){pts.push({x:door,y:CY});pts.push({x:door,y:dy});pts.push({x:dx,y:dy});}
-  else {pts.push({x:dx,y:CY});pts.push({x:dx,y:dy});}
-  a.path=pts;
-}
-function stepAgent(a,dt){
-  var rem=SPEED*dt;a.moving=false;
-  while(rem>0&&a.path.length){
-    var p=a.path[0],dx=p.x-a.x,dy=p.y-a.y,d=Math.sqrt(dx*dx+dy*dy);
-    if(d<=rem){a.x=p.x;a.y=p.y;rem-=d;a.path.shift();}
-    else {a.x+=dx/d*rem;a.y+=dy/d*rem;rem=0;}
-    a.moving=true;
-  }
-  if(a.path.length)a.moving=true;
-}
 
 /* ====== API: pintu masuk data ====== */
 function say(a,text,tone,ttl){
@@ -160,16 +123,9 @@ function setState(a,s,text,tone,ttl,extra){
     if('checks' in extra)a.checks=extra.checks?extra.checks.slice():null;
   }
   if(text!==undefined)say(a,text,tone,ttl);
-  if(s==='idle')goTo(a,'pantry');
-  else if(a.id!=='docs'&&a.id!=='human')goTo(a,'station');
 }
-function ready(a){
-  a=AG(a);
-  return (function loop(){
-    if(!a.path.length)return Promise.resolve();
-    return wait(120).then(loop);
-  })();
-}
+/* Dipertahankan untuk skenario demo: dulu menunggu agent tiba di mejanya. */
+function ready(){return Promise.resolve();}
 function celebrate(a,text){
   a=AG(a);
   setState(a,'celebrating',text,'ok',2300);
@@ -251,7 +207,7 @@ function resetWorld(){
   docs.forEach(function(d){if(d.el.parentNode)d.el.parentNode.removeChild(d.el);});docs.length=0;bugs.length=0;
   outboxFlag=false;
   ORDER.forEach(function(id){
-    var a=A[id];a.state=(id==='docs')?'offduty':'idle';a.tone='';a.path=[];a.moving=false;
+    var a=A[id];a.state=(id==='docs')?'offduty':'idle';a.tone='';
     a.bubble=null;a.checks=[0,0,0];a.attempt='';a.cost=0;a.hasCost=false;a.tokens=mock?0:null;a.activeMs=0;a.board=0;
     placeInitial(a);
   });
@@ -300,8 +256,12 @@ function buildBG(){
   R(g,250,164,36,20,'#8b7355');R(g,250,164,36,5,'#cdbb9c');
   R(g,254,153,10,12,'#b3392e');R(g,256,156,6,3,'#2a2e48');
   R(g,270,161,3,3,'#fff');R(g,275,161,3,3,'#fff');
-  R(g,150,264,56,18,'#6b5ca8');R(g,152,264,52,5,'#7a6bc0');R(g,153,269,50,11,'#8a7bd0');
-  R(g,150,268,4,14,'#5a4c96');R(g,202,268,4,14,'#5a4c96');
+  /* sofa (tempat Docs), meja kopi, kulkas */
+  R(g,186,226,60,26,'#6b5ca8');R(g,188,226,56,7,'#7a6bc0');R(g,189,233,54,15,'#8a7bd0');
+  R(g,186,232,5,20,'#5a4c96');R(g,241,232,5,20,'#5a4c96');
+  R(g,196,262,40,12,'#8c5e3a');R(g,196,262,40,2,'#d3a173');R(g,198,274,3,5,'#6e4a2c');R(g,231,274,3,5,'#6e4a2c');
+  R(g,204,259,4,4,'#fff');R(g,222,258,7,5,'#e8e9f0');R(g,223,259,5,1,'#9aa0b8');
+  R(g,150,160,18,34,'#dfe3ee');R(g,150,160,18,1,'#f4f5f9');R(g,150,174,18,1,'#aeb2ca');R(g,165,164,1,7,'#8b8fa8');R(g,165,178,1,10,'#8b8fa8');
   /* rak buku review */
   R(g,12,236,44,32,'#6e4a2c');
   var bk=['#d9534f','#3f7de0','#36a35b','#f2c230','#7a5af0'];
@@ -313,7 +273,7 @@ function buildBG(){
   R(g,316,164,56,26,'#7d6a42');R(g,316,164,56,4,'#a38d5a');
   R(g,334,174,20,3,'#1d1a10');R(g,320,181,48,5,'#cdbb82');
   /* tanaman */
-  [[16,100],[110,112],[188,112],[270,112],[330,112],[372,112],[62,262],[216,262],[300,262],[372,262]].forEach(function(p){plant(g,p[0],p[1]);});
+  [[16,100],[110,112],[188,112],[270,112],[330,112],[372,112],[62,262],[158,262],[272,262],[300,262],[372,262]].forEach(function(p){plant(g,p[0],p[1]);});
 }
 function fit(){
   DPR=window.devicePixelRatio||1;
@@ -391,44 +351,61 @@ function accessory(a,P,hy,back){
   else if(k==='capw'){P(-3,hy-1,6,2,'#e8e8e8');if(!back)P(-3,hy+1,6,1,'#e8e8e8');}
 }
 function drawChar(a,T){
-  var g=ctx,d=a.def,st=a.state,s=ST[a.id],cs=CS;
-  var atSt=Math.abs(a.x-s.cx)<2&&Math.abs(a.y-s.fy)<2;
-  var f=((T*8)|0)%2,walking=a.moving;
+  var g=ctx,d=a.def,st=a.state,cs=CS;
+  var f=((T*8)|0)%2;
   var x=Math.round(a.x*K)/K,gy=Math.round(a.y*K)/K,y=gy;
-  var back=false;
-  if(a.id==='human')back=(st!=='alert');
-  else back=atSt&&(!!BACKFACE[st]||st==='offduty');
-  if(st==='celebrating'&&!walking)y-=Math.abs(Math.sin(T*9))*4;
+  var docs=a.id==='docs';
+  /* Membelakangi kita saat menghadap layar; menoleh ke depan saat idle, selesai, atau butuh perhatian. */
+  var back=a.id==='human'?(st!=='alert'):(!docs&&!!BACKFACE[st]);
+  /* Duduk, kecuali saat melompat merayakan. sd: seberapa jauh badan turun. */
+  var sit=st!=='celebrating',sd=sit?2:0;
+  if(st==='celebrating')y-=Math.abs(Math.sin(T*9))*4;
   if(st==='error')x+=(((T*14)|0)%2?1:-1);
   y=Math.round(y*K)/K;
   function P(dx,dy,w,h,c){R(g,x+dx*cs,y+dy*cs,w*cs,h*cs,c);}
-  if(a.id==='docs')g.globalAlpha=.55;
+  if(docs)g.globalAlpha=.55;
   R(g,x-4*cs,gy-1*cs,8*cs,2*cs,'rgba(0,0,0,.18)');
-  var lo=walking?(f?1:0):0,ro=walking?(f?0:1):0;
-  P(-3,-4+lo,3,4-lo,'#2a3050');P(0,-4+ro,3,4-ro,'#2a3050');
+  /* kursi: sandaran di belakang badan bila menghadap depan */
+  if(sit&&!docs&&!back){P(-5,-11,10,9,'#3a3f5e');P(-5,-11,10,1,'#4d5282');}
+  P(-3,-4,3,4,'#2a3050');P(0,-4,3,4,'#2a3050');
   P(-3,-1,3,1,'#15172b');P(0,-1,3,1,'#15172b');
+  y+=sd*cs;
   P(-4,-10,8,6,d.color);P(-4,-5,8,1,'rgba(0,0,0,.15)');
   var sk=d.skin,sl=d.color,pose='down';
+  /* Idle: menyeruput kopi kira-kira tiap 3 detik; fase digeser per agent supaya tidak serempak. */
+  var sip=((T+a.def.name.length*.7)%3.2)<.9;
   if(st==='celebrating')pose='up';
   else if(st==='error')pose='head';
   else if(st==='blocked'||(a.id==='human'&&st==='alert'))pose='wave';
   else if(st==='retrying')pose='scratch';
-  else if(WORKING[st]&&atSt&&!walking)pose='type';
+  else if(WORKING[st])pose='type';
+  else if(st==='idle'&&a.id!=='human')pose='coffee';
   if(pose==='down'){P(-5,-10,1,4,sl);P(-5,-6,1,1,sk);P(4,-10,1,4,sl);P(4,-6,1,1,sk);}
   else if(pose==='type'){P(-5,-10,1,3,sl);P(4,-10,1,3,sl);P(-5,-7+f,1,1,sk);P(4,-6-f,1,1,sk);}
   else if(pose==='up'){P(-5,-13,1,4,sl);P(-5,-14,1,1,sk);P(4,-13,1,4,sl);P(4,-14,1,1,sk);}
   else if(pose==='head'){P(-5,-11,1,3,sl);P(4,-11,1,3,sl);P(-4,-14,1,2,sk);P(3,-14,1,2,sk);}
   else if(pose==='wave'){P(-5,-10,1,4,sl);P(-5,-6,1,1,sk);var wv=f?0:1;P(4,-14+wv,1,5,sl);P(4,-15+wv,1,1,sk);}
   else if(pose==='scratch'){P(-5,-10,1,4,sl);P(-5,-6,1,1,sk);P(4,-13,1,4,sl);P(3,-14,2,1,sk);P(-6,-14+(((T*4)|0)%2),1,2,'#7fd8ff');}
-  var hy=-16+((walking&&f)?1:0);
+  else if(pose==='coffee'){
+    P(-5,-10,1,4,sl);P(-5,-6,1,1,sk);
+    if(sip){P(4,-12,1,3,sl);P(3,-12,1,1,sk);}       /* lengan terangkat, cangkir di mulut */
+    else {P(4,-10,1,3,sl);P(4,-7,1,1,sk);}           /* cangkir dipegang di depan dada */
+  }
+  var hy=-16;
   if(back){P(-3,hy,6,6,d.hair);P(-2,hy+5,4,1,sk);}
   else {
     P(-3,hy,6,6,sk);P(-3,hy,6,2,d.hair);P(-3,hy+2,1,2,d.hair);P(2,hy+2,1,2,d.hair);
-    P(-2,hy+3,1,1,'#15172b');P(1,hy+3,1,1,'#15172b');
+    if(docs){P(-2,hy+3,2,1,'#15172b');P(1,hy+3,2,1,'#15172b');}   /* mata terpejam: off duty */
+    else {P(-2,hy+3,1,1,'#15172b');P(1,hy+3,1,1,'#15172b');}
     if(st==='celebrating'||st==='error'||st==='blocked')P(-1,hy+5,2,1,'#7a2a2a');
   }
   accessory(a,P,hy,back);
-  if(st==='idle'&&!walking&&a.id!=='human'){P(4,-7,2,2,'#fff');P(6,-7,1,1,'#fff');if(((T*2)|0)%2)P(5,-10,1,1,'rgba(255,255,255,.8)');}
+  if(pose==='coffee'){
+    if(sip){P(1,-12,2,2,'#fff');P(1,-12,2,1,'#e8e9f0');}
+    else {P(4,-8,2,2,'#fff');P(6,-8,1,1,'#fff');if(((T*2)|0)%2)P(5,-11,1,1,'rgba(255,255,255,.8)');}
+  }
+  /* kursi: sandaran menutupi punggung bila membelakangi kita */
+  if(sit&&!docs&&back){P(-3,-9,6,6,'#3a3f5e');P(-3,-9,6,1,'#4d5282');}
   if(st==='error'){var ff=((T*10)|0)%2;P(-1,hy-3+ff,2,2,'#ff9d2e');P(0,hy-5+ff,1,2,'#ffd24a');}
   g.globalAlpha=1;
 }
@@ -446,7 +423,7 @@ function render(){
   }
   for(var k=0;k<3;k++){var ph=((T*.8+k*.33)%1);R(g,259+Math.round(Math.sin(ph*6+k)*2),150-Math.round(ph*12),1,1,'rgba(255,255,255,.75)');}
   if(outboxFlag){R(g,375,164,1,22,'#2b2b2b');R(g,376,164,8,5,'#e5493a');}
-  ORDER.forEach(function(id){drawDesk(id,T);});
+  ORDER.forEach(function(id){if(id!=='docs')drawDesk(id,T);});
   var sa=A[selected];R(g,sa.x-9,sa.y+1.5,18,1,'#5b4bdb');R(g,sa.x-7,sa.y+3,14,1,'#5b4bdb');
   ORDER.map(function(id){return A[id];}).sort(function(p,q){return p.y-q.y;}).forEach(function(a){drawChar(a,T);});
   bugs=bugs.filter(function(b){return simT<b.until;});
@@ -594,8 +571,8 @@ scene.addEventListener('pointerdown',function(ev){
 function advance(dt){
   simT+=dt*1000;
   ORDER.forEach(function(id){
-    var a=A[id];stepAgent(a,dt);
-    if(WORKING[a.state]&&!a.moving){
+    var a=A[id];
+    if(WORKING[a.state]){
       if(mock){a.cost+=a.def.rate*dt;a.tokens=Math.round(a.cost*45000);a.activeMs+=dt*1000;}
       if(a.id==='planner'&&a.state==='planning')a.board=Math.min(7,a.board+dt*1.1);
     }

@@ -131,15 +131,20 @@ depends on an external host.
 
 | Mode | How to get it | Data |
 |---|---|---|
-| **Live** | Open the page. With no manual choice it follows whichever run is `RUNNING` in the selected repo; with none running, everyone waits in the pantry. | Real, as it happens. |
+| **Live** | Open the page. With no manual choice it follows whichever run is `RUNNING` in the selected repo; with none running, everyone sits at their desk drinking coffee. | Real, as it happens. |
 | **Replay** | Click a finished run in the **Run** list. | Real, read back from the database and played from the start. Costs nothing and triggers nothing. |
 | **Demo** | `/dashboard/agent-floor?demo=1`, or the **Demo** button. | Scripted mock scenarios. Makes no data request at all; marked "Data contoh". |
 
 **Jeda** and **1× / 2× / 4×** control animation and replay speed. Replay
 compresses real time 30× (a gap between two events plays as 0.35 to 3.5
 seconds), so a ten-minute run replays in well under a minute. Pausing does not
-hold back live data: new events still arrive and are shown, characters simply
-appear at their destination instead of walking there.
+hold back live data: new events still arrive and are shown.
+
+Characters never walk. Each agent has a fixed seat — its own desk, or the
+pantry sofa for Docs — and only its pose and screen change. (The approved
+prototype had agents walking between the pantry and their desks; with real
+data, states often change faster than a walk takes, so the character was
+still on its way when the state had already moved on.)
 
 The **Repo** selector switches between configured repos that have at least one
 recorded run. Runs from different repos are never shown together; the choice
@@ -149,14 +154,14 @@ is kept in the URL (`?repo=`).
 
 | What you see | What it means |
 |---|---|
-| Everyone in the pantry | No run active in this repo. |
-| Typing at a desk | That agent's process is running (plan, implement, QA, or review). |
+| Sitting at the desk, sipping coffee | That agent is idle. With everyone like this, no run is active in this repo. |
+| Typing at the desk, back turned | That agent's process is running (plan, implement, QA, or review). |
 | Scratching head (and, for QA, a bug in the QA lab) | A QA or Reviewer gate rejected the work and the implementation agents are re-run. The bubble shows the gate's own counter and limit (`retry 1/1`), from `agents.qa.maxRetries` / `agents.reviewer.maxRetries`. |
 | Flying document | A report handed from one agent to the next (see "Handoffs" below). |
 | Raised hand, red screen, red lamp on Ganjar's desk | `NEEDS_HUMAN`. |
 | Small flame | The agent's process failed (`FAILED`, `KILLED`, or `TIMEOUT`); the run is `ERROR` and BullMQ may retry the job. |
 | Green lamp on Ganjar's desk | `SUCCESS`; a PR is waiting for human review. |
-| Docs asleep, greyed out | Always. See below. |
+| Docs asleep on the pantry sofa, greyed out | Always. See below. |
 
 **Docs (`caf-documentation`) is always off duty, on purpose.** The pipeline
 does not record events for that agent (it has no PIV phase), so the page has

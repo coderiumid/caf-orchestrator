@@ -197,6 +197,24 @@ Atas instruksi Ganjar (2026-10-04), dokumen DASHBOARD-01 ikut diperbarui: `verif
 limitation (as of Task 7)" di `docs/dashboard.md` diganti "End-to-end verification". Keduanya mencatat
 apa yang tidak tercatat di data: pengamatan live, dan dua repo berbeda yang berjalan bersamaan.
 
+## Perubahan setelah review Ganjar: agent duduk di meja (2026-10-04)
+
+Permintaan Ganjar: perubahan state terlalu cepat untuk diikuti karakter yang berjalan, jadi agent tetap
+duduk di mejanya. Ini menggantikan perilaku prototype (berjalan antara pantry dan meja) dan baris FR-2
+"semua agent di pantry".
+
+- Setiap agent punya tempat tetap. Kode pergerakan (`goTo`, `stepAgent`, posisi pantry) dihapus dari
+  `render.js`.
+- Bekerja: mengetik membelakangi kita, sandaran kursi terlihat. Idle: menghadap depan, memegang cangkir
+  dan menyeruput kopi kira-kira tiap 3 detik (fase berbeda per agent).
+- Pantry disesuaikan untuk Docs: sofa dipindah ke tengah dan Docs duduk di sana dengan mata terpejam,
+  tanpa meja kerja; ditambah meja kopi dan kulkas. Docs tetap off duty.
+- API publik, `translate.js`, `adapter.js`, dan `demo.js` tidak berubah. `ready()` kini langsung selesai.
+- Teks "Arti animasi" dan `docs/dashboard.md` disesuaikan.
+
+Dilihat di browser (tab terlihat, satu instance skrip, frame digerakkan lewat shim di server
+pratinjau): keadaan idle live, skenario demo "Berjalan lancar" sampai selesai, tanpa error console.
+
 ## Quality Gate
 
 - `pnpm typecheck` — PASS
