@@ -215,6 +215,21 @@ duduk di mejanya. Ini menggantikan perilaku prototype (berjalan antara pantry da
 Dilihat di browser (tab terlihat, satu instance skrip, frame digerakkan lewat shim di server
 pratinjau): keadaan idle live, skenario demo "Berjalan lancar" sampai selesai, tanpa error console.
 
+## Perubahan setelah review Ganjar: bahasa Inggris dan satu ruangan (2026-10-04)
+
+- **Bahasa Inggris.** Semua teks UI Agent Floor, plus komentar kode dan CSS di `ui/agent-floor/`.
+  Ada test yang menjaga tidak ada teks Indonesia tersisa.
+- **Satu ruangan open-plan.** Enam zona berdinding dan koridor dihapus. Enam meja dirapatkan jadi satu
+  pod 3 x 2 menghadap dinding belakang: Planner, Backend, Frontend di depan; QA, Reviewer, Ganjar di
+  belakang. Docs di sofa sudut lounge. Dinding belakang: papan tulis, poster, rak server, jendela,
+  kulkas, meja kopi, jam. Ditambah meja rapat; kotak PR di kanan bawah.
+- Posisi yang digambar dua kali (latar statis dan bagian animasinya) kini diambil dari satu konstanta
+  (`BOARD`, `RACK`, `COUNTER`, `PRBOX`), jadi tidak bisa bergeser sendiri-sendiri.
+
+Dilihat di browser (tab terlihat, mode demo): skenario "Smooth run" dan "QA rejects once" sampai
+selesai, tanpa error console. Label "Done, PR ready for review" tidak terpotong. Mode live dan tema
+terang belum dilihat dengan tata letak baru.
+
 ## Quality Gate
 
 - `pnpm typecheck` — PASS

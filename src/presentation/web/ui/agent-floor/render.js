@@ -9,7 +9,8 @@
  *   reset, setRun, usage, checks                   (complements: run_started, usage, demo verify bars)
  *   wait, ready, later, fire, celebrate            (simulation-time choreography)
  *
- * Agents do not walk: each sits in a fixed place (see placeInitial).
+ * The office is one open-plan room. Agents do not walk: each sits in a fixed
+ * place (see ST and placeInitial).
  *
  * Callers: demo.js (mock scenarios) and adapter.js (live and replay).
  * An agent may be referenced by id ('planner', 'backend', 'frontend', 'qa',
@@ -32,24 +33,35 @@ var WORKING={planning:1,implementing:1,verifying:1,retrying:1,reviewing:1};
 var BACKFACE={planning:1,implementing:1,verifying:1,reviewing:1};
 var STATE_LABEL={idle:'Idle',planning:'Planning',implementing:'Implementing',verifying:'Verifying',retrying:'Retrying',reviewing:'Reviewing',celebrating:'Done',blocked:'Needs human',error:'Error',offduty:'Off duty',alert:'Notification'};
 
-var ZONES=[
- {id:'plan',x:8,y:8,w:128,h:128,c1:'#cbdffb',c2:'#bcd4f3',top:true,label:'Planning',lx:11,ly:124},
- {id:'eng',x:144,y:8,w:144,h:128,c1:'#ddd6f7',c2:'#cfc6f0',top:true,label:'Engineering',lx:147,ly:124},
- {id:'qa',x:296,y:8,w:96,h:128,c1:'#cfeedf',c2:'#bfe5d1',top:true,label:'QA lab',lx:299,ly:124},
- {id:'rev',x:8,y:156,w:128,h:136,c1:'#f8ddc5',c2:'#f0cfb0',top:false,label:'Review',lx:11,ly:159},
- {id:'pantry',x:144,y:156,w:144,h:136,c1:'#ece7db',c2:'#e0dacb',top:false,label:'Pantry',lx:147,ly:159},
- {id:'pr',x:296,y:156,w:96,h:136,c1:'#f7f0c6',c2:'#ede4ad',top:false,label:'PR gate',lx:299,ly:278}
-];
+/* One open-plan room. Everything that is drawn in two places (once into the
+   static background, once per frame for its animated part) takes its
+   position from here. */
+var ROOM={x:8,y:8,w:384,h:284,wall:40};
+var RUG={x:46,y:72,w:144,h:144};          /* under the desk pod */
+var GATE={x:284,y:96,w:100,h:96};         /* PR gate: the PR box and Ganjar's desk */
+var LOUNGE={x:276,y:206,w:108,h:78};      /* rug under the sofa, bottom-right corner */
+var BOARD={x:13,y:10};                    /* planning whiteboard */
+var RACK={x:156,y:16};                    /* server rack */
+var COUNTER={x:290,y:42};                 /* coffee counter */
+var PRBOX={x:306,y:104};                  /* where finished work goes */
+var SHELF={x:12,y:244};                   /* bookshelf */
+var TABLE={x:150,y:248};                  /* meeting table */
+var LABELS=[['Workspace',48,207],['PR gate',286,183],['Lounge',278,275]];
+/* The five agents' desks sit close together in one pod, all facing the back
+   wall: Planner, Backend, Frontend in front; QA and Reviewer behind them.
+   Ganjar is not part of the pod: his desk is at the PR gate, facing the PR
+   box, because that is where every run ends up. Docs has no desk: it is on
+   the lounge sofa. */
 var ST={
- planner:{cx:96,fy:84,door:130},
- backend:{cx:172,fy:84,door:208},
- frontend:{cx:256,fy:84,door:226},
- qa:{cx:344,fy:84,door:304},
- reviewer:{cx:72,fy:210,door:118},
- docs:{cx:216,fy:250,door:216},
- human:{cx:344,fy:240,door:344}
+ planner:{cx:72,fy:116},
+ backend:{cx:118,fy:116},
+ frontend:{cx:164,fy:116},
+ qa:{cx:95,fy:190},
+ reviewer:{cx:141,fy:190},
+ human:{cx:330,fy:176},
+ docs:{cx:330,fy:240}
 };
-var OUTBOX={x:344,y:174};
+var OUTBOX={x:PRBOX.x+28,y:PRBOX.y+10};
 
 var DEF={
  planner:{name:'Planner',file:'caf-planner',color:'#3f7de0',hair:'#5b3a29',skin:'#f1c9a5',acc:'pencil',rate:.010,
@@ -70,7 +82,7 @@ var DEF={
  docs:{name:'Docs',file:'caf-documentation',color:'#8b90a0',hair:'#3a2a22',skin:'#d9a47a',acc:'bun',rate:0,
   access:'Write, in docs/',out:'docs updates',
   desc:'Not instrumented: it has no piv_phase, so the dashboard deliberately shows it off duty.'},
- human:{name:'Ganjar',file:'',color:'#17181f',hair:'#17181f',skin:'#c68a5e',acc:'capw',rate:0,
+ human:{name:'Manager',file:'',color:'#17181f',hair:'#17181f',skin:'#c68a5e',acc:'capw',rate:0,
   access:'Mandatory review before merge',out:'merge decision',
   desc:'No auto-merge. Every PR stops at this desk.'}
 };
@@ -92,7 +104,7 @@ ORDER.forEach(function(id){
   A[id]={id:id,def:DEF[id],x:0,y:0,state:'idle',tone:'',bubble:null,checks:[0,0,0],attempt:'',cost:0,hasCost:false,tokens:null,activeMs:0,board:0,_bk:''};
 });
 /* Every agent has a fixed place and never moves: the five agents and Ganjar
-   at their own desks, Docs on the pantry sofa. State shows only through pose
+   at their own desks, Docs on the lounge sofa. State shows only through pose
    and screen, so a state change stays readable however fast it comes (there
    is no walk that has to finish first). */
 function placeInitial(a){a.x=ST[a.id].cx;a.y=ST[a.id].fy;}
@@ -223,57 +235,72 @@ function plant(g,x,y){
   P(2,7,4,5,'#a35f3a');P(1,6,6,2,'#b87245');
   P(3,0,2,7,'#2f8f4e');P(0,2,4,3,'#3fae60');P(4,1,4,3,'#3fae60');
 }
+function tiles(g,r,c1,c2){
+  for(var ty=0;ty*8<r.h;ty++)for(var tx=0;tx*8<r.w;tx++){
+    R(g,r.x+tx*8,r.y+ty*8,Math.min(8,r.w-tx*8),Math.min(8,r.h-ty*8),((tx+ty)&1)?c2:c1);
+  }
+}
 function buildBG(){
   bgc=document.createElement('canvas');bgc.width=cv.width;bgc.height=cv.height;
-  var g=bgc.getContext('2d');
+  var g=bgc.getContext('2d'),rm=ROOM,x,i;
   R(g,0,0,W,H,'#252740');
-  R(g,4,136,392,20,'#c4c7d9');
-  for(var x=10;x<392;x+=16)R(g,x,145,8,2,'#aeb2ca');
-  ZONES.forEach(function(z){
-    for(var ty=0;ty*8<z.h;ty++)for(var tx=0;tx*8<z.w;tx++){
-      R(g,z.x+tx*8,z.y+ty*8,8,Math.min(8,z.h-ty*8),((tx+ty)&1)?z.c2:z.c1);
-    }
-    if(z.top){
-      R(g,z.x,z.y,z.w,36,'#3a3e66');R(g,z.x,z.y,z.w,3,'#4d5282');
-      for(var wx=z.x+16;wx<z.x+z.w;wx+=16)R(g,wx,z.y+3,1,31,'#33375c');
-      R(g,z.x,z.y+34,z.w,2,'#2a2d4d');
-    } else R(g,z.x,z.y+z.h-4,z.w,4,'#3a3e66');
-  });
+  /* floor, then the rugs that mark the desk pod, the PR gate, and the lounge */
+  tiles(g,{x:rm.x,y:rm.y+rm.wall,w:rm.w,h:rm.h-rm.wall-4},'#ebe6da','#e2dccd');
+  R(g,RUG.x-1,RUG.y-1,RUG.w+2,RUG.h+2,'#bfc7e6');tiles(g,RUG,'#dde2f5','#d3d9f0');
+  R(g,GATE.x-1,GATE.y-1,GATE.w+2,GATE.h+2,'#d8cf97');tiles(g,GATE,'#f7f0c6','#ede4ad');
+  R(g,LOUNGE.x-1,LOUNGE.y-1,LOUNGE.w+2,LOUNGE.h+2,'#d3c2a6');tiles(g,LOUNGE,'#eadfce','#e2d5c1');
+  /* back wall with panel seams, and the strip along the bottom edge */
+  R(g,rm.x,rm.y,rm.w,rm.wall,'#3a3e66');R(g,rm.x,rm.y,rm.w,3,'#4d5282');
+  for(x=rm.x+16;x<rm.x+rm.w;x+=16)R(g,x,rm.y+3,1,rm.wall-5,'#33375c');
+  R(g,rm.x,rm.y+rm.wall-2,rm.w,2,'#2a2d4d');
+  R(g,rm.x,rm.y+rm.h-4,rm.w,4,'#3a3e66');
   /* planning whiteboard */
-  R(g,13,10,52,28,'#8b8fa8');R(g,14,11,50,26,'#f4f5f9');R(g,14,37,50,2,'#8b8fa8');
+  R(g,BOARD.x,BOARD.y,52,28,'#8b8fa8');R(g,BOARD.x+1,BOARD.y+1,50,26,'#f4f5f9');R(g,BOARD.x+1,BOARD.y+27,50,2,'#8b8fa8');
   /* PIV poster */
-  R(g,151,11,30,19,'#f4f5f9');R(g,151,11,30,1,'#8b8fa8');R(g,151,29,30,1,'#8b8fa8');
-  R(g,154,16,6,6,'#3f7de0');R(g,163,16,6,6,'#7a5af0');R(g,172,16,6,6,'#36a35b');
-  R(g,160,18,3,2,'#555a6e');R(g,169,18,3,2,'#555a6e');
+  R(g,78,11,30,19,'#f4f5f9');R(g,78,11,30,1,'#8b8fa8');R(g,78,29,30,1,'#8b8fa8');
+  R(g,81,16,6,6,'#3f7de0');R(g,90,16,6,6,'#7a5af0');R(g,99,16,6,6,'#36a35b');
+  R(g,87,18,3,2,'#555a6e');R(g,96,18,3,2,'#555a6e');
   /* QA poster */
-  R(g,299,11,20,22,'#f4f5f9');
-  for(var r=0;r<4;r++){R(g,302,15+r*5,3,3,'#36a35b');R(g,307,16+r*5,9,1,'#9aa0b8');}
+  R(g,120,11,20,22,'#f4f5f9');
+  for(i=0;i<4;i++){R(g,123,15+i*5,3,3,'#36a35b');R(g,128,16+i*5,9,1,'#9aa0b8');}
   /* server rack */
-  R(g,208,16,18,36,'#2a2e48');R(g,209,17,16,34,'#363b5c');
-  for(var u=0;u<5;u++)R(g,210,19+u*7,14,5,'#1d2036');
-  R(g,208,52,18,2,'rgba(0,0,0,.18)');
-  /* pantry */
-  R(g,250,164,36,20,'#8b7355');R(g,250,164,36,5,'#cdbb9c');
-  R(g,254,153,10,12,'#b3392e');R(g,256,156,6,3,'#2a2e48');
-  R(g,270,161,3,3,'#fff');R(g,275,161,3,3,'#fff');
-  /* sofa (where Docs sits), coffee table, fridge */
-  R(g,186,226,60,26,'#6b5ca8');R(g,188,226,56,7,'#7a6bc0');R(g,189,233,54,15,'#8a7bd0');
-  R(g,186,232,5,20,'#5a4c96');R(g,241,232,5,20,'#5a4c96');
-  R(g,196,262,40,12,'#8c5e3a');R(g,196,262,40,2,'#d3a173');R(g,198,274,3,5,'#6e4a2c');R(g,231,274,3,5,'#6e4a2c');
-  R(g,204,259,4,4,'#fff');R(g,222,258,7,5,'#e8e9f0');R(g,223,259,5,1,'#9aa0b8');
-  R(g,150,160,18,34,'#dfe3ee');R(g,150,160,18,1,'#f4f5f9');R(g,150,174,18,1,'#aeb2ca');R(g,165,164,1,7,'#8b8fa8');R(g,165,178,1,10,'#8b8fa8');
-  /* review bookshelf */
-  R(g,12,236,44,32,'#6e4a2c');
+  R(g,RACK.x,RACK.y,18,36,'#2a2e48');R(g,RACK.x+1,RACK.y+1,16,34,'#363b5c');
+  for(i=0;i<5;i++)R(g,RACK.x+2,RACK.y+3+i*7,14,5,'#1d2036');
+  R(g,RACK.x,RACK.y+36,18,2,'rgba(0,0,0,.18)');
+  /* window */
+  R(g,190,13,52,25,'#8b8fa8');R(g,192,15,48,21,'#a9d6f5');R(g,192,15,48,7,'#c6e6fb');
+  R(g,215,15,2,21,'#8b8fa8');R(g,192,25,48,1,'#8b8fa8');R(g,188,38,56,2,'#c2c5d6');
+  /* fridge */
+  R(g,262,20,18,36,'#dfe3ee');R(g,262,20,18,1,'#f4f5f9');R(g,262,34,18,1,'#aeb2ca');R(g,277,24,1,7,'#8b8fa8');R(g,277,38,1,10,'#8b8fa8');
+  R(g,262,56,18,2,'rgba(0,0,0,.18)');
+  /* coffee counter: machine and cups */
+  R(g,COUNTER.x,COUNTER.y,50,18,'#8b7355');R(g,COUNTER.x,COUNTER.y,50,5,'#cdbb9c');
+  R(g,COUNTER.x+4,COUNTER.y-12,10,12,'#b3392e');R(g,COUNTER.x+6,COUNTER.y-9,6,3,'#2a2e48');
+  R(g,COUNTER.x+22,COUNTER.y-3,3,3,'#fff');R(g,COUNTER.x+27,COUNTER.y-3,3,3,'#fff');R(g,COUNTER.x+36,COUNTER.y-5,8,5,'#6e4a2c');
+  /* wall clock */
+  R(g,354,15,12,12,'#8b8fa8');R(g,355,16,10,10,'#f4f5f9');R(g,360,18,1,4,'#20243a');R(g,360,21,3,1,'#20243a');
+  /* lounge: sofa (where Docs sits) and coffee table */
+  var sx=ST.docs.cx-30,sy=ST.docs.fy-24;
+  R(g,sx,sy,60,26,'#6b5ca8');R(g,sx+2,sy,56,7,'#7a6bc0');R(g,sx+3,sy+7,54,15,'#8a7bd0');
+  R(g,sx,sy+6,5,20,'#5a4c96');R(g,sx+55,sy+6,5,20,'#5a4c96');
+  R(g,sx+10,sy+36,40,12,'#8c5e3a');R(g,sx+10,sy+36,40,2,'#d3a173');R(g,sx+12,sy+48,3,5,'#6e4a2c');R(g,sx+45,sy+48,3,5,'#6e4a2c');
+  R(g,sx+18,sy+33,4,4,'#fff');R(g,sx+36,sy+32,7,5,'#e8e9f0');R(g,sx+37,sy+33,5,1,'#9aa0b8');
+  /* bookshelf */
+  R(g,SHELF.x,SHELF.y,44,32,'#6e4a2c');
   var bk=['#d9534f','#3f7de0','#36a35b','#f2c230','#7a5af0'];
   for(var sh=0;sh<3;sh++){
-    R(g,14,238+sh*10,40,8,'#8a6038');
-    for(var b=0;b<9;b++)R(g,15+b*4.3,239+sh*10,3,7,bk[(b+sh*2)%5]);
+    R(g,SHELF.x+2,SHELF.y+2+sh*10,40,8,'#8a6038');
+    for(var b=0;b<9;b++)R(g,SHELF.x+3+b*4.3,SHELF.y+3+sh*10,3,7,bk[(b+sh*2)%5]);
   }
+  /* meeting table with stools on both sides */
+  for(i=0;i<3;i++){R(g,TABLE.x+10+i*26,TABLE.y-8,10,6,'#4d5282');R(g,TABLE.x+10+i*26,TABLE.y+18,10,6,'#4d5282');}
+  R(g,TABLE.x,TABLE.y,84,16,'#d3a173');R(g,TABLE.x,TABLE.y,84,1,'#e4bc92');R(g,TABLE.x,TABLE.y+14,84,2,'#8c5e3a');
+  R(g,TABLE.x+34,TABLE.y+5,16,6,'#e8e9f0');R(g,TABLE.x+36,TABLE.y+7,12,1,'#9aa0b8');
   /* PR box */
-  R(g,316,164,56,26,'#7d6a42');R(g,316,164,56,4,'#a38d5a');
-  R(g,334,174,20,3,'#1d1a10');R(g,320,181,48,5,'#cdbb82');
+  R(g,PRBOX.x,PRBOX.y,56,26,'#7d6a42');R(g,PRBOX.x,PRBOX.y,56,4,'#a38d5a');
+  R(g,PRBOX.x+18,PRBOX.y+10,20,3,'#1d1a10');R(g,PRBOX.x+4,PRBOX.y+17,48,5,'#cdbb82');
   /* plants */
-  [[16,100],[110,112],[188,112],[270,112],[330,112],[372,112],[62,262],[158,262],[272,262],[300,262],[372,262]].forEach(function(p){plant(g,p[0],p[1]);});
+  [[22,92],[22,170],[244,52],[372,62],[66,262],[230,180]].forEach(function(p){plant(g,p[0],p[1]);});
 }
 function fit(){
   DPR=window.devicePixelRatio||1;
@@ -414,21 +441,22 @@ function render(){
   if(!bgc)buildBG();
   g.setTransform(1,0,0,1,0,0);g.imageSmoothingEnabled=false;g.drawImage(bgc,0,0);
   var nb=Math.floor(A.planner.board);
-  for(var i=0;i<nb&&i<7;i++)R(g,17,14+i*3,10+((i*9)%30),1,i%2?'#d9534f':'#3f7de0');
+  for(var i=0;i<nb&&i<7;i++)R(g,BOARD.x+4,BOARD.y+4+i*3,10+((i*9)%30),1,i%2?'#d9534f':'#3f7de0');
   var busy=A.backend.state==='implementing'||A.backend.state==='verifying'||A.frontend.state==='implementing'||A.frontend.state==='verifying';
   var rate=busy?7:1.5;
   for(var u=0;u<5;u++)for(var j=0;j<3;j++){
     var on=(((T*rate)|0)+u*3+j*2)%4<2;
-    R(g,212+j*4,21+u*7,2,1,on?(j===1?'#ffcf4a':'#4ade80'):'#2c3250');
+    R(g,RACK.x+4+j*4,RACK.y+5+u*7,2,1,on?(j===1?'#ffcf4a':'#4ade80'):'#2c3250');
   }
-  for(var k=0;k<3;k++){var ph=((T*.8+k*.33)%1);R(g,259+Math.round(Math.sin(ph*6+k)*2),150-Math.round(ph*12),1,1,'rgba(255,255,255,.75)');}
-  if(outboxFlag){R(g,375,164,1,22,'#2b2b2b');R(g,376,164,8,5,'#e5493a');}
+  for(var k=0;k<3;k++){var ph=((T*.8+k*.33)%1);R(g,COUNTER.x+9+Math.round(Math.sin(ph*6+k)*2),COUNTER.y-14-Math.round(ph*12),1,1,'rgba(255,255,255,.75)');}
+  if(outboxFlag){R(g,PRBOX.x+59,PRBOX.y,1,22,'#2b2b2b');R(g,PRBOX.x+60,PRBOX.y,8,5,'#e5493a');}
   ORDER.forEach(function(id){if(id!=='docs')drawDesk(id,T);});
   var sa=A[selected];R(g,sa.x-9,sa.y+1.5,18,1,'#5b4bdb');R(g,sa.x-7,sa.y+3,14,1,'#5b4bdb');
   ORDER.map(function(id){return A[id];}).sort(function(p,q){return p.y-q.y;}).forEach(function(a){drawChar(a,T);});
   bugs=bugs.filter(function(b){return simT<b.until;});
   bugs.forEach(function(){
-    var bx=326+Math.abs(((T*16)%64)-32),by=104+(((T*10)|0)%2);
+    /* crawls on the floor beside QA's desk */
+    var bx=ST.qa.cx-16+Math.abs(((T*16)%64)-32),by=ST.qa.fy+12+(((T*10)|0)%2);
     function B(dx,dy,w,h,c){R(g,bx+dx*1.5,by+dy*1.5,w*1.5,h*1.5,c);}
     B(0,0,5,3,'#1a1a1a');B(1,-1,3,1,'#c0392b');B(-1,(((T*10)|0)%2),1,1,'#1a1a1a');B(5,1,1,1,'#1a1a1a');
   });
@@ -462,9 +490,9 @@ function render(){
 
 /* ====== DOM overlay ====== */
 function buildOverlay(){
-  ZONES.forEach(function(z){
-    var l=document.createElement('div');l.className='rl';l.textContent=z.label;
-    l.style.left=(z.lx/W*100)+'%';l.style.top=(z.ly/H*100)+'%';ov.appendChild(l);
+  LABELS.forEach(function(z){
+    var l=document.createElement('div');l.className='rl';l.textContent=z[0];
+    l.style.left=(z[1]/W*100)+'%';l.style.top=(z[2]/H*100)+'%';ov.appendChild(l);
   });
   ORDER.forEach(function(id){
     var a=A[id],el=document.createElement('div');el.className='ag';

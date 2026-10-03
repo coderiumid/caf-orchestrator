@@ -140,8 +140,11 @@ compresses real time 30× (a gap between two events plays as 0.35 to 3.5
 seconds), so a ten-minute run replays in well under a minute. Pausing does not
 hold back live data: new events still arrive and are shown.
 
-Characters never walk. Each agent has a fixed seat — its own desk, or the
-pantry sofa for Docs — and only its pose and screen change. (The approved
+The office is a single open-plan room: a pod of six desks close together
+(Planner, Backend, Frontend in front; QA, Reviewer, and Ganjar behind them),
+a lounge corner, and the PR box. Characters never walk. Each agent has a
+fixed seat — its own desk, or the lounge sofa for Docs — and only its pose
+and screen change. (The approved
 prototype had agents walking between the pantry and their desks; with real
 data, states often change faster than a walk takes, so the character was
 still on its way when the state had already moved on.)
@@ -161,7 +164,7 @@ is kept in the URL (`?repo=`).
 | Raised hand, red screen, red lamp on Ganjar's desk | `NEEDS_HUMAN`. |
 | Small flame | The agent's process failed (`FAILED`, `KILLED`, or `TIMEOUT`); the run is `ERROR` and BullMQ may retry the job. |
 | Green lamp on Ganjar's desk | `SUCCESS`; a PR is waiting for human review. |
-| Docs asleep on the pantry sofa, greyed out | Always. See below. |
+| Docs asleep on the lounge sofa, greyed out | Always. See below. |
 
 **Docs (`caf-documentation`) is always off duty, on purpose.** The pipeline
 does not record events for that agent (it has no PIV phase), so the page has

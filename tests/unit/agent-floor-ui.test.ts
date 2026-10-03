@@ -126,7 +126,29 @@ describe('Agent Floor static files', () => {
     expect(read('adapter.js')).toContain("new EventSource('/api/events/stream')");
   });
 
-  it('agents stay seated: typing while working, coffee while idle, Docs on the pantry sofa without a desk', () => {
+  it('the office is one open-plan room with the six desks in a single pod', () => {
+    const render = read('render.js');
+    // No per-room zones any more: one ROOM, and every seat defined in one table.
+    expect(render).not.toContain('ZONES');
+    expect(render).toContain('var ROOM={');
+    const seats = [...render.matchAll(/^ (\w+):\{cx:(\d+),fy:(\d+)\},?$/gm)].map((m) => ({ id: m[1], cx: +m[2], fy: +m[3] }));
+    expect(seats.map((s) => s.id).sort()).toEqual(['backend', 'docs', 'frontend', 'human', 'planner', 'qa', 'reviewer']);
+
+    const desks = seats.filter((s) => s.id !== 'docs');
+    const rows = [...new Set(desks.map((d) => d.fy))];
+    const columns = [...new Set(desks.map((d) => d.cx))].sort((a, b) => a - b);
+    expect(rows).toHaveLength(2);
+    expect(columns).toHaveLength(3);
+    // Desks are 36 wide; neighbours sit less than half a desk apart.
+    expect(columns[1] - columns[0]).toBe(columns[2] - columns[1]);
+    expect(columns[1] - columns[0] - 36).toBeLessThan(18);
+    // Ganjar shares the pod with the agents.
+    const human = desks.find((d) => d.id === 'human')!;
+    expect(rows).toContain(human.fy);
+    expect(columns).toContain(human.cx);
+  });
+
+  it('agents stay seated: typing while working, coffee while idle, Docs on the lounge sofa without a desk', () => {
     const render = read('render.js');
     expect(render).toContain("else if(WORKING[st])pose='type';");
     expect(render).toContain("else if(st==='idle'&&a.id!=='human')pose='coffee';");
