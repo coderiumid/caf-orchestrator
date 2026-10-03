@@ -1,6 +1,31 @@
 # Verify Report: CAF-DASHBOARD-01 (Task 1 through Task 8)
 
-Status: NEEDS_HUMAN
+Status: SUCCESS
+
+## Update 2026-10-04 — Task 7 closed
+
+Ganjar (maintainer) confirmed on 2026-10-04 that Task 7's real-repo
+end-to-end test has been run and passed, which closes the one item this
+report had left open. The status line above changed from `NEEDS_HUMAN` to
+`SUCCESS` on that basis; everything below this section is the original
+report, kept as written on 2026-09-07, and its "not run" / "outstanding gap"
+statements describe that date, not today.
+
+What the pipeline-history database on the maintainer's machine shows for
+those runs (read on 2026-10-04, from a copy): 7 real runs with real cost
+figures, 6 on `ganjardbc/umkm-pos` (2026-09-08; 3 `SUCCESS`, 3 `NEEDS_HUMAN`)
+and 1 on `ganjardbc/coderium-web-v2` (2026-09-07; `NEEDS_HUMAN`).
+
+What that data does not show, and this update therefore does not claim:
+whether the dashboard was watched live while they ran, and a run of two
+*different* repos at the same moment — the only two overlapping runs
+(`GAN-63`, `GAN-55`) are both on `umkm-pos`.
+
+---
+
+## Original report (2026-09-07)
+
+Status at the time: NEEDS_HUMAN.
 
 Tasks 1-6 and 8's own work is SUCCESS (unchanged from before, all gates
 still green). The overall status stays NEEDS_HUMAN because Task 7's

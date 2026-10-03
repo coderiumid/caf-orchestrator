@@ -105,13 +105,183 @@ re-fetching `/api/pipelines` (and the open detail panel, if any), so what
 you see is always a fresh read from the database, never a client-side
 patch that could drift from the truth.
 
-## Known limitation (as of Task 7)
+## Agent Floor
 
-The dashboard's live-update and multi-repo-isolation mechanisms are fully
-built and covered by automated tests (see
-`.ai/tasks/CAF-DASHBOARD-01/verify-report.md`, Task 4/6/7), and were
-manually verified in a browser against realistic seeded data. What has
-**not** yet been verified is watching an actual real ticket run end-to-end
-against a real target repo (`umkm-pos`) with the dashboard open — that's an
-explicit outstanding item, not a silent gap; see the verify report's Task 7
-section for exactly what running that check involves.
+CAF-DASHBOARD-02: a second, separate page that shows the same pipeline data
+from the agents' side — each CAF agent is a pixel-art character in an office,
+moving and reacting as its run progresses. It is **read-only**: there is no
+approve, retry, or stop control anywhere on it.
+
+### Accessing it
+
+`http://<host>:<port>/dashboard/agent-floor`, or the **Agent Floor** link in
+the dashboard header. Same on/off switch (`dashboard.enabled`) and same Basic
+Auth credentials as the dashboard.
+
+Behind a reverse proxy nothing new needs routing as long as `/dashboard` and
+`/api/pipelines` are proxied **by prefix**: the page lives under `/dashboard/`
+and its data endpoint under `/api/pipelines/`. If your proxy rules match those
+paths exactly instead, add `/dashboard/agent-floor*`.
+
+The page loads its two fonts from Google Fonts (as the approved prototype
+did). Without internet access it falls back to system fonts; nothing else
+depends on an external host.
+
+### The three modes
+
+| Mode | How to get it | Data |
+|---|---|---|
+| **Live** | Open the page. With no manual choice it follows whichever run is `RUNNING` in the selected repo; with none running, everyone waits in the pantry. | Real, as it happens. |
+| **Replay** | Click a finished run in the **Run** list. | Real, read back from the database and played from the start. Costs nothing and triggers nothing. |
+| **Demo** | `/dashboard/agent-floor?demo=1`, or the **Demo** button. | Scripted mock scenarios. Makes no data request at all; marked "Data contoh". |
+
+**Jeda** and **1× / 2× / 4×** control animation and replay speed. Replay
+compresses real time 30× (a gap between two events plays as 0.35 to 3.5
+seconds), so a ten-minute run replays in well under a minute. Pausing does not
+hold back live data: new events still arrive and are shown, characters simply
+appear at their destination instead of walking there.
+
+The **Repo** selector switches between configured repos that have at least one
+recorded run. Runs from different repos are never shown together; the choice
+is kept in the URL (`?repo=`).
+
+### Reading the office
+
+| What you see | What it means |
+|---|---|
+| Everyone in the pantry | No run active in this repo. |
+| Typing at a desk | That agent's process is running (plan, implement, QA, or review). |
+| Scratching head (and, for QA, a bug in the QA lab) | A QA or Reviewer gate rejected the work and the implementation agents are re-run. The bubble shows the gate's own counter and limit (`retry 1/1`), from `agents.qa.maxRetries` / `agents.reviewer.maxRetries`. |
+| Flying document | A report handed from one agent to the next (see "Handoffs" below). |
+| Raised hand, red screen, red lamp on Ganjar's desk | `NEEDS_HUMAN`. |
+| Small flame | The agent's process failed (`FAILED`, `KILLED`, or `TIMEOUT`); the run is `ERROR` and BullMQ may retry the job. |
+| Green lamp on Ganjar's desk | `SUCCESS`; a PR is waiting for human review. |
+| Docs asleep, greyed out | Always. See below. |
+
+**Docs (`caf-documentation`) is always off duty, on purpose.** The pipeline
+does not record events for that agent (it has no PIV phase), so the page has
+nothing to show for it. This is a decision, not a bug — do not "fix" it by
+instrumenting the agent.
+
+**Verify bars (lint / typecheck / test) only animate in demo mode.** In a real
+run an implementation agent's verify loop happens inside the agent process,
+where the orchestrator cannot see it. What is shown instead is read from the
+agent's `verify-report.md` *after* it finishes: the log line
+"verify percobaan 2/3, lint lolos, ..." and the "Percobaan verify" field. Those
+come from a tolerant, display-only parser
+(`src/infrastructure/reports/verify-report-details.ts`); anything the report
+does not state is left blank rather than guessed. Agents rarely write an
+attempt number in practice, so that field is often empty.
+
+**Token counts show "tidak dicatat".** Cost and duration are real; tokens are
+not stored yet.
+
+### How it gets its data
+
+```
+worker writes agent_events ──► Redis ──► web server ──► SSE "something changed"
+                                                              │
+page ◄── GET /api/pipelines/:repoId/:ticketId/floor-events?after=<cursor>
+```
+
+- The SSE stream (`/api/events/stream`) is still only a nudge — it carries no
+  state.
+- On each nudge the page asks the endpoint above for whatever is new, passing
+  the `cursor` of the last event it handled. A dropped and re-established
+  connection therefore cannot deliver an event twice or skip one.
+- Replay calls the same endpoint without `after`.
+- `repoId` is `owner/repo`, percent-encoded in the path, as for the detail
+  endpoint.
+
+Response: `{ run, events, nextCursor }`. Every event has `cursor`, `runId`,
+`attempt`, and a server-side `timestamp`.
+
+| Event `type` | Fields | Shown as |
+|---|---|---|
+| `run_started` | `ticket`, `ticketTitle`, `repo`, `branch`, `startedAt` | Office resets, "Run saat ini" panel filled. One per attempt. |
+| `agent_state` | `agent`, `state`, and optionally `gate`, `retry: {count, max}`, `verify`, `outcome` | Character pose, screen, and speech bubble. |
+| `handoff` | `from`, `to` (an agent, `human`, or `outbox`), `file` | Flying document. |
+| `step` | `step` (`plan`/`impl`/`qa`/`review`/`pr`), `status` (`active`/`pass`/`fail`), `note`, and `prNumber` on the `pr` step | Step list. |
+| `usage` | `agent`, `costUsd`, `tokens` (always `null` for now), `durationMs` | "Detail agent" panel. |
+| `run_finished` | `finalStatus`, `gate`, `superseded` | Status pill and Ganjar's lamp. |
+
+Agent states: `idle`, `planning`, `implementing`, `verifying`, `retrying`,
+`reviewing`, `celebrating`, `blocked`, `error`, `offduty`.
+
+Three things worth knowing when reading that feed:
+
+- **The PR number is on the `pr` step, not on `run_finished`.** The pipeline
+  records the PR after it has finalized the run, so `run_finished` is emitted
+  before the number exists.
+- **Handoffs are derived, not recorded.** The pipeline does not log them; they
+  are inferred from the order agents ran in (planner → implementation →
+  QA → reviewer, and back on a gate retry).
+- **Attempts.** A BullMQ retry or a `/caf-retry-pipeline` resume reuses the
+  same run row and starts a new *attempt*; each attempt gets its own
+  `run_started` / `run_finished`. Only the latest attempt's final status is
+  stored. An earlier attempt is reported `NEEDS_HUMAN` when it ended at a
+  gate, and otherwise with `finalStatus: null` and `superseded: true` — the
+  page then says the status was not recorded instead of inventing one. Runs
+  recorded before attempts existed count as a single attempt.
+
+### What the pipeline records for this
+
+Additive, nullable columns (added to an existing database automatically on
+startup; no manual migration):
+
+| Column | Meaning |
+|---|---|
+| `pipeline_runs.attempt` | 1 on the first start, +1 on every later start of the same run. |
+| `pipeline_runs.pr_number` | The final PR, or the Draft PR opened when a gate stopped the run. |
+| `agent_events.attempt` | The run's attempt when the row was written. |
+| `agent_events.exit_code`, `agent_events.outcome` | How the agent process ended (`OK` / `FAILED` / `KILLED` / `TIMEOUT`), on `end` rows. |
+| `agent_events.verify_details` | JSON from the verify-report parser described above, on implementation agents' `end` rows. |
+
+No new `event_type` or `piv_phase` values were introduced.
+
+**None of this touches the pipeline's own gates.** The status parsers in
+`report-reader.ts` are unchanged — `Status: SUCCESS` for `verify-report.md`,
+`Status: PASS` for `qa-report.md`, the `Verdict:` line for `review-notes.md` —
+and so are the retry loops (`qaRetryCount`, `reviewerRetryCount`) and BullMQ's
+`queue.jobAttempts`. The verify-details parser is a separate file that only
+feeds this page; a report it cannot understand changes nothing about how the
+run proceeds.
+
+### Adding a new agent state
+
+1. `src/presentation/web/agent-floor/event-normalizer.ts`: add the state to
+   `FloorAgentState` and emit it from `normalizeRun()`. Keep the function pure
+   and append-only (a later row must never change an event already emitted) —
+   `tests/unit/agent-floor-event-normalizer.test.ts` checks both.
+2. `src/presentation/web/ui/agent-floor/translate.js`: map the state to calls
+   on the page's public API (bubble text, tone, log line).
+3. `src/presentation/web/ui/agent-floor/render.js`: add its label to
+   `STATE_LABEL`, and, if it needs its own look, its screen in `screenMode()`
+   and its pose in `drawChar()`.
+
+The page's files are split by responsibility, and that split is what keeps the
+three modes behaving the same: `render.js` draws and never fetches;
+`translate.js` is a pure event-to-calls mapping; `adapter.js` is the only file
+that talks to the server (GET only); `demo.js` drives the same public API
+(`window.AgentFloor`) from scripted scenarios. They are plain static files —
+no build step — served by `routes/agent-floor-ui.ts`.
+
+### If the page shows "Terputus"
+
+The connection badge reads **Terhubung** or **Terputus, mencoba lagi**; the
+browser reconnects on its own. The SSE stream is authenticated by a one-hour
+cookie that the page sets and that each successful (re)connect renews. If the
+cookie has lapsed anyway — a laptop asleep for longer than that — the page
+reloads itself once to go back through Basic Auth.
+
+## End-to-end verification
+
+The dashboard has been run against real tickets on real target repos: the
+maintainer confirmed on 2026-10-04 that CAF-DASHBOARD-01's real-repo
+end-to-end test passed, with runs recorded on `umkm-pos` and
+`coderium-web-v2` in September 2026 (see the update note at the top of
+`.ai/tasks/CAF-DASHBOARD-01/verify-report.md`).
+
+One combination is not on record: two *different* repos running at the same
+moment. Multi-repo separation is covered by automated tests and by real runs
+on both repos, but not by a recorded concurrent run.
