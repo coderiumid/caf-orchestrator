@@ -1,7 +1,10 @@
 import type { Database } from 'better-sqlite3';
+import type { VerifyDetails } from '../reports/verify-report-details.js';
 
 export type PivPhase = 'plan' | 'implement' | 'verify';
 export type AgentEventType = 'start' | 'end' | 'retry' | 'gate_exhausted';
+/** How an agent process ended — recorded on 'end' events (CAF-DASHBOARD-02 T1). */
+export type AgentOutcome = 'OK' | 'FAILED' | 'KILLED' | 'TIMEOUT';
 
 export interface PipelineRun {
   id: string;
@@ -11,6 +14,9 @@ export interface PipelineRun {
   startedAt: string;
   endedAt: string | null;
   finalStatus: string | null;
+  /** 1-based count of how many times this run has been started (BullMQ retry or resume). Null on rows written before CAF-DASHBOARD-02. */
+  attempt: number | null;
+  prNumber: number | null;
 }
 
 export interface AgentEvent {
@@ -23,6 +29,11 @@ export interface AgentEvent {
   costUsd: number | null;
   artifactLink: string | null;
   createdAt: string;
+  /** The run's attempt number at the moment this event was written. Null on rows written before CAF-DASHBOARD-02. */
+  attempt: number | null;
+  exitCode: number | null;
+  outcome: AgentOutcome | null;
+  verifyDetails: VerifyDetails | null;
 }
 
 export interface UpsertPipelineRunInput {
@@ -44,6 +55,9 @@ export interface InsertEventInput {
   costUsd?: number | null;
   artifactLink?: string | null;
   createdAt: string;
+  exitCode?: number | null;
+  outcome?: AgentOutcome | null;
+  verifyDetails?: VerifyDetails | null;
 }
 
 export interface PaginationOptions {
@@ -59,6 +73,8 @@ interface PipelineRunRow {
   started_at: string;
   ended_at: string | null;
   final_status: string | null;
+  attempt: number | null;
+  pr_number: number | null;
 }
 
 interface AgentEventRow {
@@ -71,6 +87,19 @@ interface AgentEventRow {
   cost_usd: number | null;
   artifact_link: string | null;
   created_at: string;
+  attempt: number | null;
+  exit_code: number | null;
+  outcome: AgentOutcome | null;
+  verify_details: string | null;
+}
+
+function parseVerifyDetails(raw: string | null): VerifyDetails | null {
+  if (raw === null) return null;
+  try {
+    return JSON.parse(raw) as VerifyDetails;
+  } catch {
+    return null;
+  }
 }
 
 function toPipelineRun(row: PipelineRunRow): PipelineRun {
@@ -82,6 +111,8 @@ function toPipelineRun(row: PipelineRunRow): PipelineRun {
     startedAt: row.started_at,
     endedAt: row.ended_at,
     finalStatus: row.final_status,
+    attempt: row.attempt,
+    prNumber: row.pr_number,
   };
 }
 
@@ -96,6 +127,10 @@ function toAgentEvent(row: AgentEventRow): AgentEvent {
     costUsd: row.cost_usd,
     artifactLink: row.artifact_link,
     createdAt: row.created_at,
+    attempt: row.attempt,
+    exitCode: row.exit_code,
+    outcome: row.outcome,
+    verifyDetails: parseVerifyDetails(row.verify_details),
   };
 }
 
@@ -107,16 +142,23 @@ function toAgentEvent(row: AgentEventRow): AgentEvent {
 export class PipelineRunRepository {
   constructor(private readonly db: Database) {}
 
-  /** Creates the pipeline_runs row if it doesn't exist yet, otherwise updates the mutable fields. */
+  /**
+   * Creates the pipeline_runs row if it doesn't exist yet (attempt 1),
+   * otherwise updates the mutable fields and bumps `attempt` — every call is
+   * the start of a new attempt (see recordPipelineStarted, the only runtime
+   * caller). A row written before the attempt column existed counts its
+   * prior history as attempt 1.
+   */
   upsertPipelineRun(input: UpsertPipelineRunInput): void {
     this.db
       .prepare(
-        `INSERT INTO pipeline_runs (id, repo_id, ticket_id, ticket_title, started_at, ended_at, final_status)
-         VALUES (@id, @repoId, @ticketId, @ticketTitle, @startedAt, @endedAt, @finalStatus)
+        `INSERT INTO pipeline_runs (id, repo_id, ticket_id, ticket_title, started_at, ended_at, final_status, attempt)
+         VALUES (@id, @repoId, @ticketId, @ticketTitle, @startedAt, @endedAt, @finalStatus, 1)
          ON CONFLICT (id) DO UPDATE SET
            ticket_title = excluded.ticket_title,
            ended_at = excluded.ended_at,
-           final_status = excluded.final_status`,
+           final_status = excluded.final_status,
+           attempt = COALESCE(pipeline_runs.attempt, 1) + 1`,
       )
       .run({
         id: input.id,
@@ -136,11 +178,17 @@ export class PipelineRunRepository {
       .run(endedAt, finalStatus, id);
   }
 
+  /** Records the pull request opened (or reused) for this run. No-op if the row doesn't exist. */
+  setPullRequestNumber(id: string, prNumber: number): void {
+    this.db.prepare('UPDATE pipeline_runs SET pr_number = ? WHERE id = ?').run(prNumber, id);
+  }
+
   insertEvent(input: InsertEventInput): AgentEvent {
     const result = this.db
       .prepare(
-        `INSERT INTO agent_events (pipeline_run_id, agent_name, piv_phase, event_type, retry_count, cost_usd, artifact_link, created_at)
-         VALUES (@pipelineRunId, @agentName, @pivPhase, @eventType, @retryCount, @costUsd, @artifactLink, @createdAt)`,
+        `INSERT INTO agent_events (pipeline_run_id, agent_name, piv_phase, event_type, retry_count, cost_usd, artifact_link, created_at, attempt, exit_code, outcome, verify_details)
+         VALUES (@pipelineRunId, @agentName, @pivPhase, @eventType, @retryCount, @costUsd, @artifactLink, @createdAt,
+                 (SELECT attempt FROM pipeline_runs WHERE id = @pipelineRunId), @exitCode, @outcome, @verifyDetails)`,
       )
       .run({
         pipelineRunId: input.pipelineRunId,
@@ -151,6 +199,9 @@ export class PipelineRunRepository {
         costUsd: input.costUsd ?? null,
         artifactLink: input.artifactLink ?? null,
         createdAt: input.createdAt,
+        exitCode: input.exitCode ?? null,
+        outcome: input.outcome ?? null,
+        verifyDetails: input.verifyDetails ? JSON.stringify(input.verifyDetails) : null,
       });
 
     const row = this.db

@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>CAF Agent Floor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Pixelify+Sans:wght@500;600&display=swap">
+<link rel="stylesheet" href="/dashboard/agent-floor/app.css">
+</head>
+<body>
+<div class="app">
+  <header class="hd">
+    <img class="logo" alt="CAF" width="36" height="36" src="/dashboard/logo.png">
+    <h1>CAF Agent Floor</h1>
+    <span class="ver" id="ver">live</span>
+    <div class="hd-r">
+      <button class="btn" id="pp" type="button" aria-pressed="false">Jeda</button>
+      <div class="seg" id="spd" role="group" aria-label="Kecepatan">
+        <button type="button" data-s="1" aria-pressed="true">1×</button>
+        <button type="button" data-s="2" aria-pressed="false">2×</button>
+        <button type="button" data-s="4" aria-pressed="false">4×</button>
+      </div>
+      <button class="btn" id="helpb" type="button">Arti animasi</button>
+      <a class="btn" id="modelink" href="/dashboard/agent-floor?demo=1">Demo</a>
+      <a class="btn" href="/dashboard">Dashboard</a>
+      <div class="stt"><span class="k">Status</span><span class="mock" id="mock" hidden>Data contoh</span><span class="conn" id="conn" role="status" hidden>Menyambung</span><span class="pill idle" id="rpill" aria-live="polite">Menunggu tiket</span></div>
+    </div>
+  </header>
+
+  <div class="main">
+    <div class="col">
+      <section class="panel" id="lps" aria-label="Run">
+        <div class="ph"><h2 id="lph">Run</h2><span class="cnt" id="scn"></span></div>
+        <div class="pb">
+          <div class="lpt" id="lpt" hidden>
+            <label for="repo">Repo</label>
+            <select id="repo"></select>
+          </div>
+          <div id="scen"></div>
+        </div>
+      </section>
+      <section class="panel" aria-label="Run saat ini">
+        <div class="ph"><h2>Run saat ini</h2></div>
+        <div class="pb">
+          <p class="tk" id="rtk">Belum ada tiket</p>
+          <p class="meta" id="rmeta">&nbsp;</p>
+          <dl class="kv">
+            <dt>final_status</dt><dd class="fs"><code id="rfs">NULL</code></dd>
+            <dt>Berjalan</dt><dd id="rel">00:00</dd>
+            <dt id="rcostk">Biaya</dt><dd id="rcost">belum tersedia</dd>
+          </dl>
+          <ol class="steps" id="steps"></ol>
+        </div>
+      </section>
+    </div>
+
+    <section class="stagep" aria-label="Kantor agent">
+      <div class="stage" id="stage">
+        <div class="scene" id="scene">
+          <canvas id="cv" role="img" aria-label="Kantor pixel art tempat para agent CAF bekerja"></canvas>
+          <div class="ov" id="ov"></div>
+        </div>
+      </div>
+      <div class="zoom" role="group" aria-label="Zoom">
+        <button type="button" id="zin" aria-label="Perbesar">+</button>
+        <button type="button" id="zout" aria-label="Perkecil">−</button>
+        <button type="button" id="zfit" aria-label="Sesuaikan ke panel">1:1</button>
+      </div>
+    </section>
+
+    <div class="col">
+      <section class="panel" aria-label="Status agent">
+        <div class="ph"><h2>Status agent</h2><span class="cnt" id="agn"></span></div>
+        <div class="pb" id="agl"></div>
+      </section>
+      <section class="panel" aria-label="Kejadian dan detail">
+        <div class="tabs" role="tablist" aria-label="Kejadian dan detail agent">
+          <button type="button" role="tab" id="tab-log" aria-selected="true" aria-controls="pane-log">Kejadian</button>
+          <button type="button" role="tab" id="tab-ag" aria-selected="false" aria-controls="pane-ag" tabindex="-1">Detail agent</button>
+        </div>
+        <div class="pb" id="pane-log" role="tabpanel" aria-labelledby="tab-log"><ul id="log" role="log" aria-live="polite"></ul></div>
+        <div class="pb" id="pane-ag" role="tabpanel" aria-labelledby="tab-ag" hidden>
+          <p class="ad-name" id="adn"></p>
+          <p class="ad-file" id="adf"></p>
+          <dl class="kv" id="adk"></dl>
+          <p class="ad-desc" id="add"></p>
+        </div>
+      </section>
+    </div>
+  </div>
+</div>
+
+<dialog id="help" aria-label="Arti animasi">
+  <div class="dl-h"><h2>Arti animasi</h2><button class="btn" id="helpx" type="button">Tutup</button></div>
+  <div class="dl-b">
+    <ul>
+      <li><b>Mengetik di meja.</b> Agent sedang plan atau implement. Layar menampilkan teks atau kode yang bergulir.</li>
+      <li><b>Tiga bar di layar.</b> Verify: lint, typecheck, test. Kuning sedang jalan, hijau lolos, merah gagal.</li>
+      <li><b>Garuk kepala.</b> Verify gagal, agent mengulang. Batasnya tiga percobaan untuk agent implementasi.</li>
+      <li><b>Dokumen terbang.</b> Handoff artifact antar agent: requirements.md, verify-report.md, qa-report.md.</li>
+      <li><b>Tangan terangkat, layar merah.</b> NEEDS_HUMAN. Pipeline berhenti dan lampu di meja Ganjar menyala merah.</li>
+      <li><b>Api kecil di kepala.</b> ERROR. Exception yang akan dicoba ulang oleh BullMQ.</li>
+      <li><b>Lampu hijau di meja Ganjar.</b> PR sudah dibuka dan menunggu review manusia. Tidak ada auto-merge.</li>
+      <li><b>Tertidur di pantry.</b> caf-documentation sengaja belum di-instrument, jadi ia tampil off duty.</li>
+    </ul>
+    <p id="helpnote">Halaman ini hanya membaca: kejadian, waktu, dan biaya berasal dari <code>pipeline_runs</code> dan <code>agent_events</code>. Bar lint, typecheck, dan test hanya dianimasikan di mode demo; pada run nyata hasil verify dibaca dari <code>verify-report.md</code> setelah agent selesai.</p>
+  </div>
+</dialog>
+
+<script src="/dashboard/agent-floor/render.js" defer></script>
+<script src="/dashboard/agent-floor/translate.js" defer></script>
+<script src="/dashboard/agent-floor/demo.js" defer></script>
+<script src="/dashboard/agent-floor/adapter.js" defer></script>
+</body>
+</html>

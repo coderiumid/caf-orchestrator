@@ -9,7 +9,12 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
   ticket_title TEXT NOT NULL,
   started_at   TEXT NOT NULL,
   ended_at     TEXT,
-  final_status TEXT
+  final_status TEXT,
+  -- CAF-DASHBOARD-02 T1. Existing databases get these via the guarded
+  -- ALTER TABLE ADD COLUMN in connection.ts (CREATE TABLE IF NOT EXISTS
+  -- never touches a table that already exists).
+  attempt      INTEGER,
+  pr_number    INTEGER
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_pipeline_runs_repo_ticket
@@ -24,7 +29,12 @@ CREATE TABLE IF NOT EXISTS agent_events (
   retry_count      INTEGER,
   cost_usd         REAL,
   artifact_link    TEXT,
-  created_at       TEXT NOT NULL
+  created_at       TEXT NOT NULL,
+  -- CAF-DASHBOARD-02 T1 (see pipeline_runs note above).
+  attempt          INTEGER,
+  exit_code        INTEGER,
+  outcome          TEXT,
+  verify_details   TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_agent_events_pipeline_run_id

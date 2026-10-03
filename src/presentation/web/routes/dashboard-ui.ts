@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { config } from '../../../config/index.js';
 import { registerDashboardBasicAuth } from '../auth/dashboard-basic-auth.js';
+import { dashboardAuthSetCookie } from '../auth/dashboard-auth-cookie.js';
 import { renderDashboardHtml, renderDashboardCss, renderDashboardJs, renderDashboardLogo } from '../ui/dashboard-page.js';
 
 /**
@@ -17,16 +18,7 @@ export async function dashboardUiRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', app.basicAuth);
 
   app.get('/dashboard', async (_request, reply) => {
-    const auth = Buffer.from(
-      `${config.dashboard.basicAuthUser}:${config.DASHBOARD_BASIC_AUTH_PASSWORD}`,
-    ).toString('base64');
-    reply
-      .header(
-        'Set-Cookie',
-        `caf_dashboard_auth=${auth}; Path=/api; HttpOnly; SameSite=Lax; Max-Age=3600`,
-      )
-      .type('text/html')
-      .send(renderDashboardHtml());
+    reply.header('Set-Cookie', dashboardAuthSetCookie()).type('text/html').send(renderDashboardHtml());
   });
 
   app.get('/dashboard/app.css', async (_request, reply) => {

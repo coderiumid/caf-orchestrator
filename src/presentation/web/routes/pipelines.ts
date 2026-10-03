@@ -8,6 +8,7 @@ import {
   type AgentEvent,
   type PivPhase,
 } from '../../../infrastructure/db/pipeline-run.repository.js';
+import { normalizeRun, eventsAfter, parseCursor } from '../agent-floor/event-normalizer.js';
 
 /**
  * CAF-DASHBOARD-01 Task 5: REST read API over the pipeline-history store.
@@ -36,6 +37,10 @@ interface PipelineRunApiShape {
   finalStatus: string | null;
   /** Convenience: `finalStatus` verbatim, or 'RUNNING' while it's still null. */
   status: string;
+  /** How many times this run has been started (BullMQ retry / resume). Null for runs recorded before CAF-DASHBOARD-02. */
+  attempt: number | null;
+  /** The PR (or Draft PR) opened for this run, once known. */
+  prNumber: number | null;
   /** PIV phase of the most recent agent_events row, or null if none yet. */
   currentPivPhase: PivPhase | null;
   /** Per-agent retry count, from 'retry' events (only caf-qa/caf-reviewer produce these — see run-agent-pipeline.use-case.ts). */
@@ -75,6 +80,8 @@ function toApiShape(run: PipelineRun, events: AgentEvent[]): PipelineRunApiShape
     endedAt: run.endedAt,
     finalStatus: run.finalStatus,
     status: run.finalStatus ?? 'RUNNING',
+    attempt: run.attempt,
+    prNumber: run.prNumber,
     ...summarizeEvents(events),
   };
 }
@@ -105,5 +112,37 @@ export async function pipelinesRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(404).send({ error: `No pipeline run found for ${repoId}/${ticketId}` });
     }
     return { ...toApiShape(detail.run, detail.events), events: detail.events };
+  });
+
+  // CAF-DASHBOARD-02 T3: the Agent Floor's event feed — the run's rows passed
+  // through the normalizer (requirements.md section 7 contract events). Read
+  // only. `after` is the `cursor` of the last event the caller already
+  // handled; the SSE stream stays a bare "something changed" nudge and the
+  // page answers it by asking here for whatever is new, so a dropped and
+  // re-established connection can't deliver an event twice. Live and replay
+  // both read this same endpoint (replay simply starts with no `after`).
+  app.get('/api/pipelines/:repoId/:ticketId/floor-events', async (request, reply) => {
+    const { repoId, ticketId } = request.params as { repoId: string; ticketId: string };
+    const { after } = request.query as { after?: string };
+    if (after !== undefined && parseCursor(after) === undefined) {
+      return reply.code(400).send({ error: 'Invalid "after" cursor' });
+    }
+
+    const repo = new PipelineRunRepository(getDb());
+    const detail = repo.getPipelineDetail(repoId, ticketId);
+    if (!detail) {
+      return reply.code(404).send({ error: `No pipeline run found for ${repoId}/${ticketId}` });
+    }
+
+    const all = normalizeRun(detail.run, detail.events, {
+      retryLimits: { qa: config.agents?.qa?.maxRetries ?? null, reviewer: config.agents?.reviewer?.maxRetries ?? null },
+    });
+    return {
+      run: { runId: detail.run.id, branch: `ai-agent/${detail.run.ticketId}`, ...toApiShape(detail.run, detail.events) },
+      events: eventsAfter(all, after),
+      // Position of the newest event that exists, whether or not it is in
+      // this response — what to send as `after` next time.
+      nextCursor: all[all.length - 1]?.cursor ?? after ?? null,
+    };
   });
 }

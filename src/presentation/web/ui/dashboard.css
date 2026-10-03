@@ -44,6 +44,8 @@ button { color: inherit; }
 .brand-name { font: 700 14px var(--display); letter-spacing: .14em; text-transform: uppercase; }
 .brand-sub { color: var(--faint); font: 10px var(--mono); }
 .connection { display: flex; align-items: center; gap: 8px; color: var(--muted); font: 11px var(--mono); text-transform: uppercase; letter-spacing: .08em; }
+.floor-link { color: var(--cyan); text-decoration: none; border: 1px solid var(--line); border-radius: 9px; padding: 6px 10px; margin-right: 8px; }
+.floor-link:hover, .floor-link:focus-visible { border-color: var(--cyan); }
 .connection-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
 .connection-dot.live { background: var(--green); box-shadow: 0 0 0 4px rgba(114, 214, 160, .12), 0 0 12px var(--green); }
 .connection-dot.down { background: var(--red); }

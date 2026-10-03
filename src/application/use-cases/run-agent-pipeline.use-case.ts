@@ -22,6 +22,7 @@ import {
   type QaReport,
   type ReviewerReport,
 } from '../../infrastructure/reports/report-reader.js';
+import { readVerifyDetails } from '../../infrastructure/reports/verify-report-details.js';
 import {
   readOrchestrationState,
   recordGateFailure,
@@ -41,6 +42,7 @@ import {
   finalizePipelineRun,
   recordAgentEvent,
   recordAgentEnd,
+  recordPullRequest,
   pivPhaseForAgent,
 } from '../../infrastructure/db/pipeline-instrumentation.js';
 import type { PivPhase } from '../../infrastructure/db/pipeline-run.repository.js';
@@ -409,7 +411,7 @@ export class RunAgentPipelineUseCase {
           plannerPrompt,
           job.projectConfig.agents.modelOverrides['caf-planner'],
         );
-        recordAgentEnd(repoId, job.ticketKey, 'caf-planner', 'plan', plannerResult.stdout);
+        recordAgentEnd(repoId, job.ticketKey, 'caf-planner', 'plan', plannerResult);
         logger.info('caf-planner agent run result', undefined, {
           jobId: job.jobId,
           ticketKey: job.ticketKey,
@@ -787,6 +789,7 @@ export class RunAgentPipelineUseCase {
         title: `${job.ticketKey}: ${job.ticketTitle}`,
         body: buildPrBody(job, docsNote, qaReport, reviewerReport, qualityGateWarning),
       });
+      recordPullRequest(repoId, job.ticketKey, pullRequest.number);
       logger.info('Pull request created', undefined, {
         jobId: job.jobId,
         ticketKey: job.ticketKey,
@@ -977,6 +980,7 @@ export class RunAgentPipelineUseCase {
             draft: true,
           });
 
+      recordPullRequest(repoIdFromCloneUrl(job.projectConfig.repoCloneUrl), job.ticketKey, pr.number);
       logger.info('Pushed and opened/updated Draft PR on gate exhaustion', undefined, {
         jobId: job.jobId,
         ticketKey: job.ticketKey,
@@ -1085,7 +1089,10 @@ export class RunAgentPipelineUseCase {
         implementationPrompt,
         job.projectConfig.agents.modelOverrides[agentName],
       );
-      recordAgentEnd(repoId, job.ticketKey, agentName, phase, result.stdout);
+      // Display-only (Agent Floor): never throws, and is not the gate — the
+      // gate is still readVerifyReport() in runPipelineFromImplementation.
+      const verifyDetails = await readVerifyDetails(repoPath, job.ticketKey);
+      recordAgentEnd(repoId, job.ticketKey, agentName, phase, result, verifyDetails);
       logger.info(`${agentName} agent run result`, undefined, {
         jobId: job.jobId,
         ticketKey: job.ticketKey,
@@ -1130,7 +1137,7 @@ export class RunAgentPipelineUseCase {
       qaPrompt,
       job.projectConfig.agents.modelOverrides['caf-qa'],
     );
-    recordAgentEnd(repoId, job.ticketKey, 'caf-qa', 'verify', qaResult.stdout);
+    recordAgentEnd(repoId, job.ticketKey, 'caf-qa', 'verify', qaResult);
     logger.info('caf-qa agent run result', undefined, {
       jobId: job.jobId,
       ticketKey: job.ticketKey,
@@ -1181,7 +1188,7 @@ export class RunAgentPipelineUseCase {
       reviewerPrompt,
       job.projectConfig.agents.modelOverrides['caf-reviewer'],
     );
-    recordAgentEnd(repoId, job.ticketKey, 'caf-reviewer', 'verify', reviewerResult.stdout);
+    recordAgentEnd(repoId, job.ticketKey, 'caf-reviewer', 'verify', reviewerResult);
     logger.info('caf-reviewer agent run result', undefined, {
       jobId: job.jobId,
       ticketKey: job.ticketKey,

@@ -109,4 +109,49 @@ describe('PipelineRunRepository', () => {
   it('getPipelineDetail returns undefined when no run matches', () => {
     expect(repo.getPipelineDetail('repo-x', 'CAF-999')).toBeUndefined();
   });
+  describe('CAF-DASHBOARD-02 T1: attempt marker, PR number, agent outcome', () => {
+    it('starts at attempt 1 and bumps the attempt on every later start of the same run', () => {
+      seedRun();
+      expect(repo.getPipelineRuns()[0].attempt).toBe(1);
+      seedRun();
+      seedRun();
+      expect(repo.getPipelineRuns()[0].attempt).toBe(3);
+    });
+
+    it('stamps each event with the attempt that was current when it was written', () => {
+      seedRun();
+      repo.insertEvent({ pipelineRunId: 'run-1', agentName: 'caf-planner', pivPhase: 'plan', eventType: 'start', createdAt: '2026-09-07T00:00:01.000Z' });
+      seedRun();
+      repo.insertEvent({ pipelineRunId: 'run-1', agentName: 'caf-planner', pivPhase: 'plan', eventType: 'start', createdAt: '2026-09-07T00:10:01.000Z' });
+
+      expect(repo.getEventsForRun('run-1').map((e) => e.attempt)).toEqual([1, 2]);
+    });
+
+    it('stores and returns the PR number, and keeps it across a new attempt', () => {
+      seedRun();
+      expect(repo.getPipelineRuns()[0].prNumber).toBeNull();
+      repo.setPullRequestNumber('run-1', 42);
+      seedRun();
+      expect(repo.getPipelineRuns()[0].prNumber).toBe(42);
+    });
+
+    it('round-trips exit code, outcome and verify details on an event, defaulting to null', () => {
+      seedRun();
+      const verifyDetails = { attempt: 2, maxAttempts: 3, checks: { lint: 'pass', typecheck: 'fail', test: null } } as const;
+      const full = repo.insertEvent({
+        pipelineRunId: 'run-1',
+        agentName: 'caf-backend',
+        pivPhase: 'implement',
+        eventType: 'end',
+        createdAt: '2026-09-07T00:00:02.000Z',
+        exitCode: 1,
+        outcome: 'FAILED',
+        verifyDetails,
+      });
+      const bare = repo.insertEvent({ pipelineRunId: 'run-1', agentName: 'caf-qa', pivPhase: 'verify', eventType: 'start', createdAt: '2026-09-07T00:00:03.000Z' });
+
+      expect(full).toMatchObject({ exitCode: 1, outcome: 'FAILED', verifyDetails });
+      expect(bare).toMatchObject({ exitCode: null, outcome: null, verifyDetails: null });
+    });
+  });
 });

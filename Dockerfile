@@ -60,6 +60,8 @@ COPY --from=builder --chown=node:node /app/src/presentation/web/ui/dashboard.htm
 COPY --from=builder --chown=node:node /app/src/presentation/web/ui/dashboard.css ./dist/presentation/web/ui/dashboard.css
 COPY --from=builder --chown=node:node /app/src/presentation/web/ui/dashboard.js ./dist/presentation/web/ui/dashboard.js
 COPY --from=builder --chown=node:node /app/src/presentation/web/assets/logo.png ./dist/presentation/web/assets/logo.png
+# CAF-DASHBOARD-02: Agent Floor static files (html/css/js), read via __dirname like the dashboard's.
+COPY --from=builder --chown=node:node /app/src/presentation/web/ui/agent-floor ./dist/presentation/web/ui/agent-floor
 COPY --chown=node:node package.json ./
 COPY --chown=node:node caf.config.yaml ./
 
