@@ -193,6 +193,6 @@ describe('Agent Floor static files', () => {
   });
 
   it('the existing dashboard links to the Agent Floor', () => {
-    expect(readFileSync(join(UI_DIR, 'dashboard.html'), 'utf-8')).toContain('href="/dashboard/agent-floor"');
+    expect(readFileSync(join(UI_DIR, 'dashboard/dashboard.html'), 'utf-8')).toContain('href="/dashboard/agent-floor"');
   });
 });
