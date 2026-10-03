@@ -133,9 +133,9 @@ depends on an external host.
 |---|---|---|
 | **Live** | Open the page. With no manual choice it follows whichever run is `RUNNING` in the selected repo; with none running, everyone sits at their desk drinking coffee. | Real, as it happens. |
 | **Replay** | Click a finished run in the **Run** list. | Real, read back from the database and played from the start. Costs nothing and triggers nothing. |
-| **Demo** | `/dashboard/agent-floor?demo=1`, or the **Demo** button. | Scripted mock scenarios. Makes no data request at all; marked "Data contoh". |
+| **Demo** | `/dashboard/agent-floor?demo=1`, or the **Demo** button. | Scripted mock scenarios. Makes no data request at all; marked "Sample data". |
 
-**Jeda** and **1× / 2× / 4×** control animation and replay speed. Replay
+**Pause** and **1× / 2× / 4×** control animation and replay speed. Replay
 compresses real time 30× (a gap between two events plays as 0.35 to 3.5
 seconds), so a ten-minute run replays in well under a minute. Pausing does not
 hold back live data: new events still arrive and are shown.
@@ -172,13 +172,13 @@ instrumenting the agent.
 run an implementation agent's verify loop happens inside the agent process,
 where the orchestrator cannot see it. What is shown instead is read from the
 agent's `verify-report.md` *after* it finishes: the log line
-"verify percobaan 2/3, lint lolos, ..." and the "Percobaan verify" field. Those
+"verify attempt 2/3, lint passed, ..." and the "Verify attempt" field. Those
 come from a tolerant, display-only parser
 (`src/infrastructure/reports/verify-report-details.ts`); anything the report
 does not state is left blank rather than guessed. Agents rarely write an
 attempt number in practice, so that field is often empty.
 
-**Token counts show "tidak dicatat".** Cost and duration are real; tokens are
+**Token counts show "not recorded".** Cost and duration are real; tokens are
 not stored yet.
 
 ### How it gets its data
@@ -203,11 +203,11 @@ Response: `{ run, events, nextCursor }`. Every event has `cursor`, `runId`,
 
 | Event `type` | Fields | Shown as |
 |---|---|---|
-| `run_started` | `ticket`, `ticketTitle`, `repo`, `branch`, `startedAt` | Office resets, "Run saat ini" panel filled. One per attempt. |
+| `run_started` | `ticket`, `ticketTitle`, `repo`, `branch`, `startedAt` | Office resets, "Current run" panel filled. One per attempt. |
 | `agent_state` | `agent`, `state`, and optionally `gate`, `retry: {count, max}`, `verify`, `outcome` | Character pose, screen, and speech bubble. |
 | `handoff` | `from`, `to` (an agent, `human`, or `outbox`), `file` | Flying document. |
 | `step` | `step` (`plan`/`impl`/`qa`/`review`/`pr`), `status` (`active`/`pass`/`fail`), `note`, and `prNumber` on the `pr` step | Step list. |
-| `usage` | `agent`, `costUsd`, `tokens` (always `null` for now), `durationMs` | "Detail agent" panel. |
+| `usage` | `agent`, `costUsd`, `tokens` (always `null` for now), `durationMs` | "Agent details" panel. |
 | `run_finished` | `finalStatus`, `gate`, `superseded` | Status pill and Ganjar's lamp. |
 
 Agent states: `idle`, `planning`, `implementing`, `verifying`, `retrying`,
@@ -271,9 +271,9 @@ that talks to the server (GET only); `demo.js` drives the same public API
 (`window.AgentFloor`) from scripted scenarios. They are plain static files —
 no build step — served by `routes/agent-floor-ui.ts`.
 
-### If the page shows "Terputus"
+### If the page shows "Disconnected"
 
-The connection badge reads **Terhubung** or **Terputus, mencoba lagi**; the
+The connection badge reads **Connected** or **Disconnected, retrying**; the
 browser reconnects on its own. The SSE stream is authenticated by a one-hour
 cookie that the page sets and that each successful (re)connect renews. If the
 cookie has lapsed anyway — a laptop asleep for longer than that — the page

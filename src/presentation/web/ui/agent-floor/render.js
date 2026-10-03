@@ -1,23 +1,23 @@
 /*
  * CAF-DASHBOARD-02 Agent Floor — render.
  *
- * Dipindahkan dari agent-floor.prototype.html: dunia, sprite, canvas, panel,
- * dan kontrol. Modul ini tidak tahu dari mana data berasal. Semua data masuk
- * lewat window.AgentFloor:
+ * Moved from agent-floor.prototype.html: the world, sprites, canvas, panels,
+ * and controls. This module does not know where data comes from. All data
+ * enters through window.AgentFloor:
  *
- *   setState, say, sendDoc, step, setStatus, log   (pintu masuk dari prototype)
- *   reset, setRun, usage, checks                   (pelengkap: run_started, usage, bar verify demo)
- *   wait, ready, later, fire, celebrate            (koreografi waktu simulasi)
+ *   setState, say, sendDoc, step, setStatus, log   (entry points from the prototype)
+ *   reset, setRun, usage, checks                   (complements: run_started, usage, demo verify bars)
+ *   wait, ready, later, fire, celebrate            (simulation-time choreography)
  *
- * Agent tidak berjalan: semuanya duduk di tempat tetap (lihat placeInitial).
+ * Agents do not walk: each sits in a fixed place (see placeInitial).
  *
- * Pemanggilnya: demo.js (skenario mock) dan adapter.js (live dan replay).
- * Agent boleh dirujuk dengan id ('planner', 'backend', 'frontend', 'qa',
- * 'reviewer', 'docs', 'human') atau objeknya.
+ * Callers: demo.js (mock scenarios) and adapter.js (live and replay).
+ * An agent may be referenced by id ('planner', 'backend', 'frontend', 'qa',
+ * 'reviewer', 'docs', 'human') or by its object.
  */
 (function(){
 'use strict';
-/* ====== konstanta dunia ====== */
+/* ====== world constants ====== */
 var W=400,H=300,CS=1.5;
 var K=2;
 var CANCEL={cancel:true};
@@ -30,7 +30,7 @@ var CHK=['Lint','Typecheck','Test'];
 var ORDER=['planner','backend','frontend','qa','reviewer','docs','human'];
 var WORKING={planning:1,implementing:1,verifying:1,retrying:1,reviewing:1};
 var BACKFACE={planning:1,implementing:1,verifying:1,reviewing:1};
-var STATE_LABEL={idle:'Istirahat',planning:'Menyusun rencana',implementing:'Mengimplementasi',verifying:'Verifikasi',retrying:'Mengulang',reviewing:'Mereview',celebrating:'Selesai',blocked:'Butuh manusia',error:'Error',offduty:'Off duty',alert:'Ada notifikasi'};
+var STATE_LABEL={idle:'Idle',planning:'Planning',implementing:'Implementing',verifying:'Verifying',retrying:'Retrying',reviewing:'Reviewing',celebrating:'Done',blocked:'Needs human',error:'Error',offduty:'Off duty',alert:'Notification'};
 
 var ZONES=[
  {id:'plan',x:8,y:8,w:128,h:128,c1:'#cbdffb',c2:'#bcd4f3',top:true,label:'Planning',lx:11,ly:124},
@@ -38,7 +38,7 @@ var ZONES=[
  {id:'qa',x:296,y:8,w:96,h:128,c1:'#cfeedf',c2:'#bfe5d1',top:true,label:'QA lab',lx:299,ly:124},
  {id:'rev',x:8,y:156,w:128,h:136,c1:'#f8ddc5',c2:'#f0cfb0',top:false,label:'Review',lx:11,ly:159},
  {id:'pantry',x:144,y:156,w:144,h:136,c1:'#ece7db',c2:'#e0dacb',top:false,label:'Pantry',lx:147,ly:159},
- {id:'pr',x:296,y:156,w:96,h:136,c1:'#f7f0c6',c2:'#ede4ad',top:false,label:'Gerbang PR',lx:299,ly:278}
+ {id:'pr',x:296,y:156,w:96,h:136,c1:'#f7f0c6',c2:'#ede4ad',top:false,label:'PR gate',lx:299,ly:278}
 ];
 var ST={
  planner:{cx:96,fy:84,door:130},
@@ -53,26 +53,26 @@ var OUTBOX={x:344,y:174};
 
 var DEF={
  planner:{name:'Planner',file:'caf-planner',color:'#3f7de0',hair:'#5b3a29',skin:'#f1c9a5',acc:'pencil',rate:.010,
-  access:'Hanya baca, tidak menyentuh kode',out:'requirements.md, tasks.md',
-  desc:'Membaca tiket lalu menulis rencana sebelum satu baris kode pun disentuh.'},
+  access:'Read-only, never touches code',out:'requirements.md, tasks.md',
+  desc:'Reads the ticket and writes the plan before a single line of code is touched.'},
  backend:{name:'Backend',file:'caf-backend',color:'#12958a',hair:'#2b2b2b',skin:'#c68a5e',acc:'cap',rate:.028,
-  access:'Tulis, di scope API',out:'kode dan verify-report.md',
-  desc:'Mengerjakan sisi NestJS dan Prisma, lalu menjalankan lint, typecheck, dan test sendiri sebelum mengaku selesai.'},
+  access:'Write, API scope',out:'code and verify-report.md',
+  desc:'Works on the NestJS and Prisma side, then runs lint, typecheck, and test itself before claiming it is done.'},
  frontend:{name:'Frontend',file:'caf-frontend',color:'#7a5af0',hair:'#c0572b',skin:'#e8b98f',acc:'phones',rate:.028,
-  access:'Tulis, di scope web',out:'kode dan verify-report.md',
-  desc:'Mengerjakan sisi Vue 3 dan Vite dengan pola yang sama: implement, verify, ulangi sampai tiga kali.'},
+  access:'Write, web scope',out:'code and verify-report.md',
+  desc:'Works on the Vue 3 and Vite side with the same pattern: implement, verify, repeat up to three times.'},
  qa:{name:'QA',file:'caf-qa',color:'#36a35b',hair:'#e8c25a',skin:'#8d5a3a',acc:'goggles',rate:.016,
-  access:'Menguji, menulis laporan',out:'qa-report.md',
-  desc:'Menguji lebih dalam dan memeriksa edge case. Gate ini punya satu kali retry.'},
+  access:'Tests, writes a report',out:'qa-report.md',
+  desc:'Tests more deeply and checks edge cases. This gate has one retry.'},
  reviewer:{name:'Reviewer',file:'caf-reviewer',color:'#e07b30',hair:'#6e6e78',skin:'#f3d2b5',acc:'glasses',rate:.012,
-  access:'Hanya baca',out:'review-notes.md',
-  desc:'Review kualitatif: pendekatan, technical debt, dan keamanan. Gate ini juga punya satu kali retry.'},
+  access:'Read-only',out:'review-notes.md',
+  desc:'Qualitative review: approach, technical debt, and security. This gate also has one retry.'},
  docs:{name:'Docs',file:'caf-documentation',color:'#8b90a0',hair:'#3a2a22',skin:'#d9a47a',acc:'bun',rate:0,
-  access:'Tulis, di docs/',out:'update docs',
-  desc:'Belum di-instrument: tidak punya piv_phase, jadi di dashboard ia sengaja tampil off duty.'},
+  access:'Write, in docs/',out:'docs updates',
+  desc:'Not instrumented: it has no piv_phase, so the dashboard deliberately shows it off duty.'},
  human:{name:'Ganjar',file:'',color:'#17181f',hair:'#17181f',skin:'#c68a5e',acc:'capw',rate:0,
-  access:'Review wajib sebelum merge',out:'keputusan merge',
-  desc:'Tidak ada auto-merge. Setiap PR berhenti di meja ini.'}
+  access:'Mandatory review before merge',out:'merge decision',
+  desc:'No auto-merge. Every PR stops at this desk.'}
 };
 
 /* ====== state ====== */
@@ -81,9 +81,9 @@ var cv=$('#cv'),ctx=cv.getContext('2d'),scene=$('#scene'),ov=$('#ov'),stage=$('#
 var simT=0,speed=1,paused=false,epoch=0,timers=[],runT0=0,runEnd=null;
 var A={},docs=[],bugs=[],outboxFlag=false,selected='planner';
 var stepsState={};
-var STEPS=[['plan','Plan'],['impl','Implement dan verify'],['qa','QA'],['review','Review'],['pr','PR dan Linear']];
-/* mock=true hanya di mode demo: biaya, token, dan waktu kerja dihitung dari
-   tarif contoh. Di luar itu ketiganya hanya berubah lewat usage(). */
+var STEPS=[['plan','Plan'],['impl','Implement and verify'],['qa','QA'],['review','Review'],['pr','PR and Linear']];
+/* mock=true only in demo mode: cost, tokens, and work time are computed from
+   sample rates. Otherwise all three change only through usage(). */
 var mock=false,runClock=null;
 function AG(a){return typeof a==='string'?A[a]:a;}
 
@@ -91,13 +91,13 @@ function AG(a){return typeof a==='string'?A[a]:a;}
 ORDER.forEach(function(id){
   A[id]={id:id,def:DEF[id],x:0,y:0,state:'idle',tone:'',bubble:null,checks:[0,0,0],attempt:'',cost:0,hasCost:false,tokens:null,activeMs:0,board:0,_bk:''};
 });
-/* Setiap agent punya tempat tetap dan tidak pernah berpindah: lima agent dan
-   Ganjar di meja masing-masing, Docs di sofa pantry. Keadaan hanya terlihat
-   dari pose dan layar, sehingga perubahan state secepat apa pun tetap terbaca
-   (tidak ada perjalanan yang harus diselesaikan dulu). */
+/* Every agent has a fixed place and never moves: the five agents and Ganjar
+   at their own desks, Docs on the pantry sofa. State shows only through pose
+   and screen, so a state change stays readable however fast it comes (there
+   is no walk that has to finish first). */
 function placeInitial(a){a.x=ST[a.id].cx;a.y=ST[a.id].fy;}
 
-/* ====== waktu simulasi ====== */
+/* ====== simulation time ====== */
 function wait(ms){
   var e=epoch;
   return new Promise(function(res,rej){
@@ -107,13 +107,13 @@ function wait(ms){
 function fire(p){ if(p&&p.catch)p.catch(function(){}); }
 function later(ms,fn){ var p=wait(ms).then(fn); fire(p); }
 
-/* ====== API: pintu masuk data ====== */
+/* ====== API: data entry points ====== */
 function say(a,text,tone,ttl){
   a=AG(a);
   a.bubble=text?{text:text,tone:tone||'',until:ttl?simT+ttl:0}:null;
 }
-/* extra (opsional): {attempt:'2/3', checks:[0,0,0]}. checks:null berarti tanpa bar verify
-   (data nyata: hasil per check tidak tersedia selagi agent berjalan). */
+/* extra (optional): {attempt:'2/3', checks:[0,0,0]}. checks:null means no verify bars
+   (real data: per-check results are not available while the agent is running). */
 function setState(a,s,text,tone,ttl,extra){
   a=AG(a);
   if(a.id==='qa'&&s==='retrying')spawnBug();
@@ -124,7 +124,7 @@ function setState(a,s,text,tone,ttl,extra){
   }
   if(text!==undefined)say(a,text,tone,ttl);
 }
-/* Dipertahankan untuk skenario demo: dulu menunggu agent tiba di mejanya. */
+/* Kept for the demo scenarios: it used to wait for an agent to reach its desk. */
 function ready(){return Promise.resolve();}
 function celebrate(a,text){
   a=AG(a);
@@ -134,7 +134,7 @@ function celebrate(a,text){
 function sendDoc(from,to,label,dur){
   from=AG(from);
   dur=dur||1100;
-  /* Dijeda: tanpa dokumen terbang (ia akan menggantung diam di udara). */
+  /* Paused: no flying document (it would hang motionless in mid-air). */
   if(paused){if(to==='outbox')outboxFlag=true;return wait(dur);}
   var p0={x:from.x,y:from.y-16},p1;
   if(to==='outbox'){p1={x:OUTBOX.x,y:OUTBOX.y};later(dur,function(){outboxFlag=true;});}
@@ -145,12 +145,12 @@ function sendDoc(from,to,label,dur){
   return wait(dur);
 }
 function spawnBug(){bugs.push({until:simT+4800});}
-/* Bar verify (hanya dipakai demo): checks(agent,[..]) atau checks(agent,i,nilai). */
+/* Verify bars (demo only): checks(agent,[..]) or checks(agent,i,value). */
 function checks(a,i,v){
   a=AG(a);
   if(Array.isArray(i))a.checks=i.slice(); else {if(!a.checks)a.checks=[0,0,0];a.checks[i]=v;}
 }
-/* Data nyata per agent run: {costUsd, tokens, durationMs}; null berarti tidak tercatat. */
+/* Real data per agent run: {costUsd, tokens, durationMs}; null means not recorded. */
 function usage(a,u){
   a=AG(a);
   if(u.costUsd!==null&&u.costUsd!==undefined){a.cost+=u.costUsd;a.hasCost=true;}
@@ -158,10 +158,10 @@ function usage(a,u){
   if(u.durationMs)a.activeMs+=u.durationMs;
 }
 
-/* ====== UI: log, tahap, status ====== */
+/* ====== UI: log, steps, status ====== */
 var logEl=$('#log');
 function fmt(ms){ms=Math.max(0,ms);var s=Math.floor(ms/1000),m=Math.floor(s/60);s=s%60;return (m<10?'0':'')+m+':'+(s<10?'0':'')+s;}
-/* atMs (opsional): waktu sejak run dimulai, untuk data nyata. Tanpa itu dipakai waktu simulasi. */
+/* atMs (optional): time since the run started, for real data. Without it, simulation time is used. */
 function log(level,text,atMs){
   var em=logEl.querySelector('.empty');if(em)logEl.removeChild(em);
   var li=document.createElement('li');li.className=level;
@@ -172,7 +172,7 @@ function log(level,text,atMs){
 }
 function renderLogEmpty(){
   logEl.innerHTML='';var li=document.createElement('li');li.className='empty';
-  li.innerHTML='<time>&nbsp;</time><span>Kejadian pipeline akan muncul di sini.</span>';logEl.appendChild(li);
+  li.innerHTML='<time>&nbsp;</time><span>Pipeline events will appear here.</span>';logEl.appendChild(li);
 }
 var stepsEl=$('#steps');
 function renderSteps(){
@@ -182,21 +182,21 @@ function renderSteps(){
     var li=document.createElement('li');li.className=st.status;
     li.innerHTML='<span class="m"></span><span><span class="l"></span><span class="n"></span></span>';
     li.querySelector('.l').textContent=s[1];
-    li.querySelector('.n').textContent=st.note||(st.status==='pending'?'Menunggu':'');
+    li.querySelector('.n').textContent=st.note||(st.status==='pending'?'Waiting':'');
     stepsEl.appendChild(li);
   });
 }
 function step(id,status,note){stepsState[id]={status:status,note:note||''};renderSteps();}
-var PILL={idle:['Menunggu tiket','NULL'],run:['Berjalan','NULL'],success:['Selesai, PR siap review','SUCCESS'],needs:['Butuh manusia','NEEDS_HUMAN'],error:['Error, BullMQ mencoba ulang','ERROR']};
+var PILL={idle:['Waiting for ticket','NULL'],run:['Running','NULL'],success:['Done, PR ready for review','SUCCESS'],needs:['Needs human','NEEDS_HUMAN'],error:['Error, BullMQ will retry','ERROR']};
 function setStatus(k){
   var p=$('#rpill');
   if(k==='success'||k==='needs')runEnd=simT; else if(k==='run'||k==='idle')runEnd=null;
   p.className='pill '+k;p.textContent=PILL[k][0];$('#rfs').textContent=PILL[k][1];
 }
-/* Isi panel "Run saat ini". clock (opsional): fungsi yang mengembalikan lama run dalam ms dari data nyata. */
+/* Fills the "Current run" panel. clock (optional): a function returning the run's elapsed ms from real data. */
 function setRun(r){
   runT0=simT;runClock=r.clock||null;
-  $('#rtk').textContent=r.title||'Belum ada tiket';
+  $('#rtk').textContent=r.title||'No ticket yet';
   if(r.meta)$('#rmeta').textContent=r.meta; else $('#rmeta').innerHTML='&nbsp;';
 }
 
@@ -216,7 +216,7 @@ function resetWorld(){
   setRun({});setStatus('idle');
 }
 
-/* ====== menggambar ====== */
+/* ====== drawing ====== */
 function plant(g,x,y){
   var s=1.5;
   function P(dx,dy,w,h,c){R(g,x+dx*s,y+dy*s,w*s,h*s,c);}
@@ -239,16 +239,16 @@ function buildBG(){
       R(g,z.x,z.y+34,z.w,2,'#2a2d4d');
     } else R(g,z.x,z.y+z.h-4,z.w,4,'#3a3e66');
   });
-  /* papan tulis planning */
+  /* planning whiteboard */
   R(g,13,10,52,28,'#8b8fa8');R(g,14,11,50,26,'#f4f5f9');R(g,14,37,50,2,'#8b8fa8');
-  /* poster PIV */
+  /* PIV poster */
   R(g,151,11,30,19,'#f4f5f9');R(g,151,11,30,1,'#8b8fa8');R(g,151,29,30,1,'#8b8fa8');
   R(g,154,16,6,6,'#3f7de0');R(g,163,16,6,6,'#7a5af0');R(g,172,16,6,6,'#36a35b');
   R(g,160,18,3,2,'#555a6e');R(g,169,18,3,2,'#555a6e');
-  /* poster QA */
+  /* QA poster */
   R(g,299,11,20,22,'#f4f5f9');
   for(var r=0;r<4;r++){R(g,302,15+r*5,3,3,'#36a35b');R(g,307,16+r*5,9,1,'#9aa0b8');}
-  /* rak server */
+  /* server rack */
   R(g,208,16,18,36,'#2a2e48');R(g,209,17,16,34,'#363b5c');
   for(var u=0;u<5;u++)R(g,210,19+u*7,14,5,'#1d2036');
   R(g,208,52,18,2,'rgba(0,0,0,.18)');
@@ -256,23 +256,23 @@ function buildBG(){
   R(g,250,164,36,20,'#8b7355');R(g,250,164,36,5,'#cdbb9c');
   R(g,254,153,10,12,'#b3392e');R(g,256,156,6,3,'#2a2e48');
   R(g,270,161,3,3,'#fff');R(g,275,161,3,3,'#fff');
-  /* sofa (tempat Docs), meja kopi, kulkas */
+  /* sofa (where Docs sits), coffee table, fridge */
   R(g,186,226,60,26,'#6b5ca8');R(g,188,226,56,7,'#7a6bc0');R(g,189,233,54,15,'#8a7bd0');
   R(g,186,232,5,20,'#5a4c96');R(g,241,232,5,20,'#5a4c96');
   R(g,196,262,40,12,'#8c5e3a');R(g,196,262,40,2,'#d3a173');R(g,198,274,3,5,'#6e4a2c');R(g,231,274,3,5,'#6e4a2c');
   R(g,204,259,4,4,'#fff');R(g,222,258,7,5,'#e8e9f0');R(g,223,259,5,1,'#9aa0b8');
   R(g,150,160,18,34,'#dfe3ee');R(g,150,160,18,1,'#f4f5f9');R(g,150,174,18,1,'#aeb2ca');R(g,165,164,1,7,'#8b8fa8');R(g,165,178,1,10,'#8b8fa8');
-  /* rak buku review */
+  /* review bookshelf */
   R(g,12,236,44,32,'#6e4a2c');
   var bk=['#d9534f','#3f7de0','#36a35b','#f2c230','#7a5af0'];
   for(var sh=0;sh<3;sh++){
     R(g,14,238+sh*10,40,8,'#8a6038');
     for(var b=0;b<9;b++)R(g,15+b*4.3,239+sh*10,3,7,bk[(b+sh*2)%5]);
   }
-  /* kotak PR */
+  /* PR box */
   R(g,316,164,56,26,'#7d6a42');R(g,316,164,56,4,'#a38d5a');
   R(g,334,174,20,3,'#1d1a10');R(g,320,181,48,5,'#cdbb82');
-  /* tanaman */
+  /* plants */
   [[16,100],[110,112],[188,112],[270,112],[330,112],[372,112],[62,262],[158,262],[272,262],[300,262],[372,262]].forEach(function(p){plant(g,p[0],p[1]);});
 }
 function fit(){
@@ -355,9 +355,9 @@ function drawChar(a,T){
   var f=((T*8)|0)%2;
   var x=Math.round(a.x*K)/K,gy=Math.round(a.y*K)/K,y=gy;
   var docs=a.id==='docs';
-  /* Membelakangi kita saat menghadap layar; menoleh ke depan saat idle, selesai, atau butuh perhatian. */
+  /* Back to us while facing the screen; turned to the front when idle, done, or needing attention. */
   var back=a.id==='human'?(st!=='alert'):(!docs&&!!BACKFACE[st]);
-  /* Duduk, kecuali saat melompat merayakan. sd: seberapa jauh badan turun. */
+  /* Seated, except while jumping to celebrate. sd: how far the body is lowered. */
   var sit=st!=='celebrating',sd=sit?2:0;
   if(st==='celebrating')y-=Math.abs(Math.sin(T*9))*4;
   if(st==='error')x+=(((T*14)|0)%2?1:-1);
@@ -365,14 +365,14 @@ function drawChar(a,T){
   function P(dx,dy,w,h,c){R(g,x+dx*cs,y+dy*cs,w*cs,h*cs,c);}
   if(docs)g.globalAlpha=.55;
   R(g,x-4*cs,gy-1*cs,8*cs,2*cs,'rgba(0,0,0,.18)');
-  /* kursi: sandaran di belakang badan bila menghadap depan */
+  /* chair: backrest behind the body when facing front */
   if(sit&&!docs&&!back){P(-5,-11,10,9,'#3a3f5e');P(-5,-11,10,1,'#4d5282');}
   P(-3,-4,3,4,'#2a3050');P(0,-4,3,4,'#2a3050');
   P(-3,-1,3,1,'#15172b');P(0,-1,3,1,'#15172b');
   y+=sd*cs;
   P(-4,-10,8,6,d.color);P(-4,-5,8,1,'rgba(0,0,0,.15)');
   var sk=d.skin,sl=d.color,pose='down';
-  /* Idle: menyeruput kopi kira-kira tiap 3 detik; fase digeser per agent supaya tidak serempak. */
+  /* Idle: sips coffee roughly every 3 seconds; the phase is shifted per agent so they are not in sync. */
   var sip=((T+a.def.name.length*.7)%3.2)<.9;
   if(st==='celebrating')pose='up';
   else if(st==='error')pose='head';
@@ -388,14 +388,14 @@ function drawChar(a,T){
   else if(pose==='scratch'){P(-5,-10,1,4,sl);P(-5,-6,1,1,sk);P(4,-13,1,4,sl);P(3,-14,2,1,sk);P(-6,-14+(((T*4)|0)%2),1,2,'#7fd8ff');}
   else if(pose==='coffee'){
     P(-5,-10,1,4,sl);P(-5,-6,1,1,sk);
-    if(sip){P(4,-12,1,3,sl);P(3,-12,1,1,sk);}       /* lengan terangkat, cangkir di mulut */
-    else {P(4,-10,1,3,sl);P(4,-7,1,1,sk);}           /* cangkir dipegang di depan dada */
+    if(sip){P(4,-12,1,3,sl);P(3,-12,1,1,sk);}       /* arm raised, cup at the mouth */
+    else {P(4,-10,1,3,sl);P(4,-7,1,1,sk);}           /* cup held in front of the chest */
   }
   var hy=-16;
   if(back){P(-3,hy,6,6,d.hair);P(-2,hy+5,4,1,sk);}
   else {
     P(-3,hy,6,6,sk);P(-3,hy,6,2,d.hair);P(-3,hy+2,1,2,d.hair);P(2,hy+2,1,2,d.hair);
-    if(docs){P(-2,hy+3,2,1,'#15172b');P(1,hy+3,2,1,'#15172b');}   /* mata terpejam: off duty */
+    if(docs){P(-2,hy+3,2,1,'#15172b');P(1,hy+3,2,1,'#15172b');}   /* eyes closed: off duty */
     else {P(-2,hy+3,1,1,'#15172b');P(1,hy+3,1,1,'#15172b');}
     if(st==='celebrating'||st==='error'||st==='blocked')P(-1,hy+5,2,1,'#7a2a2a');
   }
@@ -404,7 +404,7 @@ function drawChar(a,T){
     if(sip){P(1,-12,2,2,'#fff');P(1,-12,2,1,'#e8e9f0');}
     else {P(4,-8,2,2,'#fff');P(6,-8,1,1,'#fff');if(((T*2)|0)%2)P(5,-11,1,1,'rgba(255,255,255,.8)');}
   }
-  /* kursi: sandaran menutupi punggung bila membelakangi kita */
+  /* chair: backrest covers the back when turned away from us */
   if(sit&&!docs&&back){P(-3,-9,6,6,'#3a3f5e');P(-3,-9,6,1,'#4d5282');}
   if(st==='error'){var ff=((T*10)|0)%2;P(-1,hy-3+ff,2,2,'#ff9d2e');P(0,hy-5+ff,1,2,'#ffd24a');}
   g.globalAlpha=1;
@@ -486,16 +486,16 @@ function updateDOM(){
   });
 }
 
-/* ====== panel dan kontrol ====== */
+/* ====== panels and controls ====== */
 var agl=$('#agl');
 function buildAgentList(){
-  $('#agn').textContent=ORDER.length+' agent';
+  $('#agn').textContent=ORDER.length+' agents';
   ORDER.forEach(function(id){
     var a=A[id],b=document.createElement('button');b.type='button';b.className='ar';
     b.innerHTML='<i></i><span class="nm"></span><span class="st"></span><span class="sb"></span>';
     b.querySelector('i').style.background=a.def.color;b.querySelector('.nm').textContent=a.def.name;
     b.addEventListener('click',function(){select(id,true);});
-    /* Enter/Spasi pada baris memilih agent, sama seperti klik di canvas. */
+    /* Enter/Space on a row selects the agent, same as clicking it on the canvas. */
     agl.appendChild(b);a.row=b;
   });
 }
@@ -508,43 +508,43 @@ function showTab(which){
 }
 $('#tab-log').addEventListener('click',function(){showTab('log');});
 $('#tab-ag').addEventListener('click',function(){showTab('ag');});
-/* Pola tab WAI-ARIA: panah kiri/kanan berpindah tab, hanya tab aktif yang masuk urutan Tab. */
+/* WAI-ARIA tab pattern: left/right arrows switch tabs, only the active tab is in the Tab order. */
 document.querySelector('.tabs').addEventListener('keydown',function(ev){
   if(ev.key!=='ArrowLeft'&&ev.key!=='ArrowRight')return;
   var toLog=$('#tab-log').getAttribute('aria-selected')!=='true';
   showTab(toLog?'log':'ag');$(toLog?'#tab-log':'#tab-ag').focus();ev.preventDefault();
 });
 function select(id,explicit){selected=id;if(explicit)showTab('ag');updatePanel();}
-function stLabel(a){ if(a.id==='human'&&a.state==='idle')return 'Menunggu PR'; return STATE_LABEL[a.state]||a.state; }
-function fmtDur(ms){return Math.round(ms/1000)+' dtk';}
-function money(a){ if(mock)return '$'+a.cost.toFixed(3); return a.hasCost?'$'+a.cost.toFixed(4):'belum tersedia'; }
+function stLabel(a){ if(a.id==='human'&&a.state==='idle')return 'Waiting for PR'; return STATE_LABEL[a.state]||a.state; }
+function fmtDur(ms){return Math.round(ms/1000)+' s';}
+function money(a){ if(mock)return '$'+a.cost.toFixed(3); return a.hasCost?'$'+a.cost.toFixed(4):'not available yet'; }
 function updatePanel(){
-  var a=A[selected],d=a.def,sfx=mock?' (contoh)':'';
+  var a=A[selected],d=a.def,sfx=mock?' (sample)':'';
   ORDER.forEach(function(id){
     var x=A[id],r=x.row;
     r.setAttribute('aria-pressed',id===selected?'true':'false');
     r.querySelector('.st').textContent=stLabel(x);
     var sb=[];
-    if(x.attempt&&(WORKING[x.state]||!mock))sb.push('Percobaan '+x.attempt);
+    if(x.attempt&&(WORKING[x.state]||!mock))sb.push('Attempt '+x.attempt);
     if(x.def.rate)sb.push(money(x));
-    else if(id==='docs')sb.push('Tidak di-instrument');
-    else if(id==='human')sb.push('Tanpa auto-merge');
+    else if(id==='docs')sb.push('Not instrumented');
+    else if(id==='human')sb.push('No auto-merge');
     r.querySelector('.sb').textContent=sb.join(', ');
   });
   $('#adn').textContent=d.name;
-  $('#adf').textContent=d.file?('.claude/agents/'+d.file+'.md'):'Manusia, bukan agent';
-  var tok=a.tokens===null?(d.rate?'tidak dicatat':'-'):a.tokens.toLocaleString('id-ID');
-  var rows=[['Status',stLabel(a)],['Percobaan verify',a.attempt||'-'],['Waktu kerja',fmtDur(a.activeMs)],
-    ['Token'+sfx,tok],['Biaya'+sfx,(d.rate||mock)?money(a):'-'],['Akses',d.access],['Menghasilkan',d.out]];
+  $('#adf').textContent=d.file?('.claude/agents/'+d.file+'.md'):'Human, not an agent';
+  var tok=a.tokens===null?(d.rate?'not recorded':'-'):a.tokens.toLocaleString('en-US');
+  var rows=[['Status',stLabel(a)],['Verify attempt',a.attempt||'-'],['Work time',fmtDur(a.activeMs)],
+    ['Tokens'+sfx,tok],['Cost'+sfx,(d.rate||mock)?money(a):'-'],['Access',d.access],['Produces',d.out]];
   var dl=$('#adk');dl.innerHTML='';
   rows.forEach(function(r){var t=document.createElement('dt'),v=document.createElement('dd');t.textContent=r[0];v.textContent=r[1];dl.appendChild(t);dl.appendChild(v);});
   $('#add').textContent=d.desc;
   var total=0,any=false;ORDER.forEach(function(id){total+=A[id].cost;any=any||A[id].hasCost;});
-  $('#rcostk').textContent='Biaya'+sfx;
-  $('#rcost').textContent=mock?'$'+total.toFixed(3):(any?'$'+total.toFixed(4):'belum tersedia');
+  $('#rcostk').textContent='Cost'+sfx;
+  $('#rcost').textContent=mock?'$'+total.toFixed(3):(any?'$'+total.toFixed(4):'not available yet');
   $('#rel').textContent=fmt(runClock?runClock():(runEnd===null?simT:runEnd)-runT0);
 }
-$('#pp').addEventListener('click',function(){paused=!paused;this.textContent=paused?'Lanjut':'Jeda';this.setAttribute('aria-pressed',paused?'true':'false');});
+$('#pp').addEventListener('click',function(){paused=!paused;this.textContent=paused?'Resume':'Pause';this.setAttribute('aria-pressed',paused?'true':'false');});
 Array.prototype.forEach.call($('#spd').children,function(b){
   b.addEventListener('click',function(){
     speed=+b.dataset.s;
@@ -589,12 +589,12 @@ function frame(now){
   requestAnimationFrame(frame);
 }
 
-/* ====== mulai ====== */
+/* ====== start ====== */
 buildAgentList();buildOverlay();fit();
 if('ResizeObserver' in window){new ResizeObserver(function(){fit();}).observe(stage);}
 else window.addEventListener('resize',fit);
 resetWorld();
-if(window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches){paused=true;$('#pp').textContent='Lanjut';$('#pp').setAttribute('aria-pressed','true');}
+if(window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches){paused=true;$('#pp').textContent='Resume';$('#pp').setAttribute('aria-pressed','true');}
 requestAnimationFrame(frame);
 
 window.AgentFloor={

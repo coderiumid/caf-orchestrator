@@ -1,15 +1,15 @@
 /*
- * CAF-DASHBOARD-02 Agent Floor — adapter data (live dan replay).
+ * CAF-DASHBOARD-02 Agent Floor — data adapter (live and replay).
  *
- * Satu-satunya modul yang berbicara dengan server, dan hanya membaca (GET):
- *   GET /api/pipelines                                   daftar run
- *   GET /api/pipelines/:repoId/:ticketId/floor-events    event ber-kontrak, berkursor
- *   GET /api/events/stream                               SSE, hanya sinyal "ada perubahan"
+ * The only module that talks to the server, and it only reads (GET):
+ *   GET /api/pipelines                                   run list
+ *   GET /api/pipelines/:repoId/:ticketId/floor-events    contract events, with a cursor
+ *   GET /api/events/stream                               SSE, a bare "something changed" signal
  *
- * Live dan replay memakai jalur yang sama: event dari endpoint di atas
- * diterjemahkan translate.js lalu dipanggilkan ke API publik render.js.
- * Bedanya hanya jeda antar event. Dengan ?demo=1 modul ini tidak mengambil
- * data apa pun dan menyerahkan halaman ke demo.js.
+ * Live and replay share one path: events from the endpoint above are
+ * translated by translate.js and applied through render.js's public API.
+ * The only difference is the delay between events. With ?demo=1 this module
+ * fetches nothing and hands the page to demo.js.
  */
 (function(){
 'use strict';
@@ -19,22 +19,22 @@ var params=new URLSearchParams(location.search);
 
 if(params.get('demo')==='1'){window.AgentFloorDemo.start();return;}
 
-var STATUS={RUNNING:['run','Berjalan'],SUCCESS:['success','SUCCESS'],NEEDS_HUMAN:['needs','NEEDS_HUMAN'],ERROR:['error','ERROR']};
+var STATUS={RUNNING:['run','Running'],SUCCESS:['success','SUCCESS'],NEEDS_HUMAN:['needs','NEEDS_HUMAN'],ERROR:['error','ERROR']};
 var LIVE_GAP_MS=250;
 
 var runs=[],repo=params.get('repo')||null;
-/* current: run yang sedang ditampilkan.
-   mode 'live' mengikuti run yang berjalan; 'replay' memutar ulang run dari awal.
-   pinned: dipilih manual, jadi tidak digeser otomatis oleh run aktif yang baru. */
+/* current: the run being shown.
+   mode 'live' follows a running run; 'replay' plays a run back from the start.
+   pinned: chosen by hand, so a newly active run does not take over. */
 var current=null,token=0;
 var queue=[],draining=false,polling=false,pollAgain=false,runsTimer=null;
 var listEl=$('#scen'),repoEl=$('#repo'),connEl=$('#conn');
 
-/* ====== server (hanya baca) ====== */
+/* ====== server (read-only) ====== */
 function reloadOnce(){
-  /* 401: cookie SSE atau sesi Basic Auth sudah tidak berlaku. Memuat ulang
-     halaman melewati Basic Auth lagi dan memasang cookie baru. Dibatasi agar
-     tidak berputar bila server terus menolak. */
+  /* 401: the SSE cookie or the Basic Auth session is no longer valid.
+     Reloading the page goes back through Basic Auth and sets a fresh cookie.
+     Rate-limited so it cannot loop if the server keeps refusing. */
   var last=0;
   try{last=+sessionStorage.getItem('caf-floor-reload')||0;}catch{}
   if(Date.now()-last<30000)return;
@@ -53,7 +53,7 @@ function eventsUrl(run,after){
     (after?'?after='+encodeURIComponent(after):'');
 }
 
-/* ====== menerapkan event ====== */
+/* ====== applying events ====== */
 function apply(e){
   if(e.type==='run_started'){current.startMs=Date.parse(e.startedAt);current.endMs=null;}
   if(e.type==='run_finished')current.endMs=Date.parse(e.timestamp);
@@ -62,7 +62,7 @@ function apply(e){
     var fn=call[0],args=call.slice(1);
     if(fn==='setRun'){
       var c=current;
-      /* Lama run dari cap waktu server: replay mengikuti posisi putar, live mengikuti jam. */
+      /* Elapsed time from server timestamps: replay follows the playback position, live follows the clock. */
       args[0].clock=function(){
         if(c.startMs===undefined)return 0;
         var end=c.mode==='replay'?c.lastMs:(c.endMs||Date.now());
@@ -72,8 +72,8 @@ function apply(e){
     AF[fn].apply(null,args);
   });
 }
-/* Antrean tunggal: event diterapkan berurutan walau datang dari beberapa
-   polling, dan menunggu bila animasi dijeda. */
+/* A single queue: events are applied in order even when they arrive from
+   several fetches. */
 function enqueue(events,delayOf,live){
   var t=token,prev=null;
   events.forEach(function(e){queue.push({e:e,t:t,delay:delayOf(prev,e),live:!!live});prev=e;});
@@ -87,15 +87,15 @@ function drain(){
       while(queue.length){
         var item=queue.shift();
         if(item.t!==token)continue;
-        /* Replay menunggu di waktu simulasi, jadi ikut Jeda dan 1x/2x/4x.
-           Live menunggu di waktu nyata: data nyata tetap masuk walau animasi
-           dijeda (termasuk prefers-reduced-motion). */
+        /* Replay waits on simulation time, so it follows Pause and 1x/2x/4x.
+           Live waits on real time: real data keeps arriving even while the
+           animation is paused (including prefers-reduced-motion). */
         if(item.delay>0)await (item.live?realDelay(item.delay):AF.wait(item.delay));
         if(item.t!==token)continue;
         apply(item.e);
       }
     }catch(err){
-      /* AF.reset() membatalkan penantian yang sedang berjalan; itu bukan error. */
+      /* AF.reset() cancels a wait in progress; that is not an error. */
       if(err!==AF.CANCEL)console.error(err);
     }
     draining=false;
@@ -103,7 +103,7 @@ function drain(){
   })();
 }
 
-/* ====== membuka run ====== */
+/* ====== opening a run ====== */
 function open(run,mode,pinned){
   token++;queue=[];
   AF.reset();
@@ -117,11 +117,11 @@ function open(run,mode,pinned){
     if(mode==='replay'){
       enqueue(body.events,function(prev,e){return prev?TR.replayDelay(prev.timestamp,e.timestamp):0;});
     } else {
-      /* Menyusul keadaan terkini tanpa jeda, lalu lanjut mengikuti. */
+      /* Catch up to the current state with no delay, then keep following. */
       enqueue(body.events,function(){return 0;});
       poll();
     }
-  }).catch(function(){ if(t===token)AF.log('bad','Gagal memuat event run'); });
+  }).catch(function(){ if(t===token)AF.log('bad','Failed to load run events'); });
 }
 function poll(){
   if(!current||current.mode!=='live'||current.cursor===null)return;
@@ -138,7 +138,7 @@ function poll(){
   });
 }
 
-/* ====== daftar run dan pemilih repo ====== */
+/* ====== run list and repo selector ====== */
 function inRepo(){return runs.filter(function(r){return r.repoId===repo;});}
 function isCurrent(r){return !!current&&current.repoId===r.repoId&&current.ticketId===r.ticketId;}
 function renderRepoOptions(){
@@ -159,7 +159,7 @@ function renderRuns(){
   listEl.innerHTML='';
   if(!list.length){
     var p=document.createElement('p');p.className='lp-empty';
-    p.textContent=runs.length?'Belum ada run untuk repo ini.':'Belum ada run tercatat.';
+    p.textContent=runs.length?'No runs for this repo yet.':'No runs recorded yet.';
     listEl.appendChild(p);return;
   }
   list.forEach(function(r){
@@ -168,17 +168,17 @@ function renderRuns(){
     b.setAttribute('aria-pressed',isCurrent(r)?'true':'false');
     b.innerHTML='<span class="t"></span><span class="d"></span><span class="s"></span>';
     b.querySelector('.t').textContent=r.ticketId+'  '+r.ticketTitle;
-    b.querySelector('.d').textContent=new Date(r.startedAt).toLocaleString('id-ID')+
+    b.querySelector('.d').textContent=new Date(r.startedAt).toLocaleString('en-GB')+
       (r.attempt>1?', attempt '+r.attempt:'')+(r.prNumber?', PR #'+r.prNumber:'');
     var s=b.querySelector('.s');s.className='s '+st[0];
-    s.textContent=st[1]+(r.status==='RUNNING'?' (ikuti live)':' (putar ulang)');
+    s.textContent=st[1]+(r.status==='RUNNING'?' (follow live)':' (replay)');
     b.addEventListener('click',function(){
       if(r.status==='RUNNING')open(r,'live',false); else open(r,'replay',true);
     });
     listEl.appendChild(b);
   });
 }
-/* Tanpa pilihan manual, kantor mengikuti run yang sedang berjalan di repo terpilih. */
+/* With no manual choice, the office follows whichever run is running in the selected repo. */
 function autoFollow(){
   var list=inRepo();
   var active=list.filter(function(r){return r.status==='RUNNING';})[0];
@@ -207,15 +207,15 @@ repoEl.addEventListener('change',function(){
   renderRuns();autoFollow();
 });
 
-/* ====== SSE: hanya sinyal ====== */
+/* ====== SSE: signal only ====== */
 function setConn(up){
   connEl.hidden=false;
   connEl.className='conn '+(up?'up':'down');
-  connEl.textContent=up?'Terhubung':'Terputus, mencoba lagi';
+  connEl.textContent=up?'Connected':'Disconnected, retrying';
 }
 function probeAuth(){
-  /* EventSource tidak memberi tahu status HTTP. Permintaan biasa ke alamat
-     yang sama membedakan "server tidak terjangkau" dari "401". */
+  /* EventSource does not expose the HTTP status. A plain request to the same
+     address tells "server unreachable" apart from "401". */
   var ctl=new AbortController();
   fetch('/api/events/stream',{signal:ctl.signal}).then(function(r){
     var status=r.status;ctl.abort();
@@ -226,7 +226,7 @@ function connect(){
   var source=new EventSource('/api/events/stream');
   source.onopen=function(){
     setConn(true);
-    /* Apa pun yang terlewat selama terputus diambil ulang; kursor mencegah event ganda. */
+    /* Anything missed while disconnected is fetched again; the cursor prevents duplicates. */
     loadRuns();poll();
   };
   source.onerror=function(){setConn(false);probeAuth();};
@@ -238,9 +238,9 @@ function connect(){
   };
 }
 
-/* ====== mulai ====== */
+/* ====== start ====== */
 AF.setMock(false);
-AF.setRun({title:'Tidak ada run aktif'});
+AF.setRun({title:'No active run'});
 loadRuns();
 connect();
 })();

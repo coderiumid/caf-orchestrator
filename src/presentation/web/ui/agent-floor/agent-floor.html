@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="id">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -16,16 +16,16 @@
     <h1>CAF Agent Floor</h1>
     <span class="ver" id="ver">live</span>
     <div class="hd-r">
-      <button class="btn" id="pp" type="button" aria-pressed="false">Jeda</button>
-      <div class="seg" id="spd" role="group" aria-label="Kecepatan">
+      <button class="btn" id="pp" type="button" aria-pressed="false">Pause</button>
+      <div class="seg" id="spd" role="group" aria-label="Speed">
         <button type="button" data-s="1" aria-pressed="true">1×</button>
         <button type="button" data-s="2" aria-pressed="false">2×</button>
         <button type="button" data-s="4" aria-pressed="false">4×</button>
       </div>
-      <button class="btn" id="helpb" type="button">Arti animasi</button>
+      <button class="btn" id="helpb" type="button">Animation guide</button>
       <a class="btn" id="modelink" href="/dashboard/agent-floor?demo=1">Demo</a>
       <a class="btn" href="/dashboard">Dashboard</a>
-      <div class="stt"><span class="k">Status</span><span class="mock" id="mock" hidden>Data contoh</span><span class="conn" id="conn" role="status" hidden>Menyambung</span><span class="pill idle" id="rpill" aria-live="polite">Menunggu tiket</span></div>
+      <div class="stt"><span class="k">Status</span><span class="mock" id="mock" hidden>Sample data</span><span class="conn" id="conn" role="status" hidden>Connecting</span><span class="pill idle" id="rpill" aria-live="polite">Waiting for ticket</span></div>
     </div>
   </header>
 
@@ -41,44 +41,44 @@
           <div id="scen"></div>
         </div>
       </section>
-      <section class="panel" aria-label="Run saat ini">
-        <div class="ph"><h2>Run saat ini</h2></div>
+      <section class="panel" aria-label="Current run">
+        <div class="ph"><h2>Current run</h2></div>
         <div class="pb">
-          <p class="tk" id="rtk">Belum ada tiket</p>
+          <p class="tk" id="rtk">No ticket yet</p>
           <p class="meta" id="rmeta">&nbsp;</p>
           <dl class="kv">
             <dt>final_status</dt><dd class="fs"><code id="rfs">NULL</code></dd>
-            <dt>Berjalan</dt><dd id="rel">00:00</dd>
-            <dt id="rcostk">Biaya</dt><dd id="rcost">belum tersedia</dd>
+            <dt>Elapsed</dt><dd id="rel">00:00</dd>
+            <dt id="rcostk">Cost</dt><dd id="rcost">not available yet</dd>
           </dl>
           <ol class="steps" id="steps"></ol>
         </div>
       </section>
     </div>
 
-    <section class="stagep" aria-label="Kantor agent">
+    <section class="stagep" aria-label="Agent office">
       <div class="stage" id="stage">
         <div class="scene" id="scene">
-          <canvas id="cv" role="img" aria-label="Kantor pixel art tempat para agent CAF bekerja"></canvas>
+          <canvas id="cv" role="img" aria-label="Pixel-art office where the CAF agents work"></canvas>
           <div class="ov" id="ov"></div>
         </div>
       </div>
       <div class="zoom" role="group" aria-label="Zoom">
-        <button type="button" id="zin" aria-label="Perbesar">+</button>
-        <button type="button" id="zout" aria-label="Perkecil">−</button>
-        <button type="button" id="zfit" aria-label="Sesuaikan ke panel">1:1</button>
+        <button type="button" id="zin" aria-label="Zoom in">+</button>
+        <button type="button" id="zout" aria-label="Zoom out">−</button>
+        <button type="button" id="zfit" aria-label="Fit to panel">1:1</button>
       </div>
     </section>
 
     <div class="col">
-      <section class="panel" aria-label="Status agent">
-        <div class="ph"><h2>Status agent</h2><span class="cnt" id="agn"></span></div>
+      <section class="panel" aria-label="Agent status">
+        <div class="ph"><h2>Agent status</h2><span class="cnt" id="agn"></span></div>
         <div class="pb" id="agl"></div>
       </section>
-      <section class="panel" aria-label="Kejadian dan detail">
-        <div class="tabs" role="tablist" aria-label="Kejadian dan detail agent">
-          <button type="button" role="tab" id="tab-log" aria-selected="true" aria-controls="pane-log">Kejadian</button>
-          <button type="button" role="tab" id="tab-ag" aria-selected="false" aria-controls="pane-ag" tabindex="-1">Detail agent</button>
+      <section class="panel" aria-label="Events and details">
+        <div class="tabs" role="tablist" aria-label="Events and agent details">
+          <button type="button" role="tab" id="tab-log" aria-selected="true" aria-controls="pane-log">Events</button>
+          <button type="button" role="tab" id="tab-ag" aria-selected="false" aria-controls="pane-ag" tabindex="-1">Agent details</button>
         </div>
         <div class="pb" id="pane-log" role="tabpanel" aria-labelledby="tab-log"><ul id="log" role="log" aria-live="polite"></ul></div>
         <div class="pb" id="pane-ag" role="tabpanel" aria-labelledby="tab-ag" hidden>
@@ -92,21 +92,21 @@
   </div>
 </div>
 
-<dialog id="help" aria-label="Arti animasi">
-  <div class="dl-h"><h2>Arti animasi</h2><button class="btn" id="helpx" type="button">Tutup</button></div>
+<dialog id="help" aria-label="Animation guide">
+  <div class="dl-h"><h2>Animation guide</h2><button class="btn" id="helpx" type="button">Close</button></div>
   <div class="dl-b">
     <ul>
-      <li><b>Mengetik di meja.</b> Agent sedang plan atau implement. Layar menampilkan teks atau kode yang bergulir.</li>
-      <li><b>Minum kopi di meja.</b> Agent sedang idle. Setiap agent selalu duduk di mejanya sendiri; hanya pose dan layarnya yang berubah.</li>
-      <li><b>Tiga bar di layar.</b> Verify: lint, typecheck, test. Kuning sedang jalan, hijau lolos, merah gagal.</li>
-      <li><b>Garuk kepala.</b> Verify gagal, agent mengulang. Batasnya tiga percobaan untuk agent implementasi.</li>
-      <li><b>Dokumen terbang.</b> Handoff artifact antar agent: requirements.md, verify-report.md, qa-report.md.</li>
-      <li><b>Tangan terangkat, layar merah.</b> NEEDS_HUMAN. Pipeline berhenti dan lampu di meja Ganjar menyala merah.</li>
-      <li><b>Api kecil di kepala.</b> ERROR. Exception yang akan dicoba ulang oleh BullMQ.</li>
-      <li><b>Lampu hijau di meja Ganjar.</b> PR sudah dibuka dan menunggu review manusia. Tidak ada auto-merge.</li>
-      <li><b>Tertidur di sofa pantry.</b> caf-documentation sengaja belum di-instrument, jadi ia tampil off duty.</li>
+      <li><b>Typing at the desk.</b> The agent is planning or implementing. The screen shows scrolling text or code.</li>
+      <li><b>Sipping coffee at the desk.</b> The agent is idle. Every agent always sits at its own desk; only its pose and screen change.</li>
+      <li><b>Three bars on the screen.</b> Verify: lint, typecheck, test. Yellow is running, green passed, red failed.</li>
+      <li><b>Scratching head.</b> A check or gate failed and the agent is retrying. Implementation agents get three verify attempts.</li>
+      <li><b>Flying document.</b> An artifact handed from one agent to the next: requirements.md, verify-report.md, qa-report.md.</li>
+      <li><b>Raised hand, red screen.</b> NEEDS_HUMAN. The pipeline stopped and the lamp on Ganjar's desk turns red.</li>
+      <li><b>Small flame overhead.</b> ERROR. An exception that BullMQ will retry.</li>
+      <li><b>Green lamp on Ganjar's desk.</b> A PR is open and waiting for human review. There is no auto-merge.</li>
+      <li><b>Asleep on the pantry sofa.</b> caf-documentation is deliberately not instrumented, so it is shown off duty.</li>
     </ul>
-    <p id="helpnote">Halaman ini hanya membaca: kejadian, waktu, dan biaya berasal dari <code>pipeline_runs</code> dan <code>agent_events</code>. Bar lint, typecheck, dan test hanya dianimasikan di mode demo; pada run nyata hasil verify dibaca dari <code>verify-report.md</code> setelah agent selesai.</p>
+    <p id="helpnote">This page is read-only: events, times, and costs come from <code>pipeline_runs</code> and <code>agent_events</code>. The lint, typecheck, and test bars only animate in demo mode; for a real run the verify result is read from <code>verify-report.md</code> after the agent finishes.</p>
   </div>
 </dialog>
 

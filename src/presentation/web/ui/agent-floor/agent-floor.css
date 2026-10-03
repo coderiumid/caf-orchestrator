@@ -1,5 +1,5 @@
-/* CAF-DASHBOARD-02 Agent Floor. Dipindahkan apa adanya dari agent-floor.prototype.html
-   (gaya dan layout sudah di-approve); tambahan untuk mode live/replay ada di bagian akhir. */
+/* CAF-DASHBOARD-02 Agent Floor. Moved as-is from agent-floor.prototype.html
+   (approved style and layout); additions for live/replay mode are at the end. */
 :root{
   --bg:#ffffff; --surface:#eceef4; --ink:#0d0d12; --ink2:#575b70; --line:#d8d9e3;
   --accent:#5b4bdb; --ok:#13803f; --warn:#a46200; --bad:#c42b23;
@@ -26,7 +26,7 @@ body{margin:0;height:100%;background:var(--bg);color:var(--ink);font:400 14px/1.
 button{font:inherit;color:inherit;cursor:pointer}
 :focus-visible{outline:3px solid var(--accent);outline-offset:2px}
 
-/* ===== kerangka layar penuh ===== */
+/* ===== full-screen frame ===== */
 .app{height:100%;display:grid;grid-template-rows:auto minmax(0,1fr);gap:12px;padding:12px 14px 14px}
 .hd{display:flex;align-items:center;gap:12px;flex-wrap:wrap;min-width:0}
 .logo{width:36px;height:36px;image-rendering:pixelated;filter:var(--logo-filter);mix-blend-mode:var(--logo-blend)}
@@ -78,7 +78,7 @@ h1{font:600 26px/1 'Pixelify Sans',monospace;margin:0;white-space:nowrap}
 .docl{position:absolute;transform:translate(-50%,0);white-space:nowrap;z-index:1;
   font:600 max(9px,calc(var(--u)*3.6))/1 'Pixelify Sans',monospace;color:#15172b;background:#fff;border:max(1px,calc(var(--u)*.6)) solid #15172b;padding:calc(var(--u)*.6) calc(var(--u)*1.4)}
 
-/* ===== panel kiri ===== */
+/* ===== left panel ===== */
 .sc{display:block;width:100%;text-align:left;border:2px solid var(--line);background:var(--bg);padding:8px 10px;margin:0 0 8px}
 .sc:hover{border-color:var(--ink)}
 .sc .t{display:block;font-weight:600;font-size:13px}
@@ -100,7 +100,7 @@ h1{font:600 26px/1 'Pixelify Sans',monospace;margin:0;white-space:nowrap}
 .steps li.fail .m{background:var(--bad);border-color:var(--bad)}
 .steps li.pending .l{color:var(--ink2);font-weight:500}
 
-/* ===== panel kanan ===== */
+/* ===== right panel ===== */
 .ar{display:grid;grid-template-columns:12px 1fr auto;gap:2px 10px;align-items:center;width:100%;text-align:left;border:2px solid transparent;background:transparent;padding:6px 8px;margin:0 0 2px}
 .ar:hover{border-color:var(--line)}
 .ar i{width:12px;height:12px;border:2px solid var(--ink);grid-row:1/3}
@@ -140,7 +140,7 @@ dialog::backdrop{background:rgba(0,0,0,.55)}
 }
 @media (prefers-reduced-motion:reduce){.pill.run::before,.steps li.active .m{animation:none}}
 
-/* ===== tambahan CAF-DASHBOARD-02 (di luar prototype): mode live/replay ===== */
+/* ===== CAF-DASHBOARD-02 additions (not in the prototype): live/replay mode ===== */
 a.btn{text-decoration:none;display:inline-block;color:var(--ink)}
 .conn{display:inline-flex;align-items:center;gap:7px;padding:2px 9px;font-weight:600;font-size:12px;border:2px solid currentColor;white-space:nowrap;color:var(--ink2)}
 .conn::before{content:"";width:8px;height:8px;background:currentColor}

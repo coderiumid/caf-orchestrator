@@ -41,7 +41,7 @@ describe('translate', () => {
   it('a later attempt says so, so a retried run is not mistaken for a first try', () => {
     const calls = translate({ ...base, attempt: 2, type: 'run_started', ticket: 'GAN-1', ticketTitle: 't', repo: 'r', branch: 'b', startedAt: at(0) });
     expect((calls[1][1] as { meta: string }).meta).toContain('attempt 2');
-    expect(calls[3]).toEqual(['log', 'info', 'Run diulang, attempt 2', 0]);
+    expect(calls[3]).toEqual(['log', 'info', 'Run restarted, attempt 2', 0]);
   });
 
   it.each([
@@ -58,18 +58,18 @@ describe('translate', () => {
 
   it('a gate retry shows the gate counter and its real limit, never an assumed n/3', () => {
     const known = translate({ ...base, type: 'agent_state', agent: 'qa', state: 'retrying', gate: 'qa', retry: { count: 1, max: 1 } });
-    expect(known[0]).toEqual(['setState', 'qa', 'retrying', 'Menolak, retry 1/1', 'warn', 0, { checks: null }]);
-    expect(known[1]).toEqual(['log', 'warn', 'QA: gate QA menolak, retry 1/1', 0]);
+    expect(known[0]).toEqual(['setState', 'qa', 'retrying', 'Rejected, retry 1/1', 'warn', 0, { checks: null }]);
+    expect(known[1]).toEqual(['log', 'warn', 'QA: QA gate rejected, retry 1/1', 0]);
 
     const unknown = translate({ ...base, type: 'agent_state', agent: 'reviewer', state: 'retrying', gate: 'reviewer', retry: { count: 1, max: null } });
-    expect(unknown[0][3]).toBe('Menolak, retry 1/?');
+    expect(unknown[0][3]).toBe('Rejected, retry 1/?');
     expect(JSON.stringify([known, unknown])).not.toContain('/3');
   });
 
   it('blocked and error use the blocked/error states with the gate or outcome named', () => {
     expect(translate({ ...base, type: 'agent_state', agent: 'backend', state: 'blocked', gate: 'implementation' })).toEqual([
-      ['setState', 'backend', 'blocked', 'Butuh Ganjar', 'bad'],
-      ['log', 'bad', 'Backend: NEEDS_HUMAN di gate implementasi', 0],
+      ['setState', 'backend', 'blocked', 'Need Ganjar', 'bad'],
+      ['log', 'bad', 'Backend: NEEDS_HUMAN at the implementation gate', 0],
     ]);
     expect(translate({ ...base, type: 'agent_state', agent: 'backend', state: 'error', outcome: 'TIMEOUT' })[0]).toEqual([
       'setState', 'backend', 'error', 'Error: TIMEOUT', 'bad',
@@ -86,7 +86,7 @@ describe('translate', () => {
     });
     expect(calls[0]).toEqual(['setState', 'backend', 'idle', undefined, '', 0, { attempt: '2/3' }]);
     expect(calls[1]).toEqual(['say', 'backend', null]);
-    expect(calls[2].slice(0, 3)).toEqual(['log', 'info', 'Backend: verify percobaan 2/3, lint lolos, typecheck gagal']);
+    expect(calls[2].slice(0, 3)).toEqual(['log', 'info', 'Backend: verify attempt 2/3, lint passed, typecheck failed']);
   });
 
   it('idle with an all-null verify result logs nothing and shows no attempt', () => {
@@ -105,16 +105,16 @@ describe('translate', () => {
     expect(translate({ ...base, type: 'handoff', from: 'qa', to: 'human', file: 'qa-report.md' })).toEqual([['sendDoc', 'qa', 'human', 'qa-report.md']]);
     const usage = translate({ ...base, type: 'usage', agent: 'planner', costUsd: 0.1133, tokens: null, durationMs: 27_305 });
     expect(usage[0]).toEqual(['usage', 'planner', { costUsd: 0.1133, tokens: null, durationMs: 27_305 }]);
-    expect(usage[1][2]).toBe('Planner: selesai ($0.1133, 27 dtk)');
+    expect(usage[1][2]).toBe('Planner: finished ($0.1133, 27 s)');
   });
 
   it('run_finished maps each final status to its own status and human signal', () => {
     const finished = (finalStatus: 'SUCCESS' | 'NEEDS_HUMAN' | 'ERROR' | null, gate: 'qa' | null = null): Call[] =>
       translate({ ...base, type: 'run_finished', finalStatus, gate, superseded: finalStatus === null });
 
-    expect(finished('SUCCESS').slice(0, 2)).toEqual([['setStatus', 'success'], ['setState', 'human', 'alert', 'Run selesai', 'ok']]);
-    expect(finished('NEEDS_HUMAN', 'qa').slice(0, 2)).toEqual([['setStatus', 'needs'], ['setState', 'human', 'alert', 'Ada yang perlu dicek', 'bad']]);
-    expect(finished('NEEDS_HUMAN', 'qa')[2][2]).toBe('final_status: NEEDS_HUMAN (gate QA)');
+    expect(finished('SUCCESS').slice(0, 2)).toEqual([['setStatus', 'success'], ['setState', 'human', 'alert', 'Run finished', 'ok']]);
+    expect(finished('NEEDS_HUMAN', 'qa').slice(0, 2)).toEqual([['setStatus', 'needs'], ['setState', 'human', 'alert', 'Something needs a look', 'bad']]);
+    expect(finished('NEEDS_HUMAN', 'qa')[2][2]).toBe('final_status: NEEDS_HUMAN (QA gate)');
     expect(finished('NEEDS_HUMAN')[2][2]).toBe('final_status: NEEDS_HUMAN');
     expect(finished('ERROR')[0]).toEqual(['setStatus', 'error']);
     // A superseded attempt with no recorded status: no status is claimed.
@@ -123,15 +123,15 @@ describe('translate', () => {
 
   it('the pr step lights the human desk green for a final PR, and only notes a Draft PR', () => {
     const final = translate({ ...base, type: 'step', step: 'pr', status: 'pass', note: 'PR #118', prNumber: 118 });
-    expect(final).toContainEqual(['setState', 'human', 'alert', 'PR #118, siap direview', 'ok']);
+    expect(final).toContainEqual(['setState', 'human', 'alert', 'PR #118, ready for review', 'ok']);
     const draft = translate({ ...base, type: 'step', step: 'pr', status: 'pass', note: 'Draft PR #7', prNumber: 7 });
-    expect(draft).toContainEqual(['say', 'human', 'Draft PR #7 menunggu', 'bad']);
+    expect(draft).toContainEqual(['say', 'human', 'Draft PR #7 waiting', 'bad']);
     expect(names(draft)).not.toContain('setState');
   });
 
   it('log times are the offset from the attempt start', () => {
     const calls = translate({ ...base, type: 'usage', agent: 'qa', costUsd: null, tokens: null, durationMs: null }, { runStartMs: T0 });
-    expect(calls[1]).toEqual(['log', 'info', 'QA: selesai', 60_000]);
+    expect(calls[1]).toEqual(['log', 'info', 'QA: finished', 60_000]);
   });
 
   it('never touches Docs: caf-documentation stays off duty for every event of a real-shaped run', () => {
@@ -162,7 +162,7 @@ describe('translate', () => {
     expect(new Set(names(calls)).size).toBeGreaterThan(5);
     for (const fn of names(calls)) expect(PUBLIC_API).toContain(fn);
     expect(calls.some((c) => c.includes('docs'))).toBe(false);
-    expect(calls.at(-1)).toEqual(['setState', 'human', 'alert', 'PR #5, siap direview', 'ok']);
+    expect(calls.at(-1)).toEqual(['setState', 'human', 'alert', 'PR #5, ready for review', 'ok']);
   });
 });
 

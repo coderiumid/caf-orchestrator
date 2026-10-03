@@ -135,6 +135,15 @@ describe('Agent Floor static files', () => {
     expect(render).toContain("a.state=(id==='docs')?'offduty':'idle'");
   });
 
+  it('the page is in English: declared language, and no Indonesian UI text left in any file', () => {
+    expect(html).toContain('<html lang="en">');
+    const leftover =
+      /\b(berjalan|belum|tidak|sedang|kejadian|menunggu|percobaan|biaya|jeda|lanjut|selesai|dengan|untuk|yang|hanya|lolos|gagal|siap|tiket|dibuka|menolak|butuh|contoh|skenario)\b/i;
+    for (const name of ['agent-floor.html', 'agent-floor.css', 'render.js', 'translate.js', 'demo.js', 'adapter.js']) {
+      expect(read(name).match(leftover)?.[0], name).toBeUndefined();
+    }
+  });
+
   it('render exposes the prototype entry points, and demo/adapter go through them', () => {
     const render = read('render.js');
     for (const fn of ['setState', 'say', 'sendDoc', 'step', 'setStatus', 'log']) {
