@@ -18,17 +18,17 @@
     <span class="ver">live</span>
     <div class="hd-r">
       <span class="clock"><time id="clock">--:--:--</time><span id="today"></span></span>
-      <a class="btn" href="/dashboard/agent-floor">Agent Floor</a>
+      <a class="btn primary" href="/dashboard/agent-floor">Agent Floor</a>
       <div class="stt"><span class="k">Feed</span><span class="conn" id="conn" role="status">Connecting</span></div>
     </div>
   </header>
 
   <main>
     <section class="stats" aria-label="Pipeline overview">
-      <div class="stat"><span class="k">Active runs</span><span class="v" id="stat-running">—</span></div>
-      <div class="stat"><span class="k">Completed</span><span class="v" id="stat-success">—</span></div>
-      <div class="stat"><span class="k">Needs attention</span><span class="v" id="stat-attention">—</span></div>
-      <div class="stat"><span class="k">Recorded spend</span><span class="v" id="stat-cost">—</span></div>
+      <div class="stat info"><span class="k">Active runs</span><span class="v" id="stat-running">—</span></div>
+      <div class="stat ok"><span class="k">Completed</span><span class="v" id="stat-success">—</span></div>
+      <div class="stat warn"><span class="k">Needs attention</span><span class="v" id="stat-attention">—</span></div>
+      <div class="stat brand"><span class="k">Recorded spend</span><span class="v" id="stat-cost">—</span></div>
     </section>
 
     <section class="panel" aria-label="Pipeline runs">
