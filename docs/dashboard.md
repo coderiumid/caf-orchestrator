@@ -159,7 +159,13 @@ Leaving the seat is idle-only decoration, never pipeline data:
   one of the two is called to work, the other walks back as well.
 - The moment an agent gets work (or any other non-idle state), its status and
   screen change immediately and it hurries back to its seat at a faster pace.
-- Manager and Docs never leave their place: where they are carries meaning.
+- While anyone is working, the Manager does a round of the workspace instead:
+  one loop through both walkways of the desk pod, stopping behind each agent
+  that is still working to look at its screen. With nobody working it joins
+  the idle activities like everyone else. Its lamp stays on its desk at the PR
+  gate, and it hurries back there the moment the lamp comes on.
+- Docs never leaves its place: asleep at its desk is what "off duty" looks
+  like.
 - While the page is paused (including under `prefers-reduced-motion`, which
   starts it paused) nobody walks, and an agent caught away from its seat when
   work arrives is put straight back.
@@ -173,7 +179,7 @@ is kept in the URL (`?repo=`).
 | What you see | What it means |
 |---|---|
 | Sitting at the desk, sipping coffee | That agent is idle. With everyone like this, no run is active in this repo. |
-| Walking to the coffee counter, whiteboard, bookshelf, or fridge; stretching; two agents chatting in the meeting corner | Still idle. Decoration only (see above); the status list shows what it is doing. |
+| Walking to the coffee counter, whiteboard, bookshelf, or fridge; stretching; two agents chatting in the meeting corner; Manager walking round the desks | Still idle. Decoration only (see above); the status list shows what it is doing. |
 | Typing at the desk, back turned | That agent's process is running (plan, implement, QA, or review). |
 | Scratching head (and, for QA, a bug in the QA lab) | A QA or Reviewer gate rejected the work and the implementation agents are re-run. The bubble shows the gate's own counter and limit (`retry 1/1`), from `agents.qa.maxRetries` / `agents.reviewer.maxRetries`. |
 | Flying document | A report handed from one agent to the next (see "Handoffs" below). |

@@ -10,7 +10,7 @@
  *   wait, ready, later, fire, celebrate            (simulation-time choreography)
  *
  * The office is one open-plan room. Each agent has a fixed seat (see ST).
- * Working always happens at the seat. Leaving it is idle-only decoration
+ * Working always happens at the seat (Manager's lamp likewise stays on its desk). Leaving it is idle-only decoration
  * (see "idle activities"): it never delays or stands in for a state change.
  *
  * Callers: demo.js (mock scenarios) and adapter.js (live and replay).
@@ -67,9 +67,13 @@ var ST={
 var OUTBOX={x:PRBOX.x+28,y:PRBOX.y+10};
 
 /* ====== idle activities ======
-   Only these agents leave their seat; Manager stays at the PR gate and Docs
-   stays asleep, because where they are carries meaning. */
-var ROAM={planner:1,backend:1,frontend:1,qa:1,reviewer:1};
+   Everyone but Docs leaves their seat; Docs stays asleep, because that is
+   what "off duty" looks like. Manager also has a round of its own (see
+   startPatrol), and its lamp stays on the desk at the PR gate whatever it does. */
+var ROAM={planner:1,backend:1,frontend:1,qa:1,reviewer:1,human:1};
+/* Manager's round, in walking order: back row right to left, then front row left to right. */
+var ROUND=['reviewer','qa','planner','backend','frontend'];
+var LOOK_MS=1700;                          /* how long Manager stands behind a working agent */
 var WALK=50,RUSH=190;                      /* world units per simulated second: strolling, hurrying back to work */
 var AISLE_DY=14;                           /* the walkway in front of each desk row, below the seat */
 var LANE_R=206,LANE_L=34;                  /* corridors right and left of the desk pod */
@@ -85,7 +89,7 @@ var SPOT={
 /* Where the two chatting agents stand, side by side in the meeting corner. */
 var CHAT=[{x:MEET.x+34,y:MEET.y+14,lane:LANE_R},{x:MEET.x+60,y:MEET.y+14,lane:LANE_R}];
 var IDLE_KINDS=['board','shelf','stretch','coffee','fridge','chat'];
-var ACT_LABEL={coffee:'Getting coffee',board:'At the whiteboard',shelf:'At the bookshelf',stretch:'Stretching',fridge:'At the fridge',chat:'Chatting'};
+var ACT_LABEL={coffee:'Getting coffee',board:'At the whiteboard',shelf:'At the bookshelf',stretch:'Stretching',fridge:'At the fridge',chat:'Chatting',patrol:'Checking on the team'};
 
 var DEF={
  planner:{name:'Planner',file:'caf-planner',color:'#3f7de0',hair:'#5b3a29',skin:'#f1c9a5',acc:'pencil',rate:.010,
@@ -115,7 +119,7 @@ var DEF={
 var bgc=null,DPR=1,zoom=1;
 var cv=$('#cv'),ctx=cv.getContext('2d'),scene=$('#scene'),ov=$('#ov'),stage=$('#stage');
 var simT=0,speed=1,paused=false,epoch=0,timers=[],runT0=0,runEnd=null;
-var A={},docs=[],bugs=[],outboxFlag=false,selected='planner',nextIdleAt=0;
+var A={},docs=[],bugs=[],outboxFlag=false,selected='planner',nextIdleAt=0,nextPatrolAt=0;
 var stepsState={};
 var STEPS=[['plan','Plan'],['impl','Implement and verify'],['qa','QA'],['review','Review'],['pr','PR and Linear']];
 /* mock=true only in demo mode: cost, tokens, and work time are computed from
@@ -148,6 +152,24 @@ function startChat(a,b){
   startAct(a,'chat',CHAT[0]);a.mv.mate=b.id;a.mv.slot=0;a.mv.wait=true;
   startAct(b,'chat',CHAT[1]);b.mv.mate=a.id;b.mv.slot=1;b.mv.wait=true;
 }
+/* Manager's round: one loop through both walkways of the desk pod and back
+   to its own desk. A point with `who` is a place to stop and look at that
+   agent's screen, but only if the agent is still working on arrival. */
+function startPatrol(a){
+  var s=ST[a.id],ay=s.fy+AISLE_DY,y2=ST.qa.fy+AISLE_DY,y1=ST.planner.fy+AISLE_DY;
+  var r=[{x:s.cx,y:s.fy},{x:s.cx,y:ay},{x:LANE_R,y:ay},{x:LANE_R,y:y2}];
+  ROUND.forEach(function(id,i){
+    if(i===2){r.push({x:LANE_L,y:y2});r.push({x:LANE_L,y:y1});}
+    r.push({x:ST[id].cx+9,y:ST[id].fy+AISLE_DY,who:id});
+  });
+  r.push({x:LANE_R,y:y1});r.push({x:LANE_R,y:ay});r.push({x:s.cx,y:ay});r.push({x:s.cx,y:s.fy});
+  a.mv={kind:'patrol',route:r,path:r,i:1,phase:'go',until:0,rush:false,cup:false,dy:1,hold:0};
+}
+function pathLen(p,from,x,y){
+  var n=0;for(var i=from;i<p.length;i++){n+=Math.abs(p[i].x-x)+Math.abs(p[i].y-y);x=p[i].x;y=p[i].y;}
+  return n;
+}
+function anyWorking(){return ORDER.some(function(id){return !!WORKING[A[id].state];});}
 function chatting(a){return !!a.mv&&a.mv.kind==='chat'&&a.mv.phase!=='back';}
 function away(a){return !!a.mv&&a.mv.kind!=='stretch';}
 /* Turn round and go back the way the agent came. rush: work has arrived (or
@@ -155,6 +177,13 @@ function away(a){return !!a.mv&&a.mv.kind!=='stretch';}
 function headBack(a,rush){
   var m=a.mv;if(!m)return;
   if(m.kind==='stretch'){a.mv=null;return;}
+  m.hold=0;
+  /* The round is a loop that ends at the seat: carry on if that is the shorter way home. */
+  if(m.kind==='patrol'){
+    var bk=m.route.slice(0,m.i).reverse();
+    if(pathLen(bk,0,a.x,a.y)<pathLen(m.path,m.i,a.x,a.y)){m.path=bk;m.i=0;}
+    m.phase='back';m.rush=m.rush||rush;return;
+  }
   if(m.phase==='go'){m.path=m.route.slice(0,m.i).reverse();m.i=0;}
   else if(m.phase==='at'){m.path=m.route.slice(0,-1).reverse();m.i=0;}
   m.phase='back';m.rush=m.rush||rush;
@@ -176,15 +205,20 @@ function stepAct(a,dt){
     headBack(a,false);m.cup=m.kind==='coffee';
     return;
   }
+  if(m.hold){if(simT<m.hold)return;m.hold=0;}
   var left=(m.rush?RUSH:WALK)*dt;
   while(left>0&&m.i<m.path.length){
     var p=m.path[m.i],dx=p.x-a.x,dy=p.y-a.y,d=Math.sqrt(dx*dx+dy*dy);
-    if(d<=left){a.x=p.x;a.y=p.y;left-=d;m.i++;}
+    if(d<=left){
+      a.x=p.x;a.y=p.y;left-=d;m.i++;
+      if(p.who&&m.phase==='go'&&WORKING[A[p.who].state]){m.hold=simT+LOOK_MS;return;}
+    }
     else {a.x+=dx/d*left;a.y+=dy/d*left;m.dy=dy;left=0;}
   }
   if(m.i<m.path.length)return;
-  if(m.phase==='go'){m.phase='at';if(m.kind!=='chat')m.until=simT+SPOT[m.kind].ms;}
-  else a.mv=null;
+  /* back in the seat; the pause before Manager's next round is counted from here */
+  if(m.phase==='back'||m.kind==='patrol'){a.mv=null;if(m.kind==='patrol')nextPatrolAt=simT+8000+Math.random()*8000;}
+  else {m.phase='at';if(m.kind!=='chat')m.until=simT+SPOT[m.kind].ms;}
 }
 /* While paused nothing walks, but live data still arrives: an agent caught
    away from its seat when work comes in is put straight back, so a paused
@@ -194,7 +228,8 @@ function settle(){
 }
 /* Called every tick. A finished task earns a coffee run; after that, when
    nobody else is away, one seated idle agent wanders off for something else,
-   or two of them meet for a chat. */
+   or two of them meet for a chat. While anyone is working, Manager does its
+   round instead of joining in, so it is seen checking work, not empty desks. */
 function idleLife(dt){
   var free=[];
   ORDER.forEach(function(id){
@@ -202,11 +237,15 @@ function idleLife(dt){
     if(a.mv){stepAct(a,dt);return;}
     if(a.state!=='idle'){a.want=false;return;}
     if(a.want){a.want=false;startAct(a,'coffee');return;}
+    if(id==='human'&&anyWorking()){
+      if(simT>=nextPatrolAt)startPatrol(a);
+      return;
+    }
     free.push(a);
   });
   if(simT<nextIdleAt)return;
   nextIdleAt=simT+6000+Math.random()*6000;
-  var busy=ORDER.some(function(id){return !!A[id].mv;});
+  var busy=ORDER.some(function(id){return !!A[id].mv&&A[id].mv.kind!=='patrol';});
   if(busy||!free.length)return;
   var kind=IDLE_KINDS[(Math.random()*IDLE_KINDS.length)|0];
   var a=free.splice((Math.random()*free.length)|0,1)[0];
@@ -325,7 +364,7 @@ function resetWorld(){
   epoch++;
   timers.forEach(function(t){t.rej(CANCEL);});timers=[];
   docs.forEach(function(d){if(d.el.parentNode)d.el.parentNode.removeChild(d.el);});docs.length=0;bugs.length=0;
-  outboxFlag=false;nextIdleAt=simT+4000;
+  outboxFlag=false;nextIdleAt=simT+4000;nextPatrolAt=simT+3000;
   ORDER.forEach(function(id){
     var a=A[id];a.state=(id==='docs')?'offduty':'idle';a.tone='';
     a.bubble=null;a.checks=[0,0,0];a.attempt='';a.cost=0;a.hasCost=false;a.tokens=mock?0:null;a.activeMs=0;a.board=0;
@@ -494,10 +533,10 @@ function drawChar(a,T){
   /* Off duty (Docs): slumped over the desk, asleep. */
   var asleep=st==='offduty';
   /* Away from the seat on an idle activity: walking there or back, or standing at the spot. */
-  var m=a.mv,out=away(a),walking=out&&m.phase!=='at';
+  var m=a.mv,out=away(a),looking=out&&m.hold>simT,walking=out&&m.phase!=='at'&&!looking;
   /* Back to us while facing the screen; turned to the front when idle, done, or needing attention. */
   var back=a.id==='human'?(st!=='alert'):(asleep||!!BACKFACE[st]);
-  if(out)back=walking?m.dy<0:m.kind!=='chat';   /* walking up the room, or facing the counter/board/shelf/fridge */
+  if(out)back=walking?m.dy<0:m.kind!=='chat';   /* walking up the room; otherwise facing the counter/board/shelf/fridge, or an agent's screen */
   /* In a chat the two take turns speaking. */
   var talk=out&&!walking&&m.kind==='chat',speaking=talk&&!m.wait&&(((T/1.3)|0)%2===m.slot);
   /* Seated, except while jumping to celebrate or away from the seat. sd: how far the body is lowered. */
@@ -519,6 +558,7 @@ function drawChar(a,T){
   var sip=((T+a.def.name.length*.7)%3.2)<.9;
   if(walking)pose='walk';
   else if(talk)pose=speaking?'talk':'down';
+  else if(looking)pose='down';
   else if(out)pose=m.kind==='coffee'?'type':'reach';
   else if(m&&m.kind==='stretch'&&st==='idle')pose='stretch';
   else if(st==='celebrating')pose='up';
@@ -683,8 +723,8 @@ document.querySelector('.tabs').addEventListener('keydown',function(ev){
 });
 function select(id,explicit){selected=id;if(explicit)showTab('ag');updatePanel();}
 function stLabel(a){
-  if(a.id==='human'&&a.state==='idle')return 'Waiting for PR';
   if(a.state==='idle'&&a.mv)return a.mv.phase==='back'&&a.mv.kind!=='coffee'?'Heading back':ACT_LABEL[a.mv.kind];
+  if(a.id==='human'&&a.state==='idle')return 'Waiting for PR';
   return STATE_LABEL[a.state]||a.state;
 }
 function fmtDur(ms){return Math.round(ms/1000)+' s';}

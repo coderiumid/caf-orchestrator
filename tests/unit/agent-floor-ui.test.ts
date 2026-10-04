@@ -156,8 +156,13 @@ describe('Agent Floor static files', () => {
     // Every seat, Docs included, gets a desk.
     expect(render).toContain('ORDER.forEach(function(id){drawDesk(id,T);});');
     expect(render).not.toContain('LOUNGE');
-    // Idle activities: only the five pipeline agents roam; Manager and Docs keep their place.
-    expect(render).toContain('var ROAM={planner:1,backend:1,frontend:1,qa:1,reviewer:1};');
+    // Idle activities: everyone roams except Docs, which stays asleep at its desk.
+    expect(render).toContain('var ROAM={planner:1,backend:1,frontend:1,qa:1,reviewer:1,human:1};');
+    // Manager's round: only while someone is working, stopping only at agents still working on arrival.
+    expect(render).toContain("if(id==='human'&&anyWorking()){");
+    expect(render).toContain("if(p.who&&m.phase==='go'&&WORKING[A[p.who].state]){m.hold=simT+LOOK_MS;return;}");
+    // The Manager's lamp is drawn at its desk, not at wherever the Manager is standing.
+    expect(render).toContain('var h=A.human,lx=ST.human.cx+22,ly=ST.human.fy;');
     // Finishing a task (a real change to idle, not staying idle) earns the coffee run.
     expect(render).toContain("a.want=s==='idle'&&a.state!=='idle'&&!!ROAM[a.id];");
     // Any non-idle state recalls the agent at the faster pace; the state itself is never delayed.
