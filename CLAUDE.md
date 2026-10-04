@@ -103,6 +103,8 @@ Validates HMAC signature (`verifyLinearSignature`) and timestamp freshness befor
 
 Vanilla-JS SPA at `/dashboard`, backed by `/api/pipelines*` and an SSE stream at `/api/events/stream`, basic-auth gated. Off by default (`dashboard.enabled: false` in `caf.config.yaml`) — must be explicitly enabled, and `dashboard.basicAuthUser` (YAML) + `DASHBOARD_BASIC_AUTH_PASSWORD` (`.env`, secret) are both required once enabled (enforced via `superRefine`, same pairing pattern as the Telegram vars). Password comparison is timing-safe. If deployed behind a reverse proxy, ensure `/dashboard`, `/api/pipelines*`, and `/api/events/stream` are all proxied and served over HTTPS only — basic-auth credentials are plaintext over HTTP. See `docs/dashboard.md` for the full operator guide. (The previous Bull Board queue viewer at `/admin/queues` was removed — its client-side polling was adding load on top of an already resource-constrained VPS; this SSE-pushed dashboard is the queue-visibility surface now.)
 
+Both pages (`/dashboard` and `/dashboard/agent-floor`) share one retro design system: `ui/shared/design-system.css`, served at `/dashboard/ds.css` and linked before each page's own stylesheet. Tokens and reusable components (`.btn`, `.pill`, `.panel`, `.field`, `.stat`, `.log`, ...) go there; `dashboard.css`/`agent-floor.css` hold page-specific layout only. New UI uses the tokens, never raw colors — see "Design system" in `docs/dashboard.md`.
+
 ### v1 scope constraints (intentional, not gaps)
 
 - Worker concurrency defaults to 1 (`queue.workerConcurrency` in `caf.config.yaml`) — concurrent Claude Code agent processes are expensive.

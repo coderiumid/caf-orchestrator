@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { config } from '../../../config/index.js';
 import { eventBroadcaster } from '../sse/event-broadcaster.js';
+import { DASHBOARD_AUTH_COOKIE, dashboardAuthCookieValue, dashboardAuthSetCookie } from '../auth/dashboard-auth-cookie.js';
 
 /**
  * CAF-DASHBOARD-01 Task 4: SSE push endpoint. Gated + auth-protected here in
@@ -20,13 +21,10 @@ export async function eventsRoutes(app: FastifyInstance): Promise<void> {
     const cookie = request.headers.cookie
       ?.split(';')
       .map((part) => part.trim())
-      .find((part) => part.startsWith('caf_dashboard_auth='))
-      ?.slice('caf_dashboard_auth='.length);
-    const expected = Buffer.from(
-      `${config.dashboard.basicAuthUser}:${config.DASHBOARD_BASIC_AUTH_PASSWORD}`,
-    ).toString('base64');
+      .find((part) => part.startsWith(`${DASHBOARD_AUTH_COOKIE}=`))
+      ?.slice(DASHBOARD_AUTH_COOKIE.length + 1);
 
-    if (cookie !== expected) {
+    if (cookie !== dashboardAuthCookieValue()) {
       return reply.code(401).send({
         statusCode: 401,
         error: 'Unauthorized',
@@ -49,6 +47,12 @@ export async function eventsRoutes(app: FastifyInstance): Promise<void> {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       Connection: 'keep-alive',
+      // CAF-DASHBOARD-02: every successful connect (including EventSource's
+      // own automatic reconnects) renews the cookie, so a page left open
+      // keeps a valid one for as long as it keeps reconnecting within the
+      // cookie's lifetime. Once it has lapsed the stream answers 401 and the
+      // page reloads itself to go back through Basic Auth.
+      'Set-Cookie': dashboardAuthSetCookie(),
     });
     // Send enough initial padding to force Cloudflare/Nginx to flush the SSE
     // response immediately; a tiny `:connected` frame may remain buffered.

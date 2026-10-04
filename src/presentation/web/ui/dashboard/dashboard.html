@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>CAF Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Pixelify+Sans:wght@500;600&display=swap">
+<link rel="stylesheet" href="/dashboard/ds.css">
+<link rel="stylesheet" href="/dashboard/app.css">
+</head>
+<body>
+<div class="app">
+  <header class="hd">
+    <img class="logo" alt="CAF" width="36" height="36" src="/dashboard/logo.png">
+    <h1>CAF Dashboard</h1>
+    <span class="ver">live</span>
+    <div class="hd-r">
+      <span class="clock"><time id="clock">--:--:--</time><span id="today"></span></span>
+      <a class="btn" href="/dashboard/agent-floor">Agent Floor</a>
+      <div class="stt"><span class="k">Feed</span><span class="conn" id="conn" role="status">Connecting</span></div>
+    </div>
+  </header>
+
+  <main>
+    <section class="stats" aria-label="Pipeline overview">
+      <div class="stat"><span class="k">Active runs</span><span class="v" id="stat-running">—</span></div>
+      <div class="stat"><span class="k">Completed</span><span class="v" id="stat-success">—</span></div>
+      <div class="stat"><span class="k">Needs attention</span><span class="v" id="stat-attention">—</span></div>
+      <div class="stat"><span class="k">Recorded spend</span><span class="v" id="stat-cost">—</span></div>
+    </section>
+
+    <section class="panel" aria-label="Pipeline runs">
+      <div class="ph"><h2>Pipeline runs</h2><span class="cnt" id="result-count"></span></div>
+      <div class="toolbar">
+        <input id="run-search" class="field" type="search" placeholder="Search ticket, title, or repository…" aria-label="Search pipeline runs">
+        <select id="status-filter" class="field" aria-label="Filter by status">
+          <option value="ALL">All statuses</option>
+          <option value="RUNNING">Running</option>
+          <option value="SUCCESS">Successful</option>
+          <option value="NEEDS_HUMAN">Needs attention</option>
+          <option value="ERROR">Error</option>
+        </select>
+        <select id="repo-filter" class="field" aria-label="Filter by repository">
+          <option value="ALL">All repositories</option>
+        </select>
+      </div>
+      <div class="pb">
+        <div id="run-grid" class="run-grid" aria-live="polite"><p class="note">Loading pipeline runs…</p></div>
+        <div id="empty-state" class="empty-state" hidden>
+          <strong>No runs in view</strong>
+          <span>Adjust the filters or wait for the next pipeline to begin.</span>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div id="inspector-backdrop" class="inspector-backdrop" hidden></div>
+<aside id="inspector" class="inspector" aria-label="Pipeline details" hidden>
+  <div class="dl-h"><h2>Run inspector</h2><button id="close-inspector" class="btn" type="button">Close</button></div>
+  <div id="detail-content" class="inspector-b"></div>
+</aside>
+
+<script src="/dashboard/app.js" defer></script>
+</body>
+</html>

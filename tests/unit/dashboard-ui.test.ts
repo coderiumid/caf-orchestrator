@@ -36,9 +36,25 @@ describe('dashboard UI routes', () => {
     const response = await app.inject({ method: 'GET', url: '/dashboard', headers: authHeader });
     expect(response.statusCode).toBe(200);
     expect(response.headers['content-type']).toContain('text/html');
-    expect(response.body).toContain('CAF Orchestrator');
+    expect(response.body).toContain('CAF Dashboard');
+    expect(response.body).toContain('/dashboard/ds.css');
     expect(response.body).toContain('/dashboard/app.css');
     expect(response.body).toContain('/dashboard/app.js');
+
+    await app.close();
+  });
+
+  it('sets the SSE auth cookie when the page is served, and not on a rejected request', async () => {
+    const app = await buildTestApp();
+
+    const ok = await app.inject({ method: 'GET', url: '/dashboard', headers: authHeader });
+    const expected = Buffer.from('admin:correct-horse').toString('base64');
+    expect(String(ok.headers['set-cookie'])).toBe(
+      `caf_dashboard_auth=${expected}; Path=/api; HttpOnly; SameSite=Lax; Max-Age=3600`,
+    );
+
+    const rejected = await app.inject({ method: 'GET', url: '/dashboard' });
+    expect(rejected.headers['set-cookie']).toBeUndefined();
 
     await app.close();
   });
@@ -52,7 +68,21 @@ describe('dashboard UI routes', () => {
     const response = await app.inject({ method: 'GET', url: '/dashboard/app.css', headers: authHeader });
     expect(response.statusCode).toBe(200);
     expect(response.headers['content-type']).toContain('text/css');
-    expect(response.body).toContain(':root');
+    expect(response.body).toContain('.run-grid');
+
+    await app.close();
+  });
+
+  it('serves the shared design system stylesheet, auth-gated', async () => {
+    const app = await buildTestApp();
+
+    const unauthed = await app.inject({ method: 'GET', url: '/dashboard/ds.css' });
+    expect(unauthed.statusCode).toBe(401);
+
+    const response = await app.inject({ method: 'GET', url: '/dashboard/ds.css', headers: authHeader });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-type']).toContain('text/css');
+    expect(response.body).toContain('--accent');
 
     await app.close();
   });

@@ -249,4 +249,69 @@ describe('CAF-DASHBOARD-01 Task 3: pipeline_runs/agent_events instrumentation', 
     expect(detail?.run.finalStatus).toBe('NEEDS_HUMAN');
     expect(detail?.events.some((e) => e.eventType === 'gate_exhausted' && e.agentName === 'caf-qa')).toBe(true);
   });
+  describe('CAF-DASHBOARD-02 T1', () => {
+    it('records attempt 1, an OK outcome on every end event, and the PR number on success', async () => {
+      (agentRunner.run as ReturnType<typeof vi.fn>).mockResolvedValue(makeAgentResult({}));
+      (vcsClient.createPullRequest as ReturnType<typeof vi.fn>).mockResolvedValue({ url: 'https://github.com/ganjardbc/umkm-pos/pull/77', number: 77 });
+
+      const job = makeJob();
+      const useCase = new RunAgentPipelineUseCase({ gitService, workspaceManager, agentRunner, linearClient, vcsClient, notifier });
+      await useCase.execute(job);
+
+      const detail = new PipelineRunRepository(getDb()).getPipelineDetail('ganjardbc/umkm-pos', job.ticketKey);
+      expect(detail?.run).toMatchObject({ finalStatus: 'SUCCESS', attempt: 1, prNumber: 77 });
+      expect(detail?.events.every((e) => e.attempt === 1)).toBe(true);
+      const ends = detail?.events.filter((e) => e.eventType === 'end') ?? [];
+      expect(ends).toHaveLength(4);
+      expect(ends.every((e) => e.outcome === 'OK' && e.exitCode === 0)).toBe(true);
+      // No verify-report.md on disk in this test workspace — details degrade to null, nothing is logged.
+      expect(ends.every((e) => e.verifyDetails === null)).toBe(true);
+      expect(loggerWarnMock).not.toHaveBeenCalled();
+    });
+
+    it('records the Draft PR number when a gate stops the run', async () => {
+      (agentRunner.run as ReturnType<typeof vi.fn>).mockResolvedValue(makeAgentResult({}));
+      readQaReportMock.mockResolvedValue({ status: 'FAIL', raw: 'FAIL: still broken' });
+      (vcsClient.createPullRequest as ReturnType<typeof vi.fn>).mockResolvedValue({ url: 'https://github.com/ganjardbc/umkm-pos/pull/78', number: 78 });
+
+      const job = makeJob();
+      const useCase = new RunAgentPipelineUseCase({ gitService, workspaceManager, agentRunner, linearClient, vcsClient, notifier });
+      await useCase.execute(job);
+
+      const detail = new PipelineRunRepository(getDb()).getPipelineDetail('ganjardbc/umkm-pos', job.ticketKey);
+      expect(detail?.run).toMatchObject({ finalStatus: 'NEEDS_HUMAN', prNumber: 78 });
+    });
+
+    it('records a FAILED outcome with its exit code, finalizes ERROR, and marks the BullMQ re-run as attempt 2', async () => {
+      (agentRunner.run as ReturnType<typeof vi.fn>).mockImplementation((agentName: string) =>
+        Promise.resolve(makeAgentResult(agentName === 'caf-backend' ? { exitCode: 2, stderr: 'boom' } : {})),
+      );
+
+      const job = makeJob();
+      const useCase = new RunAgentPipelineUseCase({ gitService, workspaceManager, agentRunner, linearClient, vcsClient, notifier });
+      await expect(useCase.execute(job)).rejects.toThrow(/exited with code 2/);
+
+      const repo = new PipelineRunRepository(getDb());
+      const failed = repo.getPipelineDetail('ganjardbc/umkm-pos', job.ticketKey);
+      expect(failed?.run).toMatchObject({ finalStatus: 'ERROR', attempt: 1 });
+      expect(failed?.events.at(-1)).toMatchObject({ agentName: 'caf-backend', eventType: 'end', outcome: 'FAILED', exitCode: 2 });
+
+      // The same job again, as BullMQ would re-deliver it.
+      (agentRunner.run as ReturnType<typeof vi.fn>).mockResolvedValue(makeAgentResult({}));
+      await useCase.execute(job);
+
+      const rerun = repo.getPipelineDetail('ganjardbc/umkm-pos', job.ticketKey);
+      expect(rerun?.run).toMatchObject({ finalStatus: 'SUCCESS', attempt: 2 });
+      expect(rerun?.events.filter((e) => e.attempt === 1)).toHaveLength(4);
+      expect(rerun?.events.filter((e) => e.attempt === 2)).toHaveLength(8);
+    });
+
+    it('classifies a timeout and a kill signal distinctly from a non-zero exit', async () => {
+      const { outcomeOf } = await import('../../src/infrastructure/db/pipeline-instrumentation.js');
+      expect(outcomeOf({ exitCode: 0, signal: null, timedOut: false })).toBe('OK');
+      expect(outcomeOf({ exitCode: 1, signal: null, timedOut: false })).toBe('FAILED');
+      expect(outcomeOf({ exitCode: null, signal: 'SIGKILL', timedOut: false })).toBe('KILLED');
+      expect(outcomeOf({ exitCode: null, signal: 'SIGTERM', timedOut: true })).toBe('TIMEOUT');
+    });
+  });
 });

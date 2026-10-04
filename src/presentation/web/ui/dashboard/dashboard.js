@@ -10,8 +10,7 @@
   var inspector = document.getElementById('inspector');
   var backdrop = document.getElementById('inspector-backdrop');
   var detail = document.getElementById('detail-content');
-  var connDot = document.getElementById('conn-dot');
-  var connLabel = document.getElementById('conn-label');
+  var conn = document.getElementById('conn');
 
   var runs = [];
   var selected = null;
@@ -50,22 +49,29 @@
     }, 0);
   }
 
-  function statusColor(status) {
-    if (status === 'SUCCESS') return 'var(--green)';
-    if (status === 'NEEDS_HUMAN') return 'var(--amber)';
-    if (status === 'ERROR') return 'var(--red)';
-    return 'var(--cyan)';
+  // Class names below are the design system's (.pill / .log li variants).
+
+  function statusClass(status) {
+    if (status === 'SUCCESS') return 'success';
+    if (status === 'NEEDS_HUMAN') return 'needs';
+    if (status === 'ERROR') return 'error';
+    return 'run';
   }
 
   function statusLabel(status) {
-    return status === 'NEEDS_HUMAN' ? 'NEEDS ATTENTION' : status;
+    if (status === 'NEEDS_HUMAN') return 'Needs attention';
+    return status.charAt(0) + status.slice(1).toLowerCase();
   }
 
-  function eventColor(type) {
-    if (type === 'retry') return 'var(--amber)';
-    if (type === 'gate_exhausted') return 'var(--red)';
-    if (type === 'end') return 'var(--green)';
-    return 'var(--cyan)';
+  function statusPill(status) {
+    return '<span class="pill ' + statusClass(status) + '">' + esc(statusLabel(status)) + '</span>';
+  }
+
+  function eventClass(type) {
+    if (type === 'retry') return 'warn';
+    if (type === 'gate_exhausted') return 'bad';
+    if (type === 'end') return 'ok';
+    return 'info';
   }
 
   // ---- Rendering: run grid ----
@@ -74,32 +80,31 @@
     var active = phaseIndex(run.currentPivPhase);
     var running = run.status === 'RUNNING';
     return ['Plan', 'Implement', 'Verify'].map(function (label, i) {
-      var cls = i < active || (run.status === 'SUCCESS' && i <= active) ? 'done' : i === active ? 'active' : '';
-      if ((run.status === 'ERROR' || run.status === 'NEEDS_HUMAN') && i === active) cls += ' failed';
+      var cls = i < active || (run.status === 'SUCCESS' && i <= active) ? 'pass' : i === active ? 'active' : 'pending';
+      if ((run.status === 'ERROR' || run.status === 'NEEDS_HUMAN') && i === active) cls = 'fail';
       if (running && i === active) cls += ' running';
-      return '<span class="phase ' + cls + '">' + label + '</span>';
+      return '<span class="st ' + cls + '"><span class="m"></span>' + label + '</span>';
     }).join('');
   }
 
   function runCard(run) {
     var key = run.repoId + '|' + run.ticketId;
-    return '<button type="button" class="run-card' + (key === selected ? ' selected' : '') + '"' +
-      ' data-repo="' + esc(run.repoId) + '" data-ticket="' + esc(run.ticketId) + '"' +
-      ' style="--statusColor:' + statusColor(run.status) + '">' +
-      '<div class="run-head">' +
-        '<div>' +
-          '<div class="ticket-key">' + esc(run.ticketId) + '</div>' +
-          '<div class="ticket-title">' + esc(run.ticketTitle || 'Untitled pipeline') + '</div>' +
-          '<div class="repo">' + esc(run.repoId) + '</div>' +
-        '</div>' +
-        '<span class="status ' + esc(run.status) + '">' + esc(statusLabel(run.status)) + '</span>' +
-      '</div>' +
-      '<div class="phase-rail' + (run.status === 'RUNNING' ? ' running' : '') + '">' + phaseRail(run) + '</div>' +
-      '<div class="run-meta">' +
-        '<div class="meta-cell"><span class="meta-label">Elapsed</span><span class="meta-value">' + esc(elapsed(run)) + '</span></div>' +
-        '<div class="meta-cell"><span class="meta-label">Retries</span><span class="meta-value">' + totalRetries(run.retryCounts) + '</span></div>' +
-        '<div class="meta-cell"><span class="meta-label">Cost</span><span class="meta-value">' + esc(money(run.totalCostUsd)) + '</span></div>' +
-      '</div>' +
+    return '<button type="button" class="run-card" aria-pressed="' + (key === selected) + '"' +
+      ' data-repo="' + esc(run.repoId) + '" data-ticket="' + esc(run.ticketId) + '">' +
+      '<span class="run-hd">' +
+        '<span class="run-id">' +
+          '<span class="tkey">' + esc(run.ticketId) + '</span>' +
+          '<span class="ttl">' + esc(run.ticketTitle || 'Untitled pipeline') + '</span>' +
+          '<span class="repo">' + esc(run.repoId) + '</span>' +
+        '</span>' +
+        statusPill(run.status) +
+      '</span>' +
+      '<span class="rail">' + phaseRail(run) + '</span>' +
+      '<span class="run-meta">' +
+        '<span><span class="k">Elapsed</span><span class="v">' + esc(elapsed(run)) + '</span></span>' +
+        '<span><span class="k">Retries</span><span class="v">' + totalRetries(run.retryCounts) + '</span></span>' +
+        '<span><span class="k">Cost</span><span class="v">' + esc(money(run.totalCostUsd)) + '</span></span>' +
+      '</span>' +
     '</button>';
   }
 
@@ -115,7 +120,6 @@
 
   function render() {
     var list = visibleRuns();
-    grid.classList.remove('loading');
     grid.innerHTML = list.map(runCard).join('');
     grid.hidden = !list.length;
     empty.hidden = !!list.length;
@@ -159,31 +163,32 @@
           var meta = [e.pivPhase];
           if (e.costUsd != null) meta.push('$' + Number(e.costUsd).toFixed(4));
           if (e.retryCount != null) meta.push('attempt ' + e.retryCount);
-          var artifact = e.artifactLink ? '<div class="artifact">↳ ' + esc(e.artifactLink) + '</div>' : '';
-          return '<li style="--eventColor:' + eventColor(e.eventType) + '">' +
-            '<div class="event-head">' +
+          var artifact = e.artifactLink ? '<div class="ev-art">↳ ' + esc(e.artifactLink) + '</div>' : '';
+          return '<li class="' + eventClass(e.eventType) + '">' +
+            '<div class="ev-hd">' +
               '<div>' +
-                '<span class="event-agent">' + esc(agentLabel(e.agentName)) + '</span>' +
-                '<span class="event-type">' + esc(e.eventType.replace('_', ' ')) + '</span>' +
+                '<span class="ev-agent">' + esc(agentLabel(e.agentName)) + '</span>' +
+                '<span class="ev-type">' + esc(e.eventType.replace('_', ' ')) + '</span>' +
               '</div>' +
-              '<time class="event-time">' + esc(new Date(e.createdAt).toLocaleString()) + '</time>' +
+              '<time>' + esc(new Date(e.createdAt).toLocaleString()) + '</time>' +
             '</div>' +
-            '<div class="event-meta">' + esc(meta.join(' · ')) + '</div>' +
+            '<div class="ev-meta">' + esc(meta.join(' · ')) + '</div>' +
             artifact +
           '</li>';
         }).join('')
-      : '<li><div class="event-meta">Waiting for the first agent event.</div></li>';
+      : '<li class="empty">Waiting for the first agent event.</li>';
 
     detail.innerHTML =
-      '<h2 class="detail-title">' + esc(d.ticketTitle || d.ticketId) + '</h2>' +
-      '<div class="detail-repo">' + esc(d.repoId) + ' / ' + esc(d.ticketId) + '</div>' +
-      '<div class="detail-summary">' +
-        '<div><span class="meta-label">Status</span><span class="status ' + esc(d.status) + '">' + esc(statusLabel(d.status)) + '</span></div>' +
-        '<div><span class="meta-label">Elapsed</span><span class="meta-value">' + esc(elapsed(d)) + '</span></div>' +
-        '<div><span class="meta-label">Cost · retries</span><span class="meta-value">' + esc(money(d.totalCostUsd)) + ' · ' + totalRetries(d.retryCounts) + '</span></div>' +
-      '</div>' +
-      '<div class="timeline-title">Agent event stream · ' + events.length + ' events</div>' +
-      '<ol class="timeline">' + timelineItems + '</ol>';
+      '<p class="d-title">' + esc(d.ticketTitle || d.ticketId) + '</p>' +
+      '<p class="d-repo">' + esc(d.repoId) + ' / ' + esc(d.ticketId) + '</p>' +
+      '<dl class="kv">' +
+        '<dt>Status</dt><dd>' + statusPill(d.status) + '</dd>' +
+        '<dt>Elapsed</dt><dd>' + esc(elapsed(d)) + '</dd>' +
+        '<dt>Cost</dt><dd>' + esc(money(d.totalCostUsd)) + '</dd>' +
+        '<dt>Retries</dt><dd>' + totalRetries(d.retryCounts) + '</dd>' +
+      '</dl>' +
+      '<h3 class="d-sub">Events · ' + events.length + '</h3>' +
+      '<ol class="log">' + timelineItems + '</ol>';
   }
 
   function openDetail(repo, ticket) {
@@ -191,13 +196,13 @@
     render();
     inspector.hidden = false;
     backdrop.hidden = false;
-    detail.innerHTML = '<div class="loading">Loading agent event stream…</div>';
+    detail.innerHTML = '<p class="note">Loading agent events…</p>';
 
     fetch('/api/pipelines/' + encodeURIComponent(repo) + '/' + encodeURIComponent(ticket))
       .then(function (r) { if (!r.ok) throw new Error(); return r.json(); })
       .then(renderDetail)
       .catch(function () {
-        detail.innerHTML = '<div class="empty"><strong>Details unavailable</strong><span>The overview remains available.</span></div>';
+        detail.innerHTML = '<div class="empty-state"><strong>Details unavailable</strong><span>The overview remains available.</span></div>';
       });
   }
 
@@ -220,16 +225,15 @@
         render();
       })
       .catch(function () {
-        grid.classList.remove('loading');
         if (!runs.length) {
-          grid.innerHTML = '<div class="empty"><strong>Unable to load pipelines</strong><span>Live updates will retry automatically.</span></div>';
+          grid.innerHTML = '<div class="empty-state"><strong>Unable to load pipelines</strong><span>Live updates will retry automatically.</span></div>';
         }
       });
   }
 
   function setConnectionStatus(state) {
-    connDot.className = 'connection-dot ' + state;
-    connLabel.textContent = state === 'live' ? 'live feed' : state === 'down' ? 'reconnecting' : 'connecting';
+    conn.className = 'conn' + (state === 'live' ? ' up' : state === 'down' ? ' down' : '');
+    conn.textContent = state === 'live' ? 'Connected' : state === 'down' ? 'Disconnected, retrying' : 'Connecting';
   }
 
   function connect() {

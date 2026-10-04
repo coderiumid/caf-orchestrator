@@ -11,16 +11,19 @@ import { eventBroadcaster, type DashboardEvent } from '../../src/presentation/we
 // end to end — two real SSE connections over a real socket, asserting each
 // receives the broadcast event with the correct repoId.
 //
-// Task 5 added auth to this route (reusing Bull Board's basic-auth) — these
-// credentials match caf.config.yaml's `dashboard.basicAuthUser: admin` and
+// Auth: EventSource cannot set an Authorization header, so this route checks
+// the `caf_dashboard_auth` cookie that the dashboard page handler sets after
+// Basic Auth succeeds (see events.ts / dashboard-ui.ts) — not a Basic header.
+// The value matches caf.config.yaml's `dashboard.basicAuthUser: admin` and
 // tests/setup.ts's default DASHBOARD_BASIC_AUTH_PASSWORD.
-const AUTH_HEADER = `Basic ${Buffer.from('admin:test-dashboard-password').toString('base64')}`;
+const AUTH_VALUE = Buffer.from('admin:test-dashboard-password').toString('base64');
+const AUTH_COOKIE = `caf_dashboard_auth=${AUTH_VALUE}`;
 
-function connectSse(port: number, authorization = AUTH_HEADER): Promise<{ res: IncomingMessage; frames: () => string[] }> {
+function connectSse(port: number, cookie = AUTH_COOKIE): Promise<{ res: IncomingMessage; frames: () => string[] }> {
   return new Promise((resolve, reject) => {
     const req = get(
       `http://127.0.0.1:${port}/api/events/stream`,
-      { headers: { authorization } },
+      { headers: { cookie } },
       (res) => {
         const chunks: string[] = [];
         res.on('data', (chunk: Buffer) => chunks.push(chunk.toString('utf-8')));
@@ -28,6 +31,16 @@ function connectSse(port: number, authorization = AUTH_HEADER): Promise<{ res: I
         setTimeout(() => resolve({ res, frames: () => chunks }), 50);
       },
     );
+    req.on('error', reject);
+  });
+}
+
+function statusFor(port: number, headers: Record<string, string>): Promise<number | undefined> {
+  return new Promise((resolve, reject) => {
+    const req = get(`http://127.0.0.1:${port}/api/events/stream`, { headers }, (res) => {
+      resolve(res.statusCode);
+      res.destroy();
+    });
     req.on('error', reject);
   });
 }
@@ -97,13 +110,26 @@ describe('GET /api/events/stream', () => {
     clientB.res.destroy();
   });
 
-  it('rejects a connection with no auth header (401)', async () => {
-    const response = await new Promise<IncomingMessage>((resolve, reject) => {
-      const req = get(`http://127.0.0.1:${port}/api/events/stream`, resolve);
-      req.on('error', reject);
-    });
-    expect(response.statusCode).toBe(401);
-    response.destroy();
+  it('rejects a connection with no auth cookie (401)', async () => {
+    expect(await statusFor(port, {})).toBe(401);
+  });
+
+  it('rejects a wrong cookie value, and a Basic Authorization header without the cookie (401)', async () => {
+    expect(await statusFor(port, { cookie: 'caf_dashboard_auth=nope' })).toBe(401);
+    expect(await statusFor(port, { authorization: `Basic ${AUTH_VALUE}` })).toBe(401);
+  });
+
+  it('renews the auth cookie on every successful connect (CAF-DASHBOARD-02)', async () => {
+    const client = await connectSse(port);
+    const setCookie = client.res.headers['set-cookie']?.join('; ') ?? '';
+
+    expect(client.res.statusCode).toBe(200);
+    expect(setCookie).toContain(AUTH_COOKIE);
+    expect(setCookie).toContain('Max-Age=3600');
+    expect(setCookie).toContain('Path=/api');
+    expect(setCookie).toContain('HttpOnly');
+
+    client.res.destroy();
   });
 
   it('stops the broadcaster from writing to a client after it disconnects', async () => {

@@ -3,7 +3,8 @@ import { join } from 'node:path';
 
 /**
  * CAF-DASHBOARD-01: the dashboard SPA as three plain static files
- * (dashboard.html/.css/.js) read once at startup — nothing here is
+ * (dashboard/dashboard.html, .css, .js — one directory per page, same layout
+ * as agent-floor/) read once at startup — nothing here is
  * request-specific, so there's no per-request templating to do.
  * dashboard-ui.ts serves the HTML at `/dashboard` and the CSS/JS at
  * `/dashboard/app.css` / `/dashboard/app.js`, all behind the same basic-auth
@@ -13,11 +14,17 @@ import { join } from 'node:path';
  * single-inline-file version this replaced.
  *
  * tsc does not copy non-TypeScript assets to dist/ — the Dockerfile has an
- * explicit COPY for these three files, same as schema.sql.
+ * explicit COPY for this directory, same as schema.sql.
+ *
+ * The shared design system (shared/design-system.css, served at
+ * `/dashboard/ds.css`) is loaded here too; the Agent Floor page links the
+ * same URL, so both pages get identical tokens and components.
  */
-const dashboardHtml = readFileSync(join(__dirname, 'dashboard.html'), 'utf-8');
-const dashboardCss = readFileSync(join(__dirname, 'dashboard.css'), 'utf-8');
-const dashboardJs = readFileSync(join(__dirname, 'dashboard.js'), 'utf-8');
+const dir = join(__dirname, 'dashboard');
+const dashboardHtml = readFileSync(join(dir, 'dashboard.html'), 'utf-8');
+const dashboardCss = readFileSync(join(dir, 'dashboard.css'), 'utf-8');
+const dashboardJs = readFileSync(join(dir, 'dashboard.js'), 'utf-8');
+const designSystemCss = readFileSync(join(__dirname, 'shared', 'design-system.css'), 'utf-8');
 const dashboardLogo = readFileSync(join(__dirname, '..', 'assets', 'logo.png'));
 
 export function renderDashboardHtml(): string {
@@ -30,6 +37,11 @@ export function renderDashboardCss(): string {
 
 export function renderDashboardJs(): string {
   return dashboardJs;
+}
+
+/** The shared design system (tokens + components), linked by every page under /dashboard. */
+export function renderDesignSystemCss(): string {
+  return designSystemCss;
 }
 
 export function renderDashboardLogo(): Buffer {

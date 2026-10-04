@@ -1,5 +1,11 @@
 import { getDb } from './connection.js';
-import { PipelineRunRepository, type PivPhase, type AgentEventType } from './pipeline-run.repository.js';
+import {
+  PipelineRunRepository,
+  type PivPhase,
+  type AgentEventType,
+  type AgentOutcome,
+} from './pipeline-run.repository.js';
+import type { VerifyDetails } from '../reports/verify-report-details.js';
 import { parseAgentUsage } from '../agent/agent-cost-parser.js';
 import { logger } from '../logging/logger.js';
 import { parseGithubRepo } from '../vcs/github.service.js';
@@ -86,10 +92,21 @@ export function finalizePipelineRun(repoId: string, ticketId: string, finalStatu
   broadcastChange(repoId, ticketId);
 }
 
+/** Records the PR opened (or reused) for a run — the final PR on success, or the Draft PR on a gate stop (CAF-DASHBOARD-02 T1). */
+export function recordPullRequest(repoId: string, ticketId: string, prNumber: number): void {
+  warnOnFailure('recordPullRequest', { repoId, ticketId, prNumber }, () => {
+    repository().setPullRequestNumber(pipelineRunId(repoId, ticketId), prNumber);
+  });
+  broadcastChange(repoId, ticketId);
+}
+
 export interface RecordAgentEventOptions {
   retryCount?: number;
   costUsd?: number;
   artifactLink?: string;
+  exitCode?: number | null;
+  outcome?: AgentOutcome;
+  verifyDetails?: VerifyDetails | null;
 }
 
 export function recordAgentEvent(
@@ -110,19 +127,48 @@ export function recordAgentEvent(
       costUsd: options.costUsd ?? null,
       artifactLink: options.artifactLink ?? null,
       createdAt: new Date().toISOString(),
+      exitCode: options.exitCode ?? null,
+      outcome: options.outcome ?? null,
+      verifyDetails: options.verifyDetails ?? null,
     });
   });
   broadcastChange(repoId, ticketId);
 }
 
-/** Convenience for the "end" event of an agent run — extracts cost/usage from stdout via parseAgentUsage (Task 2) so call sites don't have to. */
+/** The subset of AgentRunResult the "end" event records. */
+export interface AgentRunOutcomeInput {
+  exitCode: number | null;
+  signal: string | null;
+  timedOut: boolean;
+  stdout: string;
+}
+
+/** How the agent process ended. A timeout is reported as such even though it also surfaces as a kill signal. */
+export function outcomeOf(result: Pick<AgentRunOutcomeInput, 'exitCode' | 'signal' | 'timedOut'>): AgentOutcome {
+  if (result.timedOut) return 'TIMEOUT';
+  if (result.signal) return 'KILLED';
+  return result.exitCode === 0 ? 'OK' : 'FAILED';
+}
+
+/**
+ * Convenience for the "end" event of an agent run — extracts cost/usage from
+ * stdout via parseAgentUsage (Task 2) and the process outcome from the run
+ * result, so call sites don't have to. `verifyDetails` is only meaningful for
+ * implementation agents (see verify-report-details.ts).
+ */
 export function recordAgentEnd(
   repoId: string,
   ticketId: string,
   agentName: string,
   pivPhase: PivPhase,
-  stdout: string,
+  result: AgentRunOutcomeInput,
+  verifyDetails?: VerifyDetails | null,
 ): void {
-  const usage = parseAgentUsage(stdout);
-  recordAgentEvent(repoId, ticketId, agentName, pivPhase, 'end', { costUsd: usage?.costUsd });
+  const usage = parseAgentUsage(result.stdout);
+  recordAgentEvent(repoId, ticketId, agentName, pivPhase, 'end', {
+    costUsd: usage?.costUsd,
+    exitCode: result.exitCode,
+    outcome: outcomeOf(result),
+    verifyDetails,
+  });
 }

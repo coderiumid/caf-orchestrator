@@ -1,0 +1,67 @@
+/* CAF-DASHBOARD-01 dashboard. Tokens, base, and the shared components
+   (header, buttons, pills, panels, stat tiles, steps, log, fields) live in
+   ../shared/design-system.css (/dashboard/ds.css), loaded before this file.
+   What is left here is only what this page alone needs. */
+
+/* ===== page frame ===== */
+.app{width:min(1540px,100%);margin:0 auto;display:grid;gap:12px;padding:12px 14px 14px}
+main{display:grid;gap:12px;min-width:0}
+.clock{display:flex;align-items:baseline;gap:8px;font-size:13px;color:var(--ink2)}
+.clock time{color:var(--ink);font-weight:600;font-variant-numeric:tabular-nums}
+.stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+
+/* ===== toolbar (search + filters) ===== */
+.toolbar{display:grid;grid-template-columns:minmax(0,1fr) 190px 220px;gap:10px;padding:10px 12px;border-bottom:2px solid var(--line)}
+.note{margin:0;color:var(--ink2);font-size:13px}
+
+/* ===== run grid & cards ===== */
+.run-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.run-card{display:grid;gap:12px;width:100%;text-align:left;border:2px solid var(--ink);background:var(--bg);padding:10px 12px}
+.run-card:hover{box-shadow:3px 3px 0 var(--ink)}
+.run-card[aria-pressed="true"]{background:var(--surface);box-shadow:3px 3px 0 var(--accent)}
+.run-hd{display:flex;justify-content:space-between;align-items:start;gap:12px}
+.run-id{display:block;min-width:0}
+.run-card .tkey,.run-card .repo{display:block;color:var(--ink2);font:500 12px var(--mono);overflow-wrap:anywhere}
+.run-card .ttl{display:block;font-weight:600;font-size:15px;line-height:1.3;margin:2px 0}
+
+/* Plan / Implement / Verify: the design system's .steps markers, laid flat */
+.rail{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;padding:10px 0;border-top:2px solid var(--line);border-bottom:2px solid var(--line)}
+.rail .st{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600}
+.rail .m{flex:none;width:16px;height:16px;border:2px solid var(--line)}
+.rail .st.pending{color:var(--ink2);font-weight:500}
+.rail .st.active .m{background:var(--accent);border-color:var(--accent)}
+.rail .st.active.running .m{animation:blink 1s steps(2) infinite}
+.rail .st.pass .m{background:var(--ok);border-color:var(--ok)}
+.rail .st.fail .m{background:var(--bad);border-color:var(--bad)}
+
+.run-meta{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;font-size:13px}
+.run-meta .k{display:block;color:var(--ink2);font-size:12px}
+.run-meta .v{display:block;font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* ===== run inspector (side panel) ===== */
+.inspector-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:10}
+.inspector{position:fixed;z-index:11;top:0;right:0;bottom:0;width:min(570px,100%);display:flex;flex-direction:column;background:var(--bg);border-left:2px solid var(--ink)}
+.inspector-b{flex:1;min-height:0;overflow:auto;padding:12px 16px 16px}
+.d-title{font:600 20px/1.2 var(--display);margin:0}
+.d-repo{color:var(--ink2);font:500 12px var(--mono);margin:4px 0 0;overflow-wrap:anywhere}
+.inspector .kv{padding-bottom:12px;border-bottom:2px solid var(--line)}
+.d-sub{font:600 16px/1.2 var(--display);margin:12px 0 10px}
+.ev-hd{display:flex;justify-content:space-between;gap:12px}
+.ev-agent{font-weight:600;text-transform:capitalize}
+.ev-type{margin-left:8px;font-size:12px;font-weight:600;color:var(--ink2)}
+.log li.ok .ev-type{color:var(--ok)}.log li.warn .ev-type{color:var(--warn)}.log li.bad .ev-type{color:var(--bad)}.log li.info .ev-type{color:var(--accent)}
+.ev-hd time{font-size:12px;white-space:nowrap}
+.ev-meta,.ev-art{font-size:12px;color:var(--ink2)}
+.ev-art{font-family:var(--mono);overflow-wrap:anywhere}
+
+@media (max-width:850px){
+  .hd-r{margin-left:0}
+  .stats{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .toolbar{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+  .toolbar input{grid-column:1/-1}
+  .run-grid{grid-template-columns:minmax(0,1fr)}
+}
+@media (max-width:540px){
+  #today{display:none}
+}
+@media (prefers-reduced-motion:reduce){.rail .st.active.running .m{animation:none}}
