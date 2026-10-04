@@ -78,10 +78,14 @@ var SPOT={
  coffee:{x:COUNTER.x+12,y:COUNTER.y+26,lane:LANE_R,ms:1600},
  board:{x:BOARD.x+26,y:BOARD.y+52,lane:LANE_L,ms:3600},
  shelf:{x:SHELF.x+22,y:SHELF.y+40,lane:LANE_L,ms:3200},
- stretch:{ms:2600}                          /* at the seat, no walking */
+ fridge:{x:271,y:68,lane:LANE_R,ms:2400},
+ stretch:{ms:2600},                         /* at the seat, no walking */
+ chat:{ms:5200}                             /* two agents; they stand at CHAT[0] and CHAT[1] */
 };
-var IDLE_KINDS=['board','shelf','stretch','coffee'];
-var ACT_LABEL={coffee:'Getting coffee',board:'At the whiteboard',shelf:'At the bookshelf',stretch:'Stretching'};
+/* Where the two chatting agents stand, side by side in the meeting corner. */
+var CHAT=[{x:MEET.x+34,y:MEET.y+14,lane:LANE_R},{x:MEET.x+60,y:MEET.y+14,lane:LANE_R}];
+var IDLE_KINDS=['board','shelf','stretch','coffee','fridge','chat'];
+var ACT_LABEL={coffee:'Getting coffee',board:'At the whiteboard',shelf:'At the bookshelf',stretch:'Stretching',fridge:'At the fridge',chat:'Chatting'};
 
 var DEF={
  planner:{name:'Planner',file:'caf-planner',color:'#3f7de0',hair:'#5b3a29',skin:'#f1c9a5',acc:'pencil',rate:.010,
@@ -130,32 +134,46 @@ function placeInitial(a){a.x=ST[a.id].cx;a.y=ST[a.id].fy;a.mv=null;a.want=false;
 /* ====== idle activities: movement ======
    a.mv is the activity in progress: {kind, route, path, i, phase, until, rush, cup, dy}.
    route runs seat -> spot along the walkways, so an agent never cuts through a desk. */
-function routeTo(a,kind){
-  var s=ST[a.id],sp=SPOT[kind],ay=s.fy+AISLE_DY;
+function routeTo(a,sp){
+  var s=ST[a.id],ay=s.fy+AISLE_DY;
   return [{x:s.cx,y:s.fy},{x:s.cx,y:ay},{x:sp.lane,y:ay},{x:sp.lane,y:sp.y},{x:sp.x,y:sp.y}];
 }
-function startAct(a,kind){
+function startAct(a,kind,sp){
   if(kind==='stretch'){a.mv={kind:kind,phase:'at',until:simT+SPOT.stretch.ms};return;}
-  var r=routeTo(a,kind);
+  var r=routeTo(a,sp||SPOT[kind]);
   a.mv={kind:kind,route:r,path:r,i:1,phase:'go',until:0,rush:false,cup:false,dy:1};
 }
+/* A chat needs two: each gets a place, and knows who it is talking to. */
+function startChat(a,b){
+  startAct(a,'chat',CHAT[0]);a.mv.mate=b.id;a.mv.slot=0;a.mv.wait=true;
+  startAct(b,'chat',CHAT[1]);b.mv.mate=a.id;b.mv.slot=1;b.mv.wait=true;
+}
+function chatting(a){return !!a.mv&&a.mv.kind==='chat'&&a.mv.phase!=='back';}
 function away(a){return !!a.mv&&a.mv.kind!=='stretch';}
-/* Work has arrived (or the run ended badly): drop the activity and hurry back
-   the way the agent came. The state itself has already changed. */
-function recall(a){
+/* Turn round and go back the way the agent came. rush: work has arrived (or
+   the run ended badly), so hurry; the state itself has already changed. */
+function headBack(a,rush){
   var m=a.mv;if(!m)return;
   if(m.kind==='stretch'){a.mv=null;return;}
   if(m.phase==='go'){m.path=m.route.slice(0,m.i).reverse();m.i=0;}
   else if(m.phase==='at'){m.path=m.route.slice(0,-1).reverse();m.i=0;}
-  m.phase='back';m.rush=true;
+  m.phase='back';m.rush=m.rush||rush;
 }
 function stepAct(a,dt){
   var m=a.mv;
-  if(a.state!=='idle'&&!(m.phase==='back'&&m.rush)){recall(a);m=a.mv;if(!m)return;}
+  if(a.state!=='idle'&&!(m.phase==='back'&&m.rush)){headBack(a,true);m=a.mv;if(!m)return;}
+  /* The other half of a chat was called away: nobody is left talking alone. */
+  if(m.kind==='chat'&&m.phase!=='back'&&!chatting(A[m.mate]))headBack(a,false);
   if(m.phase==='at'){
+    if(m.wait){
+      /* first to arrive waits; the chat is timed from when both are there */
+      var mate=A[m.mate].mv;
+      if(mate.phase==='at'){m.wait=mate.wait=false;m.until=mate.until=simT+SPOT.chat.ms;}
+      return;
+    }
     if(simT<m.until)return;
     if(m.kind==='stretch'){a.mv=null;return;}
-    m.path=m.route.slice(0,-1).reverse();m.i=0;m.phase='back';m.cup=m.kind==='coffee';
+    headBack(a,false);m.cup=m.kind==='coffee';
     return;
   }
   var left=(m.rush?RUSH:WALK)*dt;
@@ -165,7 +183,7 @@ function stepAct(a,dt){
     else {a.x+=dx/d*left;a.y+=dy/d*left;m.dy=dy;left=0;}
   }
   if(m.i<m.path.length)return;
-  if(m.phase==='go'){m.phase='at';m.until=simT+SPOT[m.kind].ms;}
+  if(m.phase==='go'){m.phase='at';if(m.kind!=='chat')m.until=simT+SPOT[m.kind].ms;}
   else a.mv=null;
 }
 /* While paused nothing walks, but live data still arrives: an agent caught
@@ -174,8 +192,9 @@ function stepAct(a,dt){
 function settle(){
   ORDER.forEach(function(id){var a=A[id];if(a.mv&&a.state!=='idle')placeInitial(a);});
 }
-/* Called every tick. A finished task earns a coffee run; after that, one
-   seated idle agent at a time wanders off for something else. */
+/* Called every tick. A finished task earns a coffee run; after that, when
+   nobody else is away, one seated idle agent wanders off for something else,
+   or two of them meet for a chat. */
 function idleLife(dt){
   var free=[];
   ORDER.forEach(function(id){
@@ -189,7 +208,11 @@ function idleLife(dt){
   nextIdleAt=simT+6000+Math.random()*6000;
   var busy=ORDER.some(function(id){return !!A[id].mv;});
   if(busy||!free.length)return;
-  startAct(free[(Math.random()*free.length)|0],IDLE_KINDS[(Math.random()*IDLE_KINDS.length)|0]);
+  var kind=IDLE_KINDS[(Math.random()*IDLE_KINDS.length)|0];
+  var a=free.splice((Math.random()*free.length)|0,1)[0];
+  if(kind!=='chat')startAct(a,kind);
+  else if(free.length)startChat(a,free[(Math.random()*free.length)|0]);
+  else startAct(a,'fridge');                /* nobody free to talk to */
 }
 
 /* ====== simulation time ====== */
@@ -474,7 +497,9 @@ function drawChar(a,T){
   var m=a.mv,out=away(a),walking=out&&m.phase!=='at';
   /* Back to us while facing the screen; turned to the front when idle, done, or needing attention. */
   var back=a.id==='human'?(st!=='alert'):(asleep||!!BACKFACE[st]);
-  if(out)back=walking?m.dy<0:true;        /* walking up the room, or facing the counter/board/shelf */
+  if(out)back=walking?m.dy<0:m.kind!=='chat';   /* walking up the room, or facing the counter/board/shelf/fridge */
+  /* In a chat the two take turns speaking. */
+  var talk=out&&!walking&&m.kind==='chat',speaking=talk&&!m.wait&&(((T/1.3)|0)%2===m.slot);
   /* Seated, except while jumping to celebrate or away from the seat. sd: how far the body is lowered. */
   var sit=st!=='celebrating'&&!out,sd=sit?2:0;
   if(st==='celebrating'&&!out)y-=Math.abs(Math.sin(T*9))*4;
@@ -493,6 +518,7 @@ function drawChar(a,T){
   /* Idle: sips coffee roughly every 3 seconds; the phase is shifted per agent so they are not in sync. */
   var sip=((T+a.def.name.length*.7)%3.2)<.9;
   if(walking)pose='walk';
+  else if(talk)pose=speaking?'talk':'down';
   else if(out)pose=m.kind==='coffee'?'type':'reach';
   else if(m&&m.kind==='stretch'&&st==='idle')pose='stretch';
   else if(st==='celebrating')pose='up';
@@ -514,6 +540,7 @@ function drawChar(a,T){
     if(m.cup){P(4,-10,1,3,sl);P(4,-7,1,1,sk);}       /* carrying the fresh cup back */
     else {P(4,-10,1,3+f,sl);P(4,-7+f,1,1,sk);}
   }
+  else if(pose==='talk'){P(-5,-10,1,4,sl);P(-5,-6,1,1,sk);P(4,-10,1,2,sl);P(5,-10-f,1,2,sl);P(6,-11-f,1,1,sk);}
   else if(pose==='reach'){P(-5,-10,1,4,sl);P(-5,-6,1,1,sk);var rc=((T*2)|0)%2;P(4,-14+rc,1,5,sl);P(4,-15+rc,1,1,sk);}
   else if(pose==='stretch'){var sx=((T*2)|0)%2;P(-5-sx,-13,1,4,sl);P(-5-sx,-14,1,1,sk);P(4+sx,-13,1,4,sl);P(4+sx,-14,1,1,sk);}
   else if(pose==='coffee'){
@@ -530,6 +557,8 @@ function drawChar(a,T){
   }
   accessory(a,P,hy,back);
   if(pose==='walk'&&m.cup&&!back){P(4,-8,2,2,'#fff');P(6,-8,1,1,'#fff');}
+  if(speaking){P(-5,-25,10,7,'#15172b');P(-4,-24,8,5,'#fff');P(-1,-18,2,1,'#15172b');
+    for(var dt3=0;dt3<3;dt3++)if(((T*3)|0)%4>dt3)P(-3+dt3*2,-22,1,1,'#15172b');}
   if(pose==='coffee'){
     if(sip){P(1,-12,2,2,'#fff');P(1,-12,2,1,'#e8e9f0');}
     else {P(4,-8,2,2,'#fff');P(6,-8,1,1,'#fff');if(((T*2)|0)%2)P(5,-11,1,1,'rgba(255,255,255,.8)');}
@@ -655,7 +684,7 @@ document.querySelector('.tabs').addEventListener('keydown',function(ev){
 function select(id,explicit){selected=id;if(explicit)showTab('ag');updatePanel();}
 function stLabel(a){
   if(a.id==='human'&&a.state==='idle')return 'Waiting for PR';
-  if(a.state==='idle'&&a.mv)return ACT_LABEL[a.mv.kind];
+  if(a.state==='idle'&&a.mv)return a.mv.phase==='back'&&a.mv.kind!=='coffee'?'Heading back':ACT_LABEL[a.mv.kind];
   return STATE_LABEL[a.state]||a.state;
 }
 function fmtDur(ms){return Math.round(ms/1000)+' s';}

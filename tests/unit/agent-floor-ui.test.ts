@@ -161,7 +161,10 @@ describe('Agent Floor static files', () => {
     // Finishing a task (a real change to idle, not staying idle) earns the coffee run.
     expect(render).toContain("a.want=s==='idle'&&a.state!=='idle'&&!!ROAM[a.id];");
     // Any non-idle state recalls the agent at the faster pace; the state itself is never delayed.
-    expect(render).toContain("if(a.state!=='idle'&&!(m.phase==='back'&&m.rush)){recall(a);");
+    expect(render).toContain("if(a.state!=='idle'&&!(m.phase==='back'&&m.rush)){headBack(a,true);");
+    // A chat takes two: when one is called away the other walks back too, never left talking alone.
+    expect(render).toContain("if(m.kind==='chat'&&m.phase!=='back'&&!chatting(A[m.mate]))headBack(a,false);");
+    expect(render).toContain("var IDLE_KINDS=['board','shelf','stretch','coffee','fridge','chat'];");
     expect(render).toMatch(/var WALK=(\d+),RUSH=(\d+);/);
     const [, walk, rush] = render.match(/var WALK=(\d+),RUSH=(\d+);/)!;
     expect(+rush).toBeGreaterThan(+walk * 2);

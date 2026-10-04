@@ -153,8 +153,10 @@ Leaving the seat is idle-only decoration, never pipeline data:
 
 - An agent that just finished a task walks to the coffee counter and brings a
   cup back to its desk.
-- While idle, one agent at a time wanders to the whiteboard or the bookshelf,
-  stretches in its chair, or fetches another coffee.
+- While idle, when nobody else is away, one agent wanders to the whiteboard,
+  the bookshelf, or the fridge, stretches in its chair, or fetches another
+  coffee — or two idle agents meet in the meeting corner for a short chat. If
+  one of the two is called to work, the other walks back as well.
 - The moment an agent gets work (or any other non-idle state), its status and
   screen change immediately and it hurries back to its seat at a faster pace.
 - Manager and Docs never leave their place: where they are carries meaning.
@@ -171,7 +173,7 @@ is kept in the URL (`?repo=`).
 | What you see | What it means |
 |---|---|
 | Sitting at the desk, sipping coffee | That agent is idle. With everyone like this, no run is active in this repo. |
-| Walking to the coffee counter, whiteboard, or bookshelf; stretching | Still idle. Decoration only (see above); the status list shows what it is doing. |
+| Walking to the coffee counter, whiteboard, bookshelf, or fridge; stretching; two agents chatting in the meeting corner | Still idle. Decoration only (see above); the status list shows what it is doing. |
 | Typing at the desk, back turned | That agent's process is running (plan, implement, QA, or review). |
 | Scratching head (and, for QA, a bug in the QA lab) | A QA or Reviewer gate rejected the work and the implementation agents are re-run. The bubble shows the gate's own counter and limit (`retry 1/1`), from `agents.qa.maxRetries` / `agents.reviewer.maxRetries`. |
 | Flying document | A report handed from one agent to the next (see "Handoffs" below). |
