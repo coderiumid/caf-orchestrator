@@ -143,11 +143,24 @@ hold back live data: new events still arrive and are shown.
 The office is a single open-plan room: a pod of six desks close together
 (Planner, Backend, Frontend in front; QA, Docs, and Reviewer behind them),
 the PR gate with the PR box and the Manager's desk, and a meeting corner.
-Characters never walk. Each agent has a fixed seat at its own desk, and only
-its pose and screen change. (The approved
-prototype had agents walking between the pantry and their desks; with real
-data, states often change faster than a walk takes, so the character was
-still on its way when the state had already moved on.)
+Each agent has a fixed seat at its own desk, and **work always shows there**,
+through pose and screen only. (The approved prototype had agents walk to
+their desk before working; with real data, states often change faster than a
+walk takes, so the character was still on its way when the state had already
+moved on.)
+
+Leaving the seat is idle-only decoration, never pipeline data:
+
+- An agent that just finished a task walks to the coffee counter and brings a
+  cup back to its desk.
+- While idle, one agent at a time wanders to the whiteboard or the bookshelf,
+  stretches in its chair, or fetches another coffee.
+- The moment an agent gets work (or any other non-idle state), its status and
+  screen change immediately and it hurries back to its seat at a faster pace.
+- Manager and Docs never leave their place: where they are carries meaning.
+- While the page is paused (including under `prefers-reduced-motion`, which
+  starts it paused) nobody walks, and an agent caught away from its seat when
+  work arrives is put straight back.
 
 The **Repo** selector switches between configured repos that have at least one
 recorded run. Runs from different repos are never shown together; the choice
@@ -158,6 +171,7 @@ is kept in the URL (`?repo=`).
 | What you see | What it means |
 |---|---|
 | Sitting at the desk, sipping coffee | That agent is idle. With everyone like this, no run is active in this repo. |
+| Walking to the coffee counter, whiteboard, or bookshelf; stretching | Still idle. Decoration only (see above); the status list shows what it is doing. |
 | Typing at the desk, back turned | That agent's process is running (plan, implement, QA, or review). |
 | Scratching head (and, for QA, a bug in the QA lab) | A QA or Reviewer gate rejected the work and the implementation agents are re-run. The bubble shows the gate's own counter and limit (`retry 1/1`), from `agents.qa.maxRetries` / `agents.reviewer.maxRetries`. |
 | Flying document | A report handed from one agent to the next (see "Handoffs" below). |

@@ -9,8 +9,9 @@
  *   reset, setRun, usage, checks                   (complements: run_started, usage, demo verify bars)
  *   wait, ready, later, fire, celebrate            (simulation-time choreography)
  *
- * The office is one open-plan room. Agents do not walk: each sits in a fixed
- * place (see ST and placeInitial).
+ * The office is one open-plan room. Each agent has a fixed seat (see ST).
+ * Working always happens at the seat. Leaving it is idle-only decoration
+ * (see "idle activities"): it never delays or stands in for a state change.
  *
  * Callers: demo.js (mock scenarios) and adapter.js (live and replay).
  * An agent may be referenced by id ('planner', 'backend', 'frontend', 'qa',
@@ -65,6 +66,23 @@ var ST={
 };
 var OUTBOX={x:PRBOX.x+28,y:PRBOX.y+10};
 
+/* ====== idle activities ======
+   Only these agents leave their seat; Manager stays at the PR gate and Docs
+   stays asleep, because where they are carries meaning. */
+var ROAM={planner:1,backend:1,frontend:1,qa:1,reviewer:1};
+var WALK=50,RUSH=190;                      /* world units per simulated second: strolling, hurrying back to work */
+var AISLE_DY=14;                           /* the walkway in front of each desk row, below the seat */
+var LANE_R=206,LANE_L=34;                  /* corridors right and left of the desk pod */
+/* Where an agent stands for each activity, how long it stays, and which corridor leads there. */
+var SPOT={
+ coffee:{x:COUNTER.x+12,y:COUNTER.y+26,lane:LANE_R,ms:1600},
+ board:{x:BOARD.x+26,y:BOARD.y+52,lane:LANE_L,ms:3600},
+ shelf:{x:SHELF.x+22,y:SHELF.y+40,lane:LANE_L,ms:3200},
+ stretch:{ms:2600}                          /* at the seat, no walking */
+};
+var IDLE_KINDS=['board','shelf','stretch','coffee'];
+var ACT_LABEL={coffee:'Getting coffee',board:'At the whiteboard',shelf:'At the bookshelf',stretch:'Stretching'};
+
 var DEF={
  planner:{name:'Planner',file:'caf-planner',color:'#3f7de0',hair:'#5b3a29',skin:'#f1c9a5',acc:'pencil',rate:.010,
   access:'Read-only, never touches code',out:'requirements.md, tasks.md',
@@ -93,7 +111,7 @@ var DEF={
 var bgc=null,DPR=1,zoom=1;
 var cv=$('#cv'),ctx=cv.getContext('2d'),scene=$('#scene'),ov=$('#ov'),stage=$('#stage');
 var simT=0,speed=1,paused=false,epoch=0,timers=[],runT0=0,runEnd=null;
-var A={},docs=[],bugs=[],outboxFlag=false,selected='planner';
+var A={},docs=[],bugs=[],outboxFlag=false,selected='planner',nextIdleAt=0;
 var stepsState={};
 var STEPS=[['plan','Plan'],['impl','Implement and verify'],['qa','QA'],['review','Review'],['pr','PR and Linear']];
 /* mock=true only in demo mode: cost, tokens, and work time are computed from
@@ -103,11 +121,76 @@ function AG(a){return typeof a==='string'?A[a]:a;}
 
 /* ====== agent ====== */
 ORDER.forEach(function(id){
-  A[id]={id:id,def:DEF[id],x:0,y:0,state:'idle',tone:'',bubble:null,checks:[0,0,0],attempt:'',cost:0,hasCost:false,tokens:null,activeMs:0,board:0,_bk:''};
+  A[id]={id:id,def:DEF[id],x:0,y:0,state:'idle',tone:'',bubble:null,checks:[0,0,0],attempt:'',cost:0,hasCost:false,tokens:null,activeMs:0,board:0,_bk:'',mv:null,want:false};
 });
-/* Every agent has a fixed place and never moves. State shows only through
-   pose and screen, so a state change stays readable however fast it comes. */
-function placeInitial(a){a.x=ST[a.id].cx;a.y=ST[a.id].fy;}
+/* Every agent has a fixed seat, and work shows only through pose and screen
+   there, so a state change stays readable however fast it comes. */
+function placeInitial(a){a.x=ST[a.id].cx;a.y=ST[a.id].fy;a.mv=null;a.want=false;}
+
+/* ====== idle activities: movement ======
+   a.mv is the activity in progress: {kind, route, path, i, phase, until, rush, cup, dy}.
+   route runs seat -> spot along the walkways, so an agent never cuts through a desk. */
+function routeTo(a,kind){
+  var s=ST[a.id],sp=SPOT[kind],ay=s.fy+AISLE_DY;
+  return [{x:s.cx,y:s.fy},{x:s.cx,y:ay},{x:sp.lane,y:ay},{x:sp.lane,y:sp.y},{x:sp.x,y:sp.y}];
+}
+function startAct(a,kind){
+  if(kind==='stretch'){a.mv={kind:kind,phase:'at',until:simT+SPOT.stretch.ms};return;}
+  var r=routeTo(a,kind);
+  a.mv={kind:kind,route:r,path:r,i:1,phase:'go',until:0,rush:false,cup:false,dy:1};
+}
+function away(a){return !!a.mv&&a.mv.kind!=='stretch';}
+/* Work has arrived (or the run ended badly): drop the activity and hurry back
+   the way the agent came. The state itself has already changed. */
+function recall(a){
+  var m=a.mv;if(!m)return;
+  if(m.kind==='stretch'){a.mv=null;return;}
+  if(m.phase==='go'){m.path=m.route.slice(0,m.i).reverse();m.i=0;}
+  else if(m.phase==='at'){m.path=m.route.slice(0,-1).reverse();m.i=0;}
+  m.phase='back';m.rush=true;
+}
+function stepAct(a,dt){
+  var m=a.mv;
+  if(a.state!=='idle'&&!(m.phase==='back'&&m.rush)){recall(a);m=a.mv;if(!m)return;}
+  if(m.phase==='at'){
+    if(simT<m.until)return;
+    if(m.kind==='stretch'){a.mv=null;return;}
+    m.path=m.route.slice(0,-1).reverse();m.i=0;m.phase='back';m.cup=m.kind==='coffee';
+    return;
+  }
+  var left=(m.rush?RUSH:WALK)*dt;
+  while(left>0&&m.i<m.path.length){
+    var p=m.path[m.i],dx=p.x-a.x,dy=p.y-a.y,d=Math.sqrt(dx*dx+dy*dy);
+    if(d<=left){a.x=p.x;a.y=p.y;left-=d;m.i++;}
+    else {a.x+=dx/d*left;a.y+=dy/d*left;m.dy=dy;left=0;}
+  }
+  if(m.i<m.path.length)return;
+  if(m.phase==='go'){m.phase='at';m.until=simT+SPOT[m.kind].ms;}
+  else a.mv=null;
+}
+/* While paused nothing walks, but live data still arrives: an agent caught
+   away from its seat when work comes in is put straight back, so a paused
+   (or reduced-motion) page never shows a working agent somewhere else. */
+function settle(){
+  ORDER.forEach(function(id){var a=A[id];if(a.mv&&a.state!=='idle')placeInitial(a);});
+}
+/* Called every tick. A finished task earns a coffee run; after that, one
+   seated idle agent at a time wanders off for something else. */
+function idleLife(dt){
+  var free=[];
+  ORDER.forEach(function(id){
+    var a=A[id];if(!ROAM[id])return;
+    if(a.mv){stepAct(a,dt);return;}
+    if(a.state!=='idle'){a.want=false;return;}
+    if(a.want){a.want=false;startAct(a,'coffee');return;}
+    free.push(a);
+  });
+  if(simT<nextIdleAt)return;
+  nextIdleAt=simT+6000+Math.random()*6000;
+  var busy=ORDER.some(function(id){return !!A[id].mv;});
+  if(busy||!free.length)return;
+  startAct(free[(Math.random()*free.length)|0],IDLE_KINDS[(Math.random()*IDLE_KINDS.length)|0]);
+}
 
 /* ====== simulation time ====== */
 function wait(ms){
@@ -129,6 +212,8 @@ function say(a,text,tone,ttl){
 function setState(a,s,text,tone,ttl,extra){
   a=AG(a);
   if(a.id==='qa'&&s==='retrying')spawnBug();
+  /* Coming off a task (not merely staying idle): go and get a coffee. */
+  a.want=s==='idle'&&a.state!=='idle'&&!!ROAM[a.id];
   a.state=s;a.tone=tone||'';
   if(extra){
     if(extra.attempt!==undefined)a.attempt=extra.attempt;
@@ -217,7 +302,7 @@ function resetWorld(){
   epoch++;
   timers.forEach(function(t){t.rej(CANCEL);});timers=[];
   docs.forEach(function(d){if(d.el.parentNode)d.el.parentNode.removeChild(d.el);});docs.length=0;bugs.length=0;
-  outboxFlag=false;
+  outboxFlag=false;nextIdleAt=simT+4000;
   ORDER.forEach(function(id){
     var a=A[id];a.state=(id==='docs')?'offduty':'idle';a.tone='';
     a.bubble=null;a.checks=[0,0,0];a.attempt='';a.cost=0;a.hasCost=false;a.tokens=mock?0:null;a.activeMs=0;a.board=0;
@@ -385,25 +470,32 @@ function drawChar(a,T){
   var x=Math.round(a.x*K)/K,gy=Math.round(a.y*K)/K,y=gy;
   /* Off duty (Docs): slumped over the desk, asleep. */
   var asleep=st==='offduty';
+  /* Away from the seat on an idle activity: walking there or back, or standing at the spot. */
+  var m=a.mv,out=away(a),walking=out&&m.phase!=='at';
   /* Back to us while facing the screen; turned to the front when idle, done, or needing attention. */
   var back=a.id==='human'?(st!=='alert'):(asleep||!!BACKFACE[st]);
-  /* Seated, except while jumping to celebrate. sd: how far the body is lowered. */
-  var sit=st!=='celebrating',sd=sit?2:0;
-  if(st==='celebrating')y-=Math.abs(Math.sin(T*9))*4;
-  if(st==='error')x+=(((T*14)|0)%2?1:-1);
+  if(out)back=walking?m.dy<0:true;        /* walking up the room, or facing the counter/board/shelf */
+  /* Seated, except while jumping to celebrate or away from the seat. sd: how far the body is lowered. */
+  var sit=st!=='celebrating'&&!out,sd=sit?2:0;
+  if(st==='celebrating'&&!out)y-=Math.abs(Math.sin(T*9))*4;
+  if(st==='error'&&!out)x+=(((T*14)|0)%2?1:-1);
   y=Math.round(y*K)/K;
   function P(dx,dy,w,h,c){R(g,x+dx*cs,y+dy*cs,w*cs,h*cs,c);}
   R(g,x-4*cs,gy-1*cs,8*cs,2*cs,SHADOW);
   /* chair: backrest behind the body when facing front */
   if(sit&&!back){P(-5,-11,10,9,'#3a3f5e');P(-5,-11,10,1,'#4d5282');}
-  P(-3,-4,3,4,'#2a3050');P(0,-4,3,4,'#2a3050');
-  P(-3,-1,3,1,'#15172b');P(0,-1,3,1,'#15172b');
+  var l1=walking&&f?1:0,l2=walking&&!f?1:0;   /* walking: the legs take turns lifting */
+  P(-3,-4,3,4-l1,'#2a3050');P(0,-4,3,4-l2,'#2a3050');
+  P(-3,-1-l1,3,1,'#15172b');P(0,-1-l2,3,1,'#15172b');
   y+=sd*cs;
   P(-4,-10,8,6,d.color);P(-4,-5,8,1,'rgba(0,0,0,.15)');
   var sk=d.skin,sl=d.color,pose='down';
   /* Idle: sips coffee roughly every 3 seconds; the phase is shifted per agent so they are not in sync. */
   var sip=((T+a.def.name.length*.7)%3.2)<.9;
-  if(st==='celebrating')pose='up';
+  if(walking)pose='walk';
+  else if(out)pose=m.kind==='coffee'?'type':'reach';
+  else if(m&&m.kind==='stretch'&&st==='idle')pose='stretch';
+  else if(st==='celebrating')pose='up';
   else if(st==='error')pose='head';
   else if(st==='blocked'||(a.id==='human'&&st==='alert'))pose='wave';
   else if(st==='retrying')pose='scratch';
@@ -417,6 +509,13 @@ function drawChar(a,T){
   else if(pose==='wave'){P(-5,-10,1,4,sl);P(-5,-6,1,1,sk);var wv=f?0:1;P(4,-14+wv,1,5,sl);P(4,-15+wv,1,1,sk);}
   else if(pose==='scratch'){P(-5,-10,1,4,sl);P(-5,-6,1,1,sk);P(4,-13,1,4,sl);P(3,-14,2,1,sk);P(-6,-14+(((T*4)|0)%2),1,2,'#7fd8ff');}
   else if(pose==='sleep'){P(-5,-12,1,3,sl);P(4,-12,1,3,sl);P(-5,-13,1,1,sk);P(4,-13,1,1,sk);}   /* arms folded on the desk */
+  else if(pose==='walk'){
+    P(-5,-10,1,4-f,sl);P(-5,-6-f,1,1,sk);
+    if(m.cup){P(4,-10,1,3,sl);P(4,-7,1,1,sk);}       /* carrying the fresh cup back */
+    else {P(4,-10,1,3+f,sl);P(4,-7+f,1,1,sk);}
+  }
+  else if(pose==='reach'){P(-5,-10,1,4,sl);P(-5,-6,1,1,sk);var rc=((T*2)|0)%2;P(4,-14+rc,1,5,sl);P(4,-15+rc,1,1,sk);}
+  else if(pose==='stretch'){var sx=((T*2)|0)%2;P(-5-sx,-13,1,4,sl);P(-5-sx,-14,1,1,sk);P(4+sx,-13,1,4,sl);P(4+sx,-14,1,1,sk);}
   else if(pose==='coffee'){
     P(-5,-10,1,4,sl);P(-5,-6,1,1,sk);
     if(sip){P(4,-12,1,3,sl);P(3,-12,1,1,sk);}       /* arm raised, cup at the mouth */
@@ -430,6 +529,7 @@ function drawChar(a,T){
     if(st==='celebrating'||st==='error'||st==='blocked')P(-1,hy+5,2,1,'#7a2a2a');
   }
   accessory(a,P,hy,back);
+  if(pose==='walk'&&m.cup&&!back){P(4,-8,2,2,'#fff');P(6,-8,1,1,'#fff');}
   if(pose==='coffee'){
     if(sip){P(1,-12,2,2,'#fff');P(1,-12,2,1,'#e8e9f0');}
     else {P(4,-8,2,2,'#fff');P(6,-8,1,1,'#fff');if(((T*2)|0)%2)P(5,-11,1,1,'rgba(255,255,255,.8)');}
@@ -456,6 +556,11 @@ function render(){
   for(var k=0;k<3;k++){var ph=((T*.8+k*.33)%1);R(g,COUNTER.x+9+Math.round(Math.sin(ph*6+k)*2),COUNTER.y-14-Math.round(ph*12),1,1,'rgba(255,255,255,.75)');}
   if(outboxFlag){R(g,PRBOX.x+59,PRBOX.y,1,22,'#2b2b2b');R(g,PRBOX.x+60,PRBOX.y,8,5,'#e5493a');}
   ORDER.forEach(function(id){drawDesk(id,T);});
+  /* the chair left behind by whoever is away from their seat */
+  ORDER.forEach(function(id){
+    if(!away(A[id]))return;
+    var s=ST[id];R(g,s.cx-4.5,s.fy-10.5,9,9,'#3a3f5e');R(g,s.cx-4.5,s.fy-10.5,9,1.5,'#4d5282');
+  });
   var sa=A[selected];R(g,sa.x-9,sa.y+1.5,18,1,'#5b4bdb');R(g,sa.x-7,sa.y+3,14,1,'#5b4bdb');
   ORDER.map(function(id){return A[id];}).sort(function(p,q){return p.y-q.y;}).forEach(function(a){drawChar(a,T);});
   bugs=bugs.filter(function(b){return simT<b.until;});
@@ -548,7 +653,11 @@ document.querySelector('.tabs').addEventListener('keydown',function(ev){
   showTab(toLog?'log':'ag');$(toLog?'#tab-log':'#tab-ag').focus();ev.preventDefault();
 });
 function select(id,explicit){selected=id;if(explicit)showTab('ag');updatePanel();}
-function stLabel(a){ if(a.id==='human'&&a.state==='idle')return 'Waiting for PR'; return STATE_LABEL[a.state]||a.state; }
+function stLabel(a){
+  if(a.id==='human'&&a.state==='idle')return 'Waiting for PR';
+  if(a.state==='idle'&&a.mv)return ACT_LABEL[a.mv.kind];
+  return STATE_LABEL[a.state]||a.state;
+}
 function fmtDur(ms){return Math.round(ms/1000)+' s';}
 function money(a){ if(mock)return '$'+a.cost.toFixed(3); return a.hasCost?'$'+a.cost.toFixed(4):'not available yet'; }
 function updatePanel(){
@@ -610,13 +719,14 @@ function advance(dt){
       if(a.id==='planner'&&a.state==='planning')a.board=Math.min(7,a.board+dt*1.1);
     }
   });
+  idleLife(dt);
   var due=timers.filter(function(t){return t.at<=simT;});
   if(due.length){timers=timers.filter(function(t){return t.at>simT;});due.forEach(function(t){t.ok();});}
 }
 var last=performance.now(),lastPanel=0;
 function frame(now){
   var dt=Math.min(.1,(now-last)/1000);last=now;
-  if(!paused)advance(dt*speed);
+  if(!paused)advance(dt*speed); else settle();
   render();
   if(now-lastPanel>200){lastPanel=now;updatePanel();}
   requestAnimationFrame(frame);

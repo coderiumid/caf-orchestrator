@@ -148,7 +148,7 @@ describe('Agent Floor static files', () => {
     expect(human.cx).toBeGreaterThan(columns[2]);
   });
 
-  it('agents stay seated: typing while working, coffee while idle, Docs asleep at its own desk', () => {
+  it('agents work seated: typing while working, coffee while idle, Docs asleep at its own desk', () => {
     const render = read('render.js');
     expect(render).toContain("else if(WORKING[st])pose='type';");
     expect(render).toContain("else if(st==='idle'&&a.id!=='human')pose='coffee';");
@@ -156,6 +156,15 @@ describe('Agent Floor static files', () => {
     // Every seat, Docs included, gets a desk.
     expect(render).toContain('ORDER.forEach(function(id){drawDesk(id,T);});');
     expect(render).not.toContain('LOUNGE');
+    // Idle activities: only the five pipeline agents roam; Manager and Docs keep their place.
+    expect(render).toContain('var ROAM={planner:1,backend:1,frontend:1,qa:1,reviewer:1};');
+    // Finishing a task (a real change to idle, not staying idle) earns the coffee run.
+    expect(render).toContain("a.want=s==='idle'&&a.state!=='idle'&&!!ROAM[a.id];");
+    // Any non-idle state recalls the agent at the faster pace; the state itself is never delayed.
+    expect(render).toContain("if(a.state!=='idle'&&!(m.phase==='back'&&m.rush)){recall(a);");
+    expect(render).toMatch(/var WALK=(\d+),RUSH=(\d+);/);
+    const [, walk, rush] = render.match(/var WALK=(\d+),RUSH=(\d+);/)!;
+    expect(+rush).toBeGreaterThan(+walk * 2);
     // Docs is never given a working pose or state by the page itself.
     expect(render).toContain("a.state=(id==='docs')?'offduty':'idle'");
     expect(render).toContain("say(A.docs,'zZ','mute')");
@@ -225,9 +234,12 @@ describe('Agent Floor static files', () => {
     it('honours prefers-reduced-motion: starts paused, CSS animations off, and no state depends on movement', () => {
       const render = read('render.js');
       expect(render).toContain("matchMedia('(prefers-reduced-motion: reduce)')");
-      // Agents never walk: each has one fixed seat, so a paused page still shows the true state.
-      expect(render).toContain('function placeInitial(a){a.x=ST[a.id].cx;a.y=ST[a.id].fy;}');
-      expect(render).not.toMatch(/goTo\(|stepAgent|PANTRY/);
+      // Work only ever shows at the fixed seat. Walking is idle-only decoration that runs on
+      // simulation time, so a paused page never starts one, and an agent caught mid-walk when
+      // work arrives is put straight back in its seat.
+      expect(render).toContain('function placeInitial(a){a.x=ST[a.id].cx;a.y=ST[a.id].fy;a.mv=null;a.want=false;}');
+      expect(render).toContain("ORDER.forEach(function(id){var a=A[id];if(a.mv&&a.state!=='idle')placeInitial(a);});");
+      expect(render).toContain('if(!paused)advance(dt*speed); else settle();');
       expect(readDs()).toMatch(/@media \(prefers-reduced-motion:reduce\)\{[^}]*animation:none/);
       // Live data must keep arriving while paused: the live gap waits on real time, not simulation time.
       expect(read('adapter.js')).toContain('item.live?realDelay(item.delay):AF.wait(item.delay)');
