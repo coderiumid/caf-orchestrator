@@ -403,8 +403,9 @@ export async function webhookRoutes(app: FastifyInstance): Promise<void> {
     // ai-agent/{ticketKey} branch already exists (from an earlier gate
     // exhaustion) is a resume, not a new ticket — route it through the exact
     // same isRetry/retryContext/checkAndConsumeRetryBudget path as Task 4's
-    // /caf-retry-pipeline, sharing its counter and its NOT-gate-aware
-    // (full-restart) resume behavior. See CLAUDE.md's "/caf-retry-pipeline
+    // /caf-retry-pipeline, sharing its counter and its gate-aware resume
+    // behavior (planner skipped, implementation re-run with the failed
+    // gate's artifact as context). See CLAUDE.md's "/caf-retry-pipeline
     // resume" section.
     const { owner: ghOwner, repo: ghRepo } = parseGithubRepo(projectConfig.repoCloneUrl);
     const retryBranch = `ai-agent/${payload.data.identifier}`;

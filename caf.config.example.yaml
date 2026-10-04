@@ -68,6 +68,7 @@ queue:
   jobTtlSeconds: 86400
   maxJobsRetained: 100
   # BullMQ job-level retry (full pipeline re-run from clone, no step-resume).
+  # Defaults to 3 if omitted.
   jobAttempts: 2
   backoffDelayMs: 10000
   # Concurrent Claude Code agent processes per worker.
