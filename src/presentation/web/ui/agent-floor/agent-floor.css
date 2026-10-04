@@ -73,6 +73,8 @@ h1{font:600 26px/1 'Pixelify Sans',monospace;margin:0;white-space:nowrap}
 .bub::after{content:"";position:absolute;left:50%;top:100%;width:max(3px,calc(var(--u)*2));height:max(3px,calc(var(--u)*2));background:#15172b;transform:translateX(-50%)}
 .bub[hidden]{display:none}
 .t-ok{background:#d6f6e0}.t-bad{background:#ffd9d4}.t-warn{background:#fff0c4}.t-mute{background:#e8e8ef;color:#5a5d70}
+/* the sleeper's zZ floats beside the head, not over the monitor */
+.bub.t-mute{left:calc(var(--u)*17);bottom:calc(var(--u)*24)}.bub.t-mute::after{display:none}
 .tag{position:absolute;left:0;top:calc(var(--u)*2);transform:translateX(-50%);white-space:nowrap;
   font:600 max(9px,calc(var(--u)*3.6))/1 'Pixelify Sans',monospace;color:#fff;background:rgba(20,22,40,.85);padding:calc(var(--u)*.7) calc(var(--u)*1.6)}
 .docl{position:absolute;transform:translate(-50%,0);white-space:nowrap;z-index:1;

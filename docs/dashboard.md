@@ -141,10 +141,10 @@ seconds), so a ten-minute run replays in well under a minute. Pausing does not
 hold back live data: new events still arrive and are shown.
 
 The office is a single open-plan room: a pod of six desks close together
-(Planner, Backend, Frontend in front; QA, Reviewer, and Ganjar behind them),
-a lounge corner, and the PR box. Characters never walk. Each agent has a
-fixed seat — its own desk, or the lounge sofa for Docs — and only its pose
-and screen change. (The approved
+(Planner, Backend, Frontend in front; QA, Docs, and Reviewer behind them),
+the PR gate with the PR box and the Manager's desk, and a meeting corner.
+Characters never walk. Each agent has a fixed seat at its own desk, and only
+its pose and screen change. (The approved
 prototype had agents walking between the pantry and their desks; with real
 data, states often change faster than a walk takes, so the character was
 still on its way when the state had already moved on.)
@@ -161,10 +161,10 @@ is kept in the URL (`?repo=`).
 | Typing at the desk, back turned | That agent's process is running (plan, implement, QA, or review). |
 | Scratching head (and, for QA, a bug in the QA lab) | A QA or Reviewer gate rejected the work and the implementation agents are re-run. The bubble shows the gate's own counter and limit (`retry 1/1`), from `agents.qa.maxRetries` / `agents.reviewer.maxRetries`. |
 | Flying document | A report handed from one agent to the next (see "Handoffs" below). |
-| Raised hand, red screen, red lamp on Ganjar's desk | `NEEDS_HUMAN`. |
+| Raised hand, red screen, red lamp on the Manager's desk | `NEEDS_HUMAN`. |
 | Small flame | The agent's process failed (`FAILED`, `KILLED`, or `TIMEOUT`); the run is `ERROR` and BullMQ may retry the job. |
-| Green lamp on Ganjar's desk | `SUCCESS`; a PR is waiting for human review. |
-| Docs asleep on the lounge sofa, greyed out | Always. See below. |
+| Green lamp on the Manager's desk | `SUCCESS`; a PR is waiting for human review. |
+| Docs asleep at its desk, head down | Always. See below. |
 
 **Docs (`caf-documentation`) is always off duty, on purpose.** The pipeline
 does not record events for that agent (it has no PIV phase), so the page has
@@ -211,7 +211,7 @@ Response: `{ run, events, nextCursor }`. Every event has `cursor`, `runId`,
 | `handoff` | `from`, `to` (an agent, `human`, or `outbox`), `file` | Flying document. |
 | `step` | `step` (`plan`/`impl`/`qa`/`review`/`pr`), `status` (`active`/`pass`/`fail`), `note`, and `prNumber` on the `pr` step | Step list. |
 | `usage` | `agent`, `costUsd`, `tokens` (always `null` for now), `durationMs` | "Agent details" panel. |
-| `run_finished` | `finalStatus`, `gate`, `superseded` | Status pill and Ganjar's lamp. |
+| `run_finished` | `finalStatus`, `gate`, `superseded` | Status pill and the Manager's lamp. |
 
 Agent states: `idle`, `planning`, `implementing`, `verifying`, `retrying`,
 `reviewing`, `celebrating`, `blocked`, `error`, `offduty`.

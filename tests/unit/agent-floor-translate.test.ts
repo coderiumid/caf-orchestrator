@@ -68,7 +68,7 @@ describe('translate', () => {
 
   it('blocked and error use the blocked/error states with the gate or outcome named', () => {
     expect(translate({ ...base, type: 'agent_state', agent: 'backend', state: 'blocked', gate: 'implementation' })).toEqual([
-      ['setState', 'backend', 'blocked', 'Need Ganjar', 'bad'],
+      ['setState', 'backend', 'blocked', 'Need Manager', 'bad'],
       ['log', 'bad', 'Backend: NEEDS_HUMAN at the implementation gate', 0],
     ]);
     expect(translate({ ...base, type: 'agent_state', agent: 'backend', state: 'error', outcome: 'TIMEOUT' })[0]).toEqual([

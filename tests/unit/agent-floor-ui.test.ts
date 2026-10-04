@@ -131,30 +131,56 @@ describe('Agent Floor static files', () => {
     // No per-room zones any more: one ROOM, and every seat defined in one table.
     expect(render).not.toContain('ZONES');
     expect(render).toContain('var ROOM={');
-    const seats = [...render.matchAll(/^ (\w+):\{cx:(\d+),fy:(\d+)\},?$/gm)].map((m) => ({ id: m[1], cx: +m[2], fy: +m[3] }));
+    const seats = [...render.matchAll(/^\s+(\w+):\{cx:(\d+),fy:(\d+)\},?$/gm)].map((m) => ({ id: m[1], cx: +m[2], fy: +m[3] }));
     expect(seats.map((s) => s.id).sort()).toEqual(['backend', 'docs', 'frontend', 'human', 'planner', 'qa', 'reviewer']);
 
-    const desks = seats.filter((s) => s.id !== 'docs');
+    const desks = seats.filter((s) => s.id !== 'human');
     const rows = [...new Set(desks.map((d) => d.fy))];
     const columns = [...new Set(desks.map((d) => d.cx))].sort((a, b) => a - b);
+    expect(desks).toHaveLength(6);
     expect(rows).toHaveLength(2);
     expect(columns).toHaveLength(3);
-    // Desks are 36 wide; neighbours sit less than half a desk apart.
     expect(columns[1] - columns[0]).toBe(columns[2] - columns[1]);
-    expect(columns[1] - columns[0] - 36).toBeLessThan(18);
-    // Ganjar shares the pod with the agents.
-    const human = desks.find((d) => d.id === 'human')!;
-    expect(rows).toContain(human.fy);
-    expect(columns).toContain(human.cx);
+    // The Manager sits at the PR gate, outside the workspace pod.
+    const human = seats.find((d) => d.id === 'human')!;
+    expect(human.cx).toBeGreaterThan(columns[2]);
   });
 
-  it('agents stay seated: typing while working, coffee while idle, Docs on the lounge sofa without a desk', () => {
+  it('agents stay seated: typing while working, coffee while idle, Docs asleep at its own desk', () => {
     const render = read('render.js');
     expect(render).toContain("else if(WORKING[st])pose='type';");
     expect(render).toContain("else if(st==='idle'&&a.id!=='human')pose='coffee';");
-    expect(render).toContain("ORDER.forEach(function(id){if(id!=='docs')drawDesk(id,T);});");
+    expect(render).toContain("else if(asleep)pose='sleep';");
+    // Every seat, Docs included, gets a desk.
+    expect(render).toContain('ORDER.forEach(function(id){drawDesk(id,T);});');
+    expect(render).not.toContain('LOUNGE');
     // Docs is never given a working pose or state by the page itself.
     expect(render).toContain("a.state=(id==='docs')?'offduty':'idle'");
+    expect(render).toContain("say(A.docs,'zZ','mute')");
+  });
+
+  it('decor is anchored: every plant stands clear of the rugs and inside the room', () => {
+    const render = read('render.js');
+    const rect = (name: string) => {
+      const m = render.match(new RegExp(`var ${name}=\\{x:(\\d+),y:(\\d+),w:(\\d+),h:(\\d+)`))!;
+      return { x: +m[1], y: +m[2], w: +m[3], h: +m[4] };
+    };
+    const height = +render.match(/var W=\d+,H=(\d+)/)![1];
+    const rm = render.match(/var ROOM=\{x:(\d+),y:(\d+),w:(\d+),h:H-(\d+)/)!;
+    const room = { x: +rm[1], y: +rm[2], w: +rm[3], h: height - +rm[4] };
+    const rugs = ['RUG', 'GATE', 'MEET'].map(rect);
+    const plants = JSON.parse(render.match(/var DECOR_PLANTS=(\[.*\]);/)![1]) as [number, number][];
+    expect(plants.length).toBeGreaterThan(0);
+    // A plant is drawn 12 wide and 18 tall from its top-left corner.
+    for (const [x, y] of plants) {
+      expect(x).toBeGreaterThanOrEqual(room.x);
+      expect(x + 12).toBeLessThanOrEqual(room.x + room.w);
+      expect(y + 18).toBeLessThanOrEqual(room.y + room.h);
+      for (const r of rugs) {
+        const overlaps = x < r.x + r.w && x + 12 > r.x && y < r.y + r.h && y + 18 > r.y;
+        expect(overlaps, `plant ${x},${y}`).toBe(false);
+      }
+    }
   });
 
   it('the page is in English: declared language, and no Indonesian UI text left in any file', () => {

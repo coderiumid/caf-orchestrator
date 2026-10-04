@@ -103,7 +103,7 @@ async function pipeline(sc){
     var ok=await implStage(a,spec);
     if(!ok){
       log('bad',NAME(a)+': Status: NEEDS_HUMAN, pipeline stopped');
-      setState(a,'blocked','Need Ganjar','bad');
+      setState(a,'blocked','Need Manager','bad');
       step('impl','fail','NEEDS_HUMAN');
       await wait(900);
       await sendDoc(a,'human','verify-report.md');

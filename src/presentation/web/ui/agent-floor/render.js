@@ -19,7 +19,7 @@
 (function(){
 'use strict';
 /* ====== world constants ====== */
-var W=400,H=300,CS=1.5;
+var W=400,H=320,CS=1.5;
 var K=2;
 var CANCEL={cancel:true};
 var $=function(s){return document.querySelector(s)};
@@ -36,30 +36,32 @@ var STATE_LABEL={idle:'Idle',planning:'Planning',implementing:'Implementing',ver
 /* One open-plan room. Everything that is drawn in two places (once into the
    static background, once per frame for its animated part) takes its
    position from here. */
-var ROOM={x:8,y:8,w:384,h:284,wall:40};
-var RUG={x:46,y:72,w:144,h:144};          /* under the desk pod */
-var GATE={x:284,y:96,w:100,h:96};         /* PR gate: the PR box and Ganjar's desk */
-var LOUNGE={x:276,y:206,w:108,h:78};      /* rug under the sofa, bottom-right corner */
-var BOARD={x:13,y:10};                    /* planning whiteboard */
-var RACK={x:156,y:16};                    /* server rack */
-var COUNTER={x:290,y:42};                 /* coffee counter */
-var PRBOX={x:306,y:104};                  /* where finished work goes */
-var SHELF={x:12,y:244};                   /* bookshelf */
-var TABLE={x:150,y:248};                  /* meeting table */
-var LABELS=[['Workspace',48,207],['PR gate',286,183],['Lounge',278,275]];
-/* The five agents' desks sit close together in one pod, all facing the back
-   wall: Planner, Backend, Frontend in front; QA and Reviewer behind them.
-   Ganjar is not part of the pod: his desk is at the PR gate, facing the PR
-   box, because that is where every run ends up. Docs has no desk: it is on
-   the lounge sofa. */
+var ROOM={x:8,y:8,w:384,h:H-16,wall:40};
+/* The two main rugs share their top and bottom edges. */
+var RUG={x:46,y:80,w:144,h:136};          /* under the desk pod */
+var GATE={x:284,y:80,w:100,h:136};        /* PR gate: the PR box and Manager's desk */
+var MEET={x:284,y:232,w:100,h:64};        /* meeting corner, below the PR gate */
+var BOARD={x:16,y:12};                    /* planning whiteboard */
+var COUNTER={x:286,y:48};                 /* coffee counter */
+var PRBOX={x:306,y:92};                   /* where finished work goes */
+/* Below the pod, inside the rug's left and right edges: bookshelf, server racks. */
+var SHELF={x:46,y:266};
+var RACKS=[{x:152,y:262},{x:172,y:262}];
+var TABLE={x:292,y:256};                  /* meeting table */
+/* Plants stand in the room's corners or against furniture, never on open floor. */
+var DECOR_PLANTS=[[14,54],[374,54],[94,280],[136,280],[266,82],[266,278]];
+var LABELS=[['Workspace',48,207],['PR gate',286,207],['Meeting',286,287]];
+var SHADOW='rgba(0,0,0,.18)';             /* strip on the floor under every piece of furniture */
+/* The agents' desks sit close together in one workspace, with Manager at the
+   PR gate facing the PR box. Docs shares the workspace but remains off duty. */
 var ST={
- planner:{cx:72,fy:116},
- backend:{cx:118,fy:116},
- frontend:{cx:164,fy:116},
- qa:{cx:95,fy:190},
- reviewer:{cx:141,fy:190},
- human:{cx:330,fy:176},
- docs:{cx:330,fy:240}
+ planner:{cx:72,fy:124},
+ backend:{cx:118,fy:124},
+ frontend:{cx:164,fy:124},
+ qa:{cx:72,fy:188},
+ reviewer:{cx:164,fy:188},
+ human:{cx:330,fy:188},
+ docs:{cx:118,fy:188}
 };
 var OUTBOX={x:PRBOX.x+28,y:PRBOX.y+10};
 
@@ -103,10 +105,8 @@ function AG(a){return typeof a==='string'?A[a]:a;}
 ORDER.forEach(function(id){
   A[id]={id:id,def:DEF[id],x:0,y:0,state:'idle',tone:'',bubble:null,checks:[0,0,0],attempt:'',cost:0,hasCost:false,tokens:null,activeMs:0,board:0,_bk:''};
 });
-/* Every agent has a fixed place and never moves: the five agents and Ganjar
-   at their own desks, Docs on the lounge sofa. State shows only through pose
-   and screen, so a state change stays readable however fast it comes (there
-   is no walk that has to finish first). */
+/* Every agent has a fixed place and never moves. State shows only through
+   pose and screen, so a state change stays readable however fast it comes. */
 function placeInitial(a){a.x=ST[a.id].cx;a.y=ST[a.id].fy;}
 
 /* ====== simulation time ====== */
@@ -232,6 +232,7 @@ function resetWorld(){
 function plant(g,x,y){
   var s=1.5;
   function P(dx,dy,w,h,c){R(g,x+dx*s,y+dy*s,w*s,h*s,c);}
+  R(g,x+1.5,y+18,9,2,SHADOW);
   P(2,7,4,5,'#a35f3a');P(1,6,6,2,'#b87245');
   P(3,0,2,7,'#2f8f4e');P(0,2,4,3,'#3fae60');P(4,1,4,3,'#3fae60');
 }
@@ -244,11 +245,11 @@ function buildBG(){
   bgc=document.createElement('canvas');bgc.width=cv.width;bgc.height=cv.height;
   var g=bgc.getContext('2d'),rm=ROOM,x,i;
   R(g,0,0,W,H,'#252740');
-  /* floor, then the rugs that mark the desk pod, the PR gate, and the lounge */
+  /* floor, then the rugs that mark the desk pod, the PR gate, and the meeting corner */
   tiles(g,{x:rm.x,y:rm.y+rm.wall,w:rm.w,h:rm.h-rm.wall-4},'#ebe6da','#e2dccd');
   R(g,RUG.x-1,RUG.y-1,RUG.w+2,RUG.h+2,'#bfc7e6');tiles(g,RUG,'#dde2f5','#d3d9f0');
   R(g,GATE.x-1,GATE.y-1,GATE.w+2,GATE.h+2,'#d8cf97');tiles(g,GATE,'#f7f0c6','#ede4ad');
-  R(g,LOUNGE.x-1,LOUNGE.y-1,LOUNGE.w+2,LOUNGE.h+2,'#d3c2a6');tiles(g,LOUNGE,'#eadfce','#e2d5c1');
+  R(g,MEET.x-1,MEET.y-1,MEET.w+2,MEET.h+2,'#b5cdb9');tiles(g,MEET,'#e3f0e4','#d8e8da');
   /* back wall with panel seams, and the strip along the bottom edge */
   R(g,rm.x,rm.y,rm.w,rm.wall,'#3a3e66');R(g,rm.x,rm.y,rm.w,3,'#4d5282');
   for(x=rm.x+16;x<rm.x+rm.w;x+=16)R(g,x,rm.y+3,1,rm.wall-5,'#33375c');
@@ -263,44 +264,44 @@ function buildBG(){
   /* QA poster */
   R(g,120,11,20,22,'#f4f5f9');
   for(i=0;i<4;i++){R(g,123,15+i*5,3,3,'#36a35b');R(g,128,16+i*5,9,1,'#9aa0b8');}
-  /* server rack */
-  R(g,RACK.x,RACK.y,18,36,'#2a2e48');R(g,RACK.x+1,RACK.y+1,16,34,'#363b5c');
-  for(i=0;i<5;i++)R(g,RACK.x+2,RACK.y+3+i*7,14,5,'#1d2036');
-  R(g,RACK.x,RACK.y+36,18,2,'rgba(0,0,0,.18)');
   /* window */
   R(g,190,13,52,25,'#8b8fa8');R(g,192,15,48,21,'#a9d6f5');R(g,192,15,48,7,'#c6e6fb');
   R(g,215,15,2,21,'#8b8fa8');R(g,192,25,48,1,'#8b8fa8');R(g,188,38,56,2,'#c2c5d6');
   /* fridge */
   R(g,262,20,18,36,'#dfe3ee');R(g,262,20,18,1,'#f4f5f9');R(g,262,34,18,1,'#aeb2ca');R(g,277,24,1,7,'#8b8fa8');R(g,277,38,1,10,'#8b8fa8');
-  R(g,262,56,18,2,'rgba(0,0,0,.18)');
+  R(g,262,56,18,2,SHADOW);
   /* coffee counter: machine and cups */
+  R(g,COUNTER.x,COUNTER.y+18,50,2,SHADOW);
   R(g,COUNTER.x,COUNTER.y,50,18,'#8b7355');R(g,COUNTER.x,COUNTER.y,50,5,'#cdbb9c');
   R(g,COUNTER.x+4,COUNTER.y-12,10,12,'#b3392e');R(g,COUNTER.x+6,COUNTER.y-9,6,3,'#2a2e48');
   R(g,COUNTER.x+22,COUNTER.y-3,3,3,'#fff');R(g,COUNTER.x+27,COUNTER.y-3,3,3,'#fff');R(g,COUNTER.x+36,COUNTER.y-5,8,5,'#6e4a2c');
   /* wall clock */
   R(g,354,15,12,12,'#8b8fa8');R(g,355,16,10,10,'#f4f5f9');R(g,360,18,1,4,'#20243a');R(g,360,21,3,1,'#20243a');
-  /* lounge: sofa (where Docs sits) and coffee table */
-  var sx=ST.docs.cx-30,sy=ST.docs.fy-24;
-  R(g,sx,sy,60,26,'#6b5ca8');R(g,sx+2,sy,56,7,'#7a6bc0');R(g,sx+3,sy+7,54,15,'#8a7bd0');
-  R(g,sx,sy+6,5,20,'#5a4c96');R(g,sx+55,sy+6,5,20,'#5a4c96');
-  R(g,sx+10,sy+36,40,12,'#8c5e3a');R(g,sx+10,sy+36,40,2,'#d3a173');R(g,sx+12,sy+48,3,5,'#6e4a2c');R(g,sx+45,sy+48,3,5,'#6e4a2c');
-  R(g,sx+18,sy+33,4,4,'#fff');R(g,sx+36,sy+32,7,5,'#e8e9f0');R(g,sx+37,sy+33,5,1,'#9aa0b8');
   /* bookshelf */
+  R(g,SHELF.x,SHELF.y+32,44,2,SHADOW);
   R(g,SHELF.x,SHELF.y,44,32,'#6e4a2c');
   var bk=['#d9534f','#3f7de0','#36a35b','#f2c230','#7a5af0'];
   for(var sh=0;sh<3;sh++){
     R(g,SHELF.x+2,SHELF.y+2+sh*10,40,8,'#8a6038');
     for(var b=0;b<9;b++)R(g,SHELF.x+3+b*4.3,SHELF.y+3+sh*10,3,7,bk[(b+sh*2)%5]);
   }
+  /* server racks; their lamps are drawn per frame in render() */
+  RACKS.forEach(function(r){
+    R(g,r.x,r.y,18,36,'#2a2e48');R(g,r.x+1,r.y+1,16,34,'#363b5c');
+    for(i=0;i<5;i++)R(g,r.x+2,r.y+3+i*7,14,5,'#1d2036');
+    R(g,r.x,r.y+36,18,2,SHADOW);
+  });
   /* meeting table with stools on both sides */
   for(i=0;i<3;i++){R(g,TABLE.x+10+i*26,TABLE.y-8,10,6,'#4d5282');R(g,TABLE.x+10+i*26,TABLE.y+18,10,6,'#4d5282');}
+  R(g,TABLE.x,TABLE.y+16,84,2,SHADOW);
   R(g,TABLE.x,TABLE.y,84,16,'#d3a173');R(g,TABLE.x,TABLE.y,84,1,'#e4bc92');R(g,TABLE.x,TABLE.y+14,84,2,'#8c5e3a');
   R(g,TABLE.x+34,TABLE.y+5,16,6,'#e8e9f0');R(g,TABLE.x+36,TABLE.y+7,12,1,'#9aa0b8');
   /* PR box */
+  R(g,PRBOX.x,PRBOX.y+26,56,2,SHADOW);
   R(g,PRBOX.x,PRBOX.y,56,26,'#7d6a42');R(g,PRBOX.x,PRBOX.y,56,4,'#a38d5a');
   R(g,PRBOX.x+18,PRBOX.y+10,20,3,'#1d1a10');R(g,PRBOX.x+4,PRBOX.y+17,48,5,'#cdbb82');
   /* plants */
-  [[22,92],[22,170],[244,52],[372,62],[66,262],[230,180]].forEach(function(p){plant(g,p[0],p[1]);});
+  DECOR_PLANTS.forEach(function(p){plant(g,p[0],p[1]);});
 }
 function fit(){
   DPR=window.devicePixelRatio||1;
@@ -361,6 +362,7 @@ function drawScreen(a,sx,sy,sw,sh,T){
 }
 function drawDesk(id,T){
   var s=ST[id],a=A[id],g=ctx,cx=s.cx,fy=s.fy;
+  R(g,cx-18,fy,36,2,SHADOW);
   R(g,cx-18,fy-24,36,14,'#d3a173');R(g,cx-18,fy-24,36,1,'#e4bc92');R(g,cx-18,fy-10,36,2,'#8c5e3a');
   R(g,cx-17,fy-8,3,8,'#8c5e3a');R(g,cx+14,fy-8,3,8,'#8c5e3a');
   R(g,cx-6,fy-19,12,2,'#e8e9f0');R(g,cx-6,fy-17,12,1,'#c2c5d6');
@@ -381,19 +383,19 @@ function drawChar(a,T){
   var g=ctx,d=a.def,st=a.state,cs=CS;
   var f=((T*8)|0)%2;
   var x=Math.round(a.x*K)/K,gy=Math.round(a.y*K)/K,y=gy;
-  var docs=a.id==='docs';
+  /* Off duty (Docs): slumped over the desk, asleep. */
+  var asleep=st==='offduty';
   /* Back to us while facing the screen; turned to the front when idle, done, or needing attention. */
-  var back=a.id==='human'?(st!=='alert'):(!docs&&!!BACKFACE[st]);
+  var back=a.id==='human'?(st!=='alert'):(asleep||!!BACKFACE[st]);
   /* Seated, except while jumping to celebrate. sd: how far the body is lowered. */
   var sit=st!=='celebrating',sd=sit?2:0;
   if(st==='celebrating')y-=Math.abs(Math.sin(T*9))*4;
   if(st==='error')x+=(((T*14)|0)%2?1:-1);
   y=Math.round(y*K)/K;
   function P(dx,dy,w,h,c){R(g,x+dx*cs,y+dy*cs,w*cs,h*cs,c);}
-  if(docs)g.globalAlpha=.55;
-  R(g,x-4*cs,gy-1*cs,8*cs,2*cs,'rgba(0,0,0,.18)');
+  R(g,x-4*cs,gy-1*cs,8*cs,2*cs,SHADOW);
   /* chair: backrest behind the body when facing front */
-  if(sit&&!docs&&!back){P(-5,-11,10,9,'#3a3f5e');P(-5,-11,10,1,'#4d5282');}
+  if(sit&&!back){P(-5,-11,10,9,'#3a3f5e');P(-5,-11,10,1,'#4d5282');}
   P(-3,-4,3,4,'#2a3050');P(0,-4,3,4,'#2a3050');
   P(-3,-1,3,1,'#15172b');P(0,-1,3,1,'#15172b');
   y+=sd*cs;
@@ -407,23 +409,24 @@ function drawChar(a,T){
   else if(st==='retrying')pose='scratch';
   else if(WORKING[st])pose='type';
   else if(st==='idle'&&a.id!=='human')pose='coffee';
+  else if(asleep)pose='sleep';
   if(pose==='down'){P(-5,-10,1,4,sl);P(-5,-6,1,1,sk);P(4,-10,1,4,sl);P(4,-6,1,1,sk);}
   else if(pose==='type'){P(-5,-10,1,3,sl);P(4,-10,1,3,sl);P(-5,-7+f,1,1,sk);P(4,-6-f,1,1,sk);}
   else if(pose==='up'){P(-5,-13,1,4,sl);P(-5,-14,1,1,sk);P(4,-13,1,4,sl);P(4,-14,1,1,sk);}
   else if(pose==='head'){P(-5,-11,1,3,sl);P(4,-11,1,3,sl);P(-4,-14,1,2,sk);P(3,-14,1,2,sk);}
   else if(pose==='wave'){P(-5,-10,1,4,sl);P(-5,-6,1,1,sk);var wv=f?0:1;P(4,-14+wv,1,5,sl);P(4,-15+wv,1,1,sk);}
   else if(pose==='scratch'){P(-5,-10,1,4,sl);P(-5,-6,1,1,sk);P(4,-13,1,4,sl);P(3,-14,2,1,sk);P(-6,-14+(((T*4)|0)%2),1,2,'#7fd8ff');}
+  else if(pose==='sleep'){P(-5,-12,1,3,sl);P(4,-12,1,3,sl);P(-5,-13,1,1,sk);P(4,-13,1,1,sk);}   /* arms folded on the desk */
   else if(pose==='coffee'){
     P(-5,-10,1,4,sl);P(-5,-6,1,1,sk);
     if(sip){P(4,-12,1,3,sl);P(3,-12,1,1,sk);}       /* arm raised, cup at the mouth */
     else {P(4,-10,1,3,sl);P(4,-7,1,1,sk);}           /* cup held in front of the chest */
   }
-  var hy=-16;
+  var hy=asleep?-14+(((T*.8)|0)%2):-16;   /* head down, rising and falling with each breath */
   if(back){P(-3,hy,6,6,d.hair);P(-2,hy+5,4,1,sk);}
   else {
     P(-3,hy,6,6,sk);P(-3,hy,6,2,d.hair);P(-3,hy+2,1,2,d.hair);P(2,hy+2,1,2,d.hair);
-    if(docs){P(-2,hy+3,2,1,'#15172b');P(1,hy+3,2,1,'#15172b');}   /* eyes closed: off duty */
-    else {P(-2,hy+3,1,1,'#15172b');P(1,hy+3,1,1,'#15172b');}
+    P(-2,hy+3,1,1,'#15172b');P(1,hy+3,1,1,'#15172b');
     if(st==='celebrating'||st==='error'||st==='blocked')P(-1,hy+5,2,1,'#7a2a2a');
   }
   accessory(a,P,hy,back);
@@ -432,7 +435,7 @@ function drawChar(a,T){
     else {P(4,-8,2,2,'#fff');P(6,-8,1,1,'#fff');if(((T*2)|0)%2)P(5,-11,1,1,'rgba(255,255,255,.8)');}
   }
   /* chair: backrest covers the back when turned away from us */
-  if(sit&&!docs&&back){P(-3,-9,6,6,'#3a3f5e');P(-3,-9,6,1,'#4d5282');}
+  if(sit&&back){P(-3,-9,6,6,'#3a3f5e');P(-3,-9,6,1,'#4d5282');}
   if(st==='error'){var ff=((T*10)|0)%2;P(-1,hy-3+ff,2,2,'#ff9d2e');P(0,hy-5+ff,1,2,'#ffd24a');}
   g.globalAlpha=1;
 }
@@ -444,13 +447,15 @@ function render(){
   for(var i=0;i<nb&&i<7;i++)R(g,BOARD.x+4,BOARD.y+4+i*3,10+((i*9)%30),1,i%2?'#d9534f':'#3f7de0');
   var busy=A.backend.state==='implementing'||A.backend.state==='verifying'||A.frontend.state==='implementing'||A.frontend.state==='verifying';
   var rate=busy?7:1.5;
-  for(var u=0;u<5;u++)for(var j=0;j<3;j++){
-    var on=(((T*rate)|0)+u*3+j*2)%4<2;
-    R(g,RACK.x+4+j*4,RACK.y+5+u*7,2,1,on?(j===1?'#ffcf4a':'#4ade80'):'#2c3250');
-  }
+  RACKS.forEach(function(r,ri){
+    for(var u=0;u<5;u++)for(var j=0;j<3;j++){
+      var on=(((T*rate)|0)+u*3+j*2+ri*5)%4<2;
+      R(g,r.x+4+j*4,r.y+5+u*7,2,1,on?(j===1?'#ffcf4a':'#4ade80'):'#2c3250');
+    }
+  });
   for(var k=0;k<3;k++){var ph=((T*.8+k*.33)%1);R(g,COUNTER.x+9+Math.round(Math.sin(ph*6+k)*2),COUNTER.y-14-Math.round(ph*12),1,1,'rgba(255,255,255,.75)');}
   if(outboxFlag){R(g,PRBOX.x+59,PRBOX.y,1,22,'#2b2b2b');R(g,PRBOX.x+60,PRBOX.y,8,5,'#e5493a');}
-  ORDER.forEach(function(id){if(id!=='docs')drawDesk(id,T);});
+  ORDER.forEach(function(id){drawDesk(id,T);});
   var sa=A[selected];R(g,sa.x-9,sa.y+1.5,18,1,'#5b4bdb');R(g,sa.x-7,sa.y+3,14,1,'#5b4bdb');
   ORDER.map(function(id){return A[id];}).sort(function(p,q){return p.y-q.y;}).forEach(function(a){drawChar(a,T);});
   bugs=bugs.filter(function(b){return simT<b.until;});

@@ -10,7 +10,7 @@
 (function(root){
 'use strict';
 
-var NAME={planner:'Planner',backend:'Backend',frontend:'Frontend',qa:'QA',reviewer:'Reviewer',docs:'Docs',human:'Ganjar'};
+var NAME={planner:'Planner',backend:'Backend',frontend:'Frontend',qa:'QA',reviewer:'Reviewer',docs:'Docs',human:'Manager'};
 var GATE={implementation:'implementation',qa:'QA',reviewer:'Reviewer'};
 var CHECK_LABEL=[['lint','lint'],['typecheck','typecheck'],['test','test']];
 var WORK_TEXT={planning:'Planning',implementing:'Implementing',verifying:'Testing',reviewing:'Reviewing'};
@@ -61,7 +61,7 @@ function translate(e,ctx){
         calls.push(['setState',e.agent,'retrying','Rejected, '+rt,'warn',0,{checks:null}]);
         log('warn',name+': '+(GATE[e.gate]||e.gate)+' gate rejected, '+rt);
       } else if(e.state==='blocked'){
-        calls.push(['setState',e.agent,'blocked','Need Ganjar','bad']);
+        calls.push(['setState',e.agent,'blocked','Need Manager','bad']);
         log('bad',name+': NEEDS_HUMAN at the '+(GATE[e.gate]||e.gate)+' gate');
       } else if(e.state==='error'){
         calls.push(['setState',e.agent,'error','Error'+(e.outcome?': '+e.outcome:''),'bad']);
