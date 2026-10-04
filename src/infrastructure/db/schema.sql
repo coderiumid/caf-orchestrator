@@ -14,11 +14,19 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
   -- ALTER TABLE ADD COLUMN in connection.ts (CREATE TABLE IF NOT EXISTS
   -- never touches a table that already exists).
   attempt      INTEGER,
-  pr_number    INTEGER
+  pr_number    INTEGER,
+  -- CAF-DASHBOARD-03 T1. kind is NULL for a ticket pipeline run (every row
+  -- written before this ticket) and 'pr-review' for a PR review/fix-review
+  -- job; review_mode/review_result are only set on the latter.
+  kind          TEXT,
+  review_mode   TEXT,
+  review_result TEXT
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_pipeline_runs_repo_ticket
-  ON pipeline_runs (repo_id, ticket_id);
+-- The "one row per (repo_id, ticket_id)" unique index is created in
+-- connection.ts, not here: since CAF-DASHBOARD-03 it is a partial index on
+-- the kind column, which a database created before that ticket only gets
+-- from the guarded ALTER TABLE that runs after this file.
 
 CREATE TABLE IF NOT EXISTS agent_events (
   id               INTEGER PRIMARY KEY AUTOINCREMENT,

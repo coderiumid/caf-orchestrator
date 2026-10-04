@@ -4,6 +4,7 @@
  * The only module that talks to the server, and it only reads (GET):
  *   GET /api/pipelines                                   run list
  *   GET /api/pipelines/:repoId/:ticketId/floor-events    contract events, with a cursor
+ *   GET /api/pipelines/by-run/:runId/floor-events        the same, for a PR review run
  *   GET /api/events/stream                               SSE, a bare "something changed" signal
  *
  * Live and replay share one path: events from the endpoint above are
@@ -49,7 +50,11 @@ function getJson(url){
   });
 }
 function eventsUrl(run,after){
-  return '/api/pipelines/'+encodeURIComponent(run.repoId)+'/'+encodeURIComponent(run.ticketId)+'/floor-events'+
+  /* A PR review run is only reachable by its run id: repo + ticket always means the ticket's pipeline run. */
+  var base=run.kind==='pr-review'
+    ?'/api/pipelines/by-run/'+encodeURIComponent(run.runId)
+    :'/api/pipelines/'+encodeURIComponent(run.repoId)+'/'+encodeURIComponent(run.ticketId);
+  return base+'/floor-events'+
     (after?'?after='+encodeURIComponent(after):'');
 }
 
@@ -107,7 +112,7 @@ function drain(){
 function open(run,mode,pinned){
   token++;queue=[];
   AF.reset();
-  current={repoId:run.repoId,ticketId:run.ticketId,mode:mode,pinned:pinned,cursor:null};
+  current={runId:run.runId,kind:run.kind,repoId:run.repoId,ticketId:run.ticketId,mode:mode,pinned:pinned,cursor:null};
   $('#ver').textContent=mode;
   renderRuns();
   var t=token;
@@ -140,7 +145,11 @@ function poll(){
 
 /* ====== run list and repo selector ====== */
 function inRepo(){return runs.filter(function(r){return r.repoId===repo;});}
-function isCurrent(r){return !!current&&current.repoId===r.repoId&&current.ticketId===r.ticketId;}
+function isCurrent(r){return !!current&&current.runId===r.runId;}
+function kindLabel(r){
+  if(r.kind!=='pr-review')return '';
+  return r.reviewMode==='initial'?'Review':'Fix review ('+r.reviewMode+')';
+}
 function renderRepoOptions(){
   var list=runs.map(function(r){return r.repoId;}).filter(function(v,i,a){return a.indexOf(v)===i;}).sort();
   if(list.indexOf(repo)===-1){
@@ -168,7 +177,7 @@ function renderRuns(){
     b.setAttribute('aria-pressed',isCurrent(r)?'true':'false');
     b.innerHTML='<span class="t"></span><span class="d"></span><span class="s"></span>';
     b.querySelector('.t').textContent=r.ticketId+'  '+r.ticketTitle;
-    b.querySelector('.d').textContent=new Date(r.startedAt).toLocaleString('en-GB')+
+    b.querySelector('.d').textContent=(kindLabel(r)?kindLabel(r)+', ':'')+new Date(r.startedAt).toLocaleString('en-GB')+
       (r.attempt>1?', attempt '+r.attempt:'')+(r.prNumber?', PR #'+r.prNumber:'');
     var s=b.querySelector('.s');s.className='s '+st[0];
     s.textContent=st[1]+(r.status==='RUNNING'?' (follow live)':' (replay)');

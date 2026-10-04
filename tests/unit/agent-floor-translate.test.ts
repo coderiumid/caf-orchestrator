@@ -175,3 +175,98 @@ describe('replayDelay', () => {
     expect(replayDelay(at(10), at(0))).toBe(120); // out-of-order timestamps never produce a negative wait
   });
 });
+
+// CAF-DASHBOARD-03 T6: PR review / fix-review runs.
+describe('translate — PR review runs', () => {
+  const started = (reviewMode: 'initial' | 'global' | 'scoped', attempt = 1): FloorEvent => ({
+    ...base,
+    attempt,
+    type: 'run_started',
+    ticket: 'GAN-1',
+    ticketTitle: 'Some ticket',
+    repo: 'ganjardbc/umkm-pos',
+    branch: 'ai-agent/GAN-1',
+    startedAt: at(0),
+    kind: 'pr-review',
+    reviewMode,
+    prNumber: 42,
+  });
+  const finished = (mode: 'initial' | 'global', result: unknown, finalStatus: 'SUCCESS' | 'ERROR' = 'SUCCESS'): FloorEvent =>
+    ({ ...base, type: 'run_finished', finalStatus, gate: null, superseded: false, review: { mode, result, prNumber: 42 } }) as FloorEvent;
+  const find = (calls: Call[], fn: string, first?: unknown): Call | undefined =>
+    calls.find((c) => c[0] === fn && (first === undefined || c[1] === first));
+
+  it('run_started shows a single Review stage and says which PR is under review', () => {
+    const calls = translate(started('initial'));
+    expect(names(calls)).toEqual(['reset', 'setSteps', 'setRun', 'setStatus', 'log']);
+    expect(find(calls, 'setSteps')).toEqual(['setSteps', [['review', 'Review']]]);
+    expect(find(calls, 'setRun')?.[1]).toMatchObject({ title: 'GAN-1  Some ticket', meta: expect.stringContaining('Review of PR #42') });
+    expect(find(calls, 'log')).toEqual(['log', 'info', 'Review started on PR #42', 0]);
+  });
+
+  it('run_started for a fix review names the mode, and a retry says so', () => {
+    const calls = translate(started('global', 2));
+    expect(find(calls, 'setSteps')).toEqual(['setSteps', [['review', 'Fix review']]]);
+    expect(find(calls, 'setRun')?.[1]).toMatchObject({ meta: expect.stringMatching(/^Fix review \(global\) of PR #42.*attempt 2$/) });
+    expect(find(calls, 'log')?.[2]).toBe('Fix review (global) restarted, attempt 2');
+  });
+
+  it('a pipeline run_started never calls setSteps', () => {
+    const { kind: _kind, reviewMode: _mode, prNumber: _pr, ...pipeline } = started('initial') as Record<string, unknown>;
+    expect(names(translate(pipeline as unknown as FloorEvent))).toEqual(['reset', 'setRun', 'setStatus', 'log']);
+  });
+
+  it('the fixing state is a working state with its own text', () => {
+    const calls = translate({ ...base, type: 'agent_state', agent: 'reviewer', state: 'fixing' });
+    expect(calls).toEqual([['setState', 'reviewer', 'fixing', 'Fixing review comments', 'info', 0, { checks: null }]]);
+  });
+
+  it('APPROVE: success pill reworded, manager notified positively', () => {
+    const calls = translate(finished('initial', { type: 'verdict', verdict: 'APPROVE', postedAsComment: false }));
+    expect(find(calls, 'setStatus')).toEqual(['setStatus', 'success', 'Review posted']);
+    expect(find(calls, 'setState', 'human')).toEqual(['setState', 'human', 'alert', 'PR #42 approved', 'ok']);
+    expect(find(calls, 'setState', 'reviewer')).toBeUndefined();
+    expect(calls.filter((c) => c[0] === 'log').map((c) => c[2])).toEqual(['Verdict: APPROVE', 'final_status: SUCCESS']);
+  });
+
+  it('CHANGES REQUESTED: reviewer raises a hand and the manager is alerted, even though the job succeeded', () => {
+    const calls = translate(finished('initial', { type: 'verdict', verdict: 'CHANGES_REQUESTED', postedAsComment: true }));
+    expect(find(calls, 'setStatus')).toEqual(['setStatus', 'success', 'Review posted']);
+    expect(find(calls, 'setState', 'reviewer')).toEqual(['setState', 'reviewer', 'blocked', 'Changes requested', 'warn']);
+    expect(find(calls, 'setState', 'human')).toEqual(['setState', 'human', 'alert', 'Changes requested on PR #42', 'bad']);
+    expect(find(calls, 'log')?.slice(1, 3)).toEqual(['warn', 'Verdict: CHANGES REQUESTED (posted as COMMENT)']);
+  });
+
+  it('DEFER: handed to the manager', () => {
+    const calls = translate(finished('initial', { type: 'verdict', verdict: 'DEFER', postedAsComment: false }));
+    expect(find(calls, 'setState', 'reviewer')?.[3]).toBe('Deferred to Manager');
+    expect(find(calls, 'setState', 'human')?.slice(3)).toEqual(['Review deferred on PR #42', 'bad']);
+  });
+
+  it('fix review: counts in the log, manager notified', () => {
+    const calls = translate(finished('global', { type: 'fix', fixed: 2, skipped: 1, notApplicable: 0 }));
+    expect(find(calls, 'setStatus')).toEqual(['setStatus', 'success', 'Fix review posted']);
+    expect(find(calls, 'setState', 'human')).toEqual(['setState', 'human', 'alert', 'Fix review posted on PR #42', 'ok']);
+    expect(find(calls, 'log')?.slice(1, 3)).toEqual(['ok', 'Fix review: 2 fixed, 1 skipped, 0 n/a']);
+  });
+
+  it('ERROR on a review run is reported exactly like a pipeline ERROR', () => {
+    const review = translate(finished('initial', null, 'ERROR'));
+    const pipeline = translate({ ...base, type: 'run_finished', finalStatus: 'ERROR', gate: null, superseded: false });
+    expect(review).toEqual(pipeline);
+  });
+
+  it('only ever calls the public render API (plus setSteps)', () => {
+    const events = [
+      started('initial'),
+      started('scoped'),
+      finished('initial', { type: 'verdict', verdict: 'APPROVE', postedAsComment: false }),
+      finished('initial', { type: 'verdict', verdict: 'DEFER', postedAsComment: false }),
+      finished('global', { type: 'fix', fixed: 0, skipped: 0, notApplicable: 0 }),
+      finished('global', null),
+    ];
+    for (const event of events) {
+      for (const call of translate(event)) expect([...PUBLIC_API, 'setSteps']).toContain(call[0]);
+    }
+  });
+});

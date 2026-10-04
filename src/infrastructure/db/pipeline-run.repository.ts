@@ -6,6 +6,20 @@ export type AgentEventType = 'start' | 'end' | 'retry' | 'gate_exhausted';
 /** How an agent process ended — recorded on 'end' events (CAF-DASHBOARD-02 T1). */
 export type AgentOutcome = 'OK' | 'FAILED' | 'KILLED' | 'TIMEOUT';
 
+/** What a pipeline_runs row represents: a ticket pipeline run, or a PR review/fix-review job (CAF-DASHBOARD-03). */
+export type RunKind = 'pipeline' | 'pr-review';
+/** Same values as PrReviewJobPayload['mode'] — `initial` is a full review, `global`/`scoped` respond to (fix) review comments. */
+export type ReviewMode = 'initial' | 'global' | 'scoped';
+
+/**
+ * Outcome of a finished PR review job, kept on the row so the dashboard can
+ * show it without reading the artifact (which lives in a workspace that is
+ * gone by then). Counts and a verdict only — never comment or code content.
+ */
+export type ReviewResult =
+  | { type: 'verdict'; verdict: 'APPROVE' | 'CHANGES_REQUESTED' | 'DEFER'; postedAsComment: boolean }
+  | { type: 'fix'; fixed: number; skipped: number; notApplicable: number };
+
 export interface PipelineRun {
   id: string;
   repoId: string;
@@ -17,6 +31,12 @@ export interface PipelineRun {
   /** 1-based count of how many times this run has been started (BullMQ retry or resume). Null on rows written before CAF-DASHBOARD-02. */
   attempt: number | null;
   prNumber: number | null;
+  /** 'pipeline' for every row written before CAF-DASHBOARD-03 (stored as NULL). */
+  kind: RunKind;
+  /** Null for a pipeline run. */
+  reviewMode: ReviewMode | null;
+  /** Null for a pipeline run, and for a review run that hasn't finished successfully. */
+  reviewResult: ReviewResult | null;
 }
 
 export interface AgentEvent {
@@ -44,6 +64,11 @@ export interface UpsertPipelineRunInput {
   startedAt: string;
   endedAt?: string | null;
   finalStatus?: string | null;
+  /** Omitted for a pipeline run. */
+  kind?: RunKind;
+  reviewMode?: ReviewMode | null;
+  /** Only written when the row is created — a pipeline run's PR is recorded later via setPullRequestNumber. */
+  prNumber?: number | null;
 }
 
 export interface InsertEventInput {
@@ -75,7 +100,13 @@ interface PipelineRunRow {
   final_status: string | null;
   attempt: number | null;
   pr_number: number | null;
+  kind: string | null;
+  review_mode: string | null;
+  review_result: string | null;
 }
+
+// Matches the predicate of the partial unique index in connection.ts.
+const IS_PIPELINE_ROW = "(kind IS NULL OR kind = 'pipeline')";
 
 interface AgentEventRow {
   id: number;
@@ -102,6 +133,15 @@ function parseVerifyDetails(raw: string | null): VerifyDetails | null {
   }
 }
 
+function parseReviewResult(raw: string | null): ReviewResult | null {
+  if (raw === null) return null;
+  try {
+    return JSON.parse(raw) as ReviewResult;
+  } catch {
+    return null;
+  }
+}
+
 function toPipelineRun(row: PipelineRunRow): PipelineRun {
   return {
     id: row.id,
@@ -113,6 +153,9 @@ function toPipelineRun(row: PipelineRunRow): PipelineRun {
     finalStatus: row.final_status,
     attempt: row.attempt,
     prNumber: row.pr_number,
+    kind: row.kind === 'pr-review' ? 'pr-review' : 'pipeline',
+    reviewMode: row.review_mode as ReviewMode | null,
+    reviewResult: parseReviewResult(row.review_result),
   };
 }
 
@@ -152,12 +195,13 @@ export class PipelineRunRepository {
   upsertPipelineRun(input: UpsertPipelineRunInput): void {
     this.db
       .prepare(
-        `INSERT INTO pipeline_runs (id, repo_id, ticket_id, ticket_title, started_at, ended_at, final_status, attempt)
-         VALUES (@id, @repoId, @ticketId, @ticketTitle, @startedAt, @endedAt, @finalStatus, 1)
+        `INSERT INTO pipeline_runs (id, repo_id, ticket_id, ticket_title, started_at, ended_at, final_status, attempt, kind, review_mode, pr_number)
+         VALUES (@id, @repoId, @ticketId, @ticketTitle, @startedAt, @endedAt, @finalStatus, 1, @kind, @reviewMode, @prNumber)
          ON CONFLICT (id) DO UPDATE SET
            ticket_title = excluded.ticket_title,
            ended_at = excluded.ended_at,
            final_status = excluded.final_status,
+           review_result = NULL,
            attempt = COALESCE(pipeline_runs.attempt, 1) + 1`,
       )
       .run({
@@ -168,6 +212,10 @@ export class PipelineRunRepository {
         startedAt: input.startedAt,
         endedAt: input.endedAt ?? null,
         finalStatus: input.finalStatus ?? null,
+        // Pipeline rows keep kind NULL, exactly as before CAF-DASHBOARD-03.
+        kind: input.kind === 'pr-review' ? 'pr-review' : null,
+        reviewMode: input.reviewMode ?? null,
+        prNumber: input.prNumber ?? null,
       });
   }
 
@@ -176,6 +224,11 @@ export class PipelineRunRepository {
     this.db
       .prepare('UPDATE pipeline_runs SET ended_at = ?, final_status = ? WHERE id = ?')
       .run(endedAt, finalStatus, id);
+  }
+
+  /** Stores the outcome of a finished PR review job. No-op if the row doesn't exist. */
+  setReviewResult(id: string, result: ReviewResult): void {
+    this.db.prepare('UPDATE pipeline_runs SET review_result = ? WHERE id = ?').run(JSON.stringify(result), id);
   }
 
   /** Records the pull request opened (or reused) for this run. No-op if the row doesn't exist. */
@@ -210,20 +263,25 @@ export class PipelineRunRepository {
     return toAgentEvent(row);
   }
 
-  /** Lists pipeline runs, newest first, optionally filtered by repoId. */
-  getPipelineRuns(repoId?: string, pagination: PaginationOptions = {}): PipelineRun[] {
+  /** Lists runs of every kind, newest first, optionally filtered by repoId and/or kind. */
+  getPipelineRuns(repoId?: string, pagination: PaginationOptions = {}, kind?: RunKind): PipelineRun[] {
     const limit = pagination.limit ?? 50;
     const offset = pagination.offset ?? 0;
 
-    const rows = repoId
-      ? (this.db
-          .prepare(
-            'SELECT * FROM pipeline_runs WHERE repo_id = ? ORDER BY started_at DESC LIMIT ? OFFSET ?',
-          )
-          .all(repoId, limit, offset) as PipelineRunRow[])
-      : (this.db
-          .prepare('SELECT * FROM pipeline_runs ORDER BY started_at DESC LIMIT ? OFFSET ?')
-          .all(limit, offset) as PipelineRunRow[]);
+    const where: string[] = [];
+    const params: Array<string | number> = [];
+    if (repoId) {
+      where.push('repo_id = ?');
+      params.push(repoId);
+    }
+    if (kind === 'pipeline') where.push(IS_PIPELINE_ROW);
+    else if (kind === 'pr-review') where.push("kind = 'pr-review'");
+
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM pipeline_runs ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY started_at DESC LIMIT ? OFFSET ?`,
+      )
+      .all(...params, limit, offset) as PipelineRunRow[];
 
     return rows.map(toPipelineRun);
   }
@@ -236,13 +294,20 @@ export class PipelineRunRepository {
     return rows.map(toAgentEvent);
   }
 
-  /** Returns one pipeline run plus all its agent_events (chronological), or undefined if not found. */
+  /** Returns one run of any kind by its pipeline_runs.id, plus all its agent_events (chronological), or undefined if not found. */
+  getRunById(id: string): { run: PipelineRun; events: AgentEvent[] } | undefined {
+    const runRow = this.db.prepare('SELECT * FROM pipeline_runs WHERE id = ?').get(id) as PipelineRunRow | undefined;
+    if (!runRow) return undefined;
+    return { run: toPipelineRun(runRow), events: this.getEventsForRun(runRow.id) };
+  }
+
+  /** Returns the ticket's pipeline run (never one of its PR-review runs) plus all its agent_events (chronological), or undefined if not found. */
   getPipelineDetail(
     repoId: string,
     ticketId: string,
   ): { run: PipelineRun; events: AgentEvent[] } | undefined {
     const runRow = this.db
-      .prepare('SELECT * FROM pipeline_runs WHERE repo_id = ? AND ticket_id = ?')
+      .prepare(`SELECT * FROM pipeline_runs WHERE repo_id = ? AND ticket_id = ? AND ${IS_PIPELINE_ROW}`)
       .get(repoId, ticketId) as PipelineRunRow | undefined;
 
     if (!runRow) return undefined;

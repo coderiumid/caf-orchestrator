@@ -19,7 +19,23 @@ const ADDED_COLUMNS: ReadonlyArray<readonly [table: string, column: string, type
   ['agent_events', 'exit_code', 'INTEGER'],
   ['agent_events', 'outcome', 'TEXT'],
   ['agent_events', 'verify_details', 'TEXT'],
+  // CAF-DASHBOARD-03 T1.
+  ['pipeline_runs', 'kind', 'TEXT'],
+  ['pipeline_runs', 'review_mode', 'TEXT'],
+  ['pipeline_runs', 'review_result', 'TEXT'],
 ];
+
+// CAF-DASHBOARD-03 T1: a ticket has exactly one pipeline run row but any
+// number of PR-review rows, so uniqueness on (repo_id, ticket_id) only holds
+// for pipeline rows. The original full index is replaced by a partial one —
+// both statements are IF [NOT] EXISTS, so re-running them (or losing the race
+// to the other process migrating the same file) is a no-op. Runs after the
+// added columns exist, since the predicate references `kind`.
+const PIPELINE_UNIQUE_INDEX_SQL = `
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_pipeline_runs_repo_ticket_pipeline
+    ON pipeline_runs (repo_id, ticket_id) WHERE kind IS NULL OR kind = 'pipeline';
+  DROP INDEX IF EXISTS idx_pipeline_runs_repo_ticket;
+`;
 
 function addColumnIfMissing(db: Database.Database, table: string, column: string, type: string): void {
   const columns = db.pragma(`table_info(${table})`) as Array<{ name: string }>;
@@ -33,12 +49,13 @@ function addColumnIfMissing(db: Database.Database, table: string, column: string
   }
 }
 
-/** Applies schema.sql to the given database handle, then any missing added columns. Idempotent — safe to call on every open. */
+/** Applies schema.sql to the given database handle, then any missing added columns and the pipeline-row unique index. Idempotent — safe to call on every open. */
 export function migrate(db: Database.Database): void {
   db.exec(schemaSql);
   for (const [table, column, type] of ADDED_COLUMNS) {
     addColumnIfMissing(db, table, column, type);
   }
+  db.exec(PIPELINE_UNIQUE_INDEX_SQL);
 }
 
 /**

@@ -60,6 +60,41 @@ Click any row to open the detail panel on the right: the full chronological
 event timeline for that run (every agent start/end, retry, and gate
 exhaustion, each with its own phase/cost/artifact/timestamp).
 
+### Run types: pipeline, review, fix review
+
+The list holds two kinds of run, side by side, newest first. The **run type**
+filter in the toolbar narrows it.
+
+| Type | Triggered by (on a PR whose branch is `ai-agent/<TICKET-KEY>`) | Job mode | What the card shows |
+|---|---|---|---|
+| **Pipeline** | A ticket moving to "Ready for AI" (or a resume) | — | Plan / Implement / Verify rail, retries, cost. |
+| **Review** | A PR comment starting with `/caf-review` | `initial` | One `Review` stage and the verdict: `APPROVE`, `CHANGES REQUESTED`, or `DEFER`. "(posted as comment)" means GitHub refused the bot approving/rejecting its own PR, so the review was posted as a plain comment with the verdict stated in its body. |
+| **Fix review** | A PR comment starting with `/caf-fix-review` (`global`), or a reply in an inline review-comment thread (`scoped`) | `global` / `scoped` | One `Fix review` stage and how many review comments ended up `fixed`, `skipped`, or `n/a`. |
+
+Review and fix-review runs are both carried out by one agent, `caf-reviewer`.
+
+Things that differ from a pipeline run:
+
+- **One ticket can have many review runs**, each its own card. They never
+  change the ticket's pipeline run: its status, times, attempt, and PR number
+  stay exactly as the pipeline left them.
+- **Status is about the job, not the verdict.** `Success` means the review was
+  carried out and posted — a `CHANGES REQUESTED` review is still a successful
+  job. Read the verdict on the card. `Error` means the job itself failed
+  (agent crash, missing or unreadable report, GitHub API failure); BullMQ may
+  retry it, which shows as **Attempt** 2, 3, ... on the same card.
+- **The title** is borrowed from the ticket's pipeline run when one is on
+  record; otherwise it is `PR #<number>`.
+- A review of a PR that this orchestrator did not open (head branch not
+  `ai-agent/...`) is rejected before anything is recorded, so it never appears.
+- Review jobs that ran before this feature existed are not in the list; there
+  is nothing to backfill them from.
+
+API: `GET /api/pipelines?kind=pipeline|pr-review` filters by kind. Each row
+carries `runId`, `kind`, `reviewMode`, and `reviewResult`. A review run is
+fetched with `GET /api/pipelines/by-run/:runId` (`runId` percent-encoded);
+`/api/pipelines/:repoId/:ticketId` always means the ticket's pipeline run.
+
 ### About the cost figure
 
 The `claude --print --output-format json` CLI call this orchestrator already
@@ -186,6 +221,8 @@ is kept in the URL (`?repo=`).
 | Raised hand, red screen, red lamp on the Manager's desk | `NEEDS_HUMAN`. |
 | Small flame | The agent's process failed (`FAILED`, `KILLED`, or `TIMEOUT`); the run is `ERROR` and BullMQ may retry the job. |
 | Green lamp on the Manager's desk | `SUCCESS`; a PR is waiting for human review. |
+| Only the Reviewer working, one stage in the step list | A PR review or fix-review run (see "Run types" above). Reviewing shows a diff on the screen; fixing review comments shows code, and the status list says "Fixing review". |
+| Reviewer with a raised hand after a review, red lamp on the Manager's desk | The review was posted with `CHANGES REQUESTED` or `DEFER` — the job succeeded, the PR needs a person. `APPROVE` and a finished fix review end with the Reviewer celebrating and a green lamp instead. |
 | Docs asleep at its desk, head down | Always. See below. |
 
 **Docs (`caf-documentation`) is always off duty, on purpose.** The pipeline
@@ -222,21 +259,31 @@ page ◄── GET /api/pipelines/:repoId/:ticketId/floor-events?after=<cursor>
 - Replay calls the same endpoint without `after`.
 - `repoId` is `owner/repo`, percent-encoded in the path, as for the detail
   endpoint.
+- A PR review run is read from `GET /api/pipelines/by-run/:runId/floor-events`
+  instead (same response, same cursor rules), because repo + ticket always
+  means the ticket's pipeline run. The page picks the right one from the run's
+  `kind`.
 
 Response: `{ run, events, nextCursor }`. Every event has `cursor`, `runId`,
 `attempt`, and a server-side `timestamp`.
 
 | Event `type` | Fields | Shown as |
 |---|---|---|
-| `run_started` | `ticket`, `ticketTitle`, `repo`, `branch`, `startedAt` | Office resets, "Current run" panel filled. One per attempt. |
+| `run_started` | `ticket`, `ticketTitle`, `repo`, `branch`, `startedAt`; on a PR review run also `kind: "pr-review"`, `reviewMode`, `prNumber` | Office resets, "Current run" panel filled. One per attempt. A review run swaps the step list for its single stage. |
 | `agent_state` | `agent`, `state`, and optionally `gate`, `retry: {count, max}`, `verify`, `outcome` | Character pose, screen, and speech bubble. |
 | `handoff` | `from`, `to` (an agent, `human`, or `outbox`), `file` | Flying document. |
 | `step` | `step` (`plan`/`impl`/`qa`/`review`/`pr`), `status` (`active`/`pass`/`fail`), `note`, and `prNumber` on the `pr` step | Step list. |
 | `usage` | `agent`, `costUsd`, `tokens` (always `null` for now), `durationMs` | "Agent details" panel. |
-| `run_finished` | `finalStatus`, `gate`, `superseded` | Status pill and the Manager's lamp. |
+| `run_finished` | `finalStatus`, `gate`, `superseded`; on a PR review run also `review: {mode, result, prNumber}` | Status pill and the Manager's lamp. |
 
 Agent states: `idle`, `planning`, `implementing`, `verifying`, `retrying`,
-`reviewing`, `celebrating`, `blocked`, `error`, `offduty`.
+`reviewing`, `fixing`, `celebrating`, `blocked`, `error`, `offduty`. `fixing`
+only occurs on a fix-review run.
+
+A PR review run produces a much shorter feed than a pipeline run: `step` only
+ever names `review`, the only agent is `reviewer`, the one handoff is the
+report (`review-notes.md` or `fix-review-log.md`) going to the outbox, and
+there is no `pr` step (the PR already exists; its number is on `run_started`).
 
 Three things worth knowing when reading that feed:
 
@@ -268,6 +315,22 @@ startup; no manual migration):
 | `agent_events.verify_details` | JSON from the verify-report parser described above, on implementation agents' `end` rows. |
 
 No new `event_type` or `piv_phase` values were introduced.
+
+For PR review runs (also additive and nullable, also added automatically):
+
+| Column | Meaning |
+|---|---|
+| `pipeline_runs.kind` | `NULL` for a pipeline run (every row that existed before), `pr-review` for a review / fix-review job. |
+| `pipeline_runs.review_mode` | `initial`, `global`, or `scoped`. |
+| `pipeline_runs.review_result` | JSON: `{type: "verdict", verdict, postedAsComment}` or `{type: "fix", fixed, skipped, notApplicable}`. Counts and a verdict only — never comment or code content. Empty until the job finishes normally. |
+
+A review run's row id is `pr-review:<job id>`, not `<repo>:<ticket>`, so every
+job has its own row and a BullMQ retry of that job lands on the same one. Its
+events are ordinary `caf-reviewer` `start` / `end` rows with `piv_phase`
+`verify`. The unique index on `(repo_id, ticket_id)` now covers pipeline rows
+only (`idx_pipeline_runs_repo_ticket_pipeline`); the old full index is dropped
+on startup. As with the pipeline, a failed write is logged as a warning and
+never fails the review job.
 
 **None of this touches the pipeline's own gates.** The status parsers in
 `report-reader.ts` are unchanged — `Status: SUCCESS` for `verify-report.md`,

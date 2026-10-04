@@ -1,4 +1,10 @@
-import type { AgentEvent, AgentOutcome, PipelineRun } from '../../../infrastructure/db/pipeline-run.repository.js';
+import type {
+  AgentEvent,
+  AgentOutcome,
+  PipelineRun,
+  ReviewMode,
+  ReviewResult,
+} from '../../../infrastructure/db/pipeline-run.repository.js';
 import type { VerifyDetails } from '../../../infrastructure/reports/verify-report-details.js';
 
 /**
@@ -27,6 +33,8 @@ export type FloorAgentState =
   | 'verifying'
   | 'retrying'
   | 'reviewing'
+  /** PR-review runs only: the reviewer responding to review comments (mode `global`/`scoped`). */
+  | 'fixing'
   | 'celebrating'
   | 'blocked'
   | 'error'
@@ -53,6 +61,10 @@ export interface RunStartedEvent extends FloorEventBase {
   repo: string;
   branch: string;
   startedAt: string;
+  /** Present only on a PR-review run (CAF-DASHBOARD-03); a pipeline run's event has none of these three. */
+  kind?: 'pr-review';
+  reviewMode?: ReviewMode | null;
+  prNumber?: number | null;
 }
 
 export interface AgentStateEvent extends FloorEventBase {
@@ -107,6 +119,8 @@ export interface RunFinishedEvent extends FloorEventBase {
   gate: FloorGate | null;
   /** True when a later attempt exists — this attempt's end is reconstructed, not read from pipeline_runs. */
   superseded: boolean;
+  /** Present only on a PR-review run: what was asked for, and its outcome once the job finished normally. */
+  review?: { mode: ReviewMode | null; result: ReviewResult | null; prNumber: number | null };
 }
 
 export type FloorEvent = RunStartedEvent | AgentStateEvent | HandoffEvent | StepEvent | UsageEvent | RunFinishedEvent;
@@ -238,7 +252,136 @@ function newAttemptState(): AttemptState {
   };
 }
 
+/** What the review step shows once a PR-review run has finished. */
+function reviewResultNote(result: ReviewResult | null): string | undefined {
+  if (!result) return undefined;
+  if (result.type === 'verdict') {
+    const verdict = result.verdict === 'CHANGES_REQUESTED' ? 'CHANGES REQUESTED' : result.verdict;
+    return result.postedAsComment ? `${verdict} (posted as COMMENT)` : verdict;
+  }
+  return `${result.fixed} fixed, ${result.skipped} skipped, ${result.notApplicable} n/a`;
+}
+
+/**
+ * CAF-DASHBOARD-03: a PR review / fix-review run. One agent (the reviewer),
+ * one step (`review`), no handoffs between agents — a review job has no
+ * plan/implement/QA stages to infer anything from. Same cursor scheme and
+ * the same attempt handling as a pipeline run below, so live and replay
+ * behave identically for both kinds.
+ */
+function normalizeReviewRun(run: PipelineRun, rows: AgentEvent[]): FloorEvent[] {
+  const out: FloorEvent[] = [];
+  const sorted = [...rows].sort((a, b) => a.id - b.id);
+  const currentAttempt = Math.max(run.attempt ?? 1, ...sorted.map((row) => row.attempt ?? 1));
+  const fixMode = run.reviewMode === 'global' || run.reviewMode === 'scoped';
+  const artifact = fixMode ? 'fix-review-log.md' : 'review-notes.md';
+
+  let lastRowId = 0;
+  let lastTimestamp = run.startedAt;
+
+  for (let attempt = 1; attempt <= currentAttempt; attempt += 1) {
+    const attemptRows = sorted.filter((row) => (row.attempt ?? 1) === attempt);
+    const base = { runId: run.id, attempt };
+    let reviewerStartedAt: string | undefined;
+    let running = false;
+    let stepActive = false;
+
+    const startedAt = attempt === 1 ? run.startedAt : (attemptRows[0]?.createdAt ?? lastTimestamp);
+    out.push({
+      ...base,
+      type: 'run_started',
+      cursor: `${lastRowId}.${syntheticSub(attempt, START_SLOT)}`,
+      timestamp: startedAt,
+      ticket: run.ticketId,
+      ticketTitle: run.ticketTitle,
+      repo: run.repoId,
+      branch: `ai-agent/${run.ticketId}`,
+      startedAt,
+      kind: 'pr-review',
+      reviewMode: run.reviewMode,
+      prNumber: run.prNumber,
+    });
+    lastTimestamp = startedAt;
+
+    for (const row of attemptRows) {
+      if (AGENT_BY_NAME[row.agentName] !== 'reviewer') continue;
+      let sub = 0;
+      const at = { ...base, timestamp: row.createdAt };
+      const nextCursor = (): string => `${row.id}.${sub++}`;
+      lastRowId = row.id;
+      lastTimestamp = row.createdAt;
+
+      if (row.eventType === 'start') {
+        reviewerStartedAt = row.createdAt;
+        running = true;
+        stepActive = true;
+        out.push({ ...at, type: 'step', cursor: nextCursor(), step: 'review', status: 'active' });
+        out.push({ ...at, type: 'agent_state', cursor: nextCursor(), agent: 'reviewer', state: fixMode ? 'fixing' : 'reviewing' });
+        continue;
+      }
+      if (row.eventType !== 'end') continue;
+
+      running = false;
+      out.push({
+        ...at,
+        type: 'usage',
+        cursor: nextCursor(),
+        agent: 'reviewer',
+        costUsd: row.costUsd,
+        tokens: null,
+        durationMs: reviewerStartedAt ? Math.max(0, Date.parse(row.createdAt) - Date.parse(reviewerStartedAt)) : null,
+      });
+      if (row.outcome !== null && row.outcome !== 'OK') {
+        stepActive = false;
+        out.push({ ...at, type: 'step', cursor: nextCursor(), step: 'review', status: 'fail', note: row.outcome });
+        out.push({ ...at, type: 'agent_state', cursor: nextCursor(), agent: 'reviewer', state: 'error', outcome: row.outcome });
+        continue;
+      }
+      out.push({ ...at, type: 'agent_state', cursor: nextCursor(), agent: 'reviewer', state: 'idle' });
+    }
+
+    const superseded = attempt < currentAttempt;
+    const finalStatus: FloorFinalStatus | null = superseded ? null : isFinalStatus(run.finalStatus) ? run.finalStatus : null;
+    if (!superseded && finalStatus === null) break;
+
+    const finishedAt = superseded ? lastTimestamp : (run.endedAt ?? lastTimestamp);
+    const finish = { ...base, timestamp: finishedAt };
+    let closingSlot = finalStatus === 'ERROR' ? ERROR_CLOSING_SLOT : CLOSING_SLOT;
+    const closeCursor = (): string => `${lastRowId}.${syntheticSub(attempt, closingSlot++)}`;
+    const result = superseded ? null : run.reviewResult;
+
+    if (finalStatus === 'SUCCESS') {
+      const note = reviewResultNote(result);
+      out.push({ ...finish, type: 'step', cursor: closeCursor(), step: 'review', status: 'pass', ...(note === undefined ? {} : { note }) });
+      out.push({ ...finish, type: 'handoff', cursor: closeCursor(), from: 'reviewer', to: 'outbox', file: artifact });
+      // A verdict other than APPROVE is a finished job but not a celebration —
+      // the run_finished event below carries the verdict for the page to show.
+      if (!result || result.type === 'fix' || result.verdict === 'APPROVE') {
+        out.push({ ...finish, type: 'agent_state', cursor: closeCursor(), agent: 'reviewer', state: 'celebrating' });
+      }
+    } else if (finalStatus === 'ERROR') {
+      if (stepActive) out.push({ ...finish, type: 'step', cursor: closeCursor(), step: 'review', status: 'fail', note: 'ERROR' });
+      // A start row with no end row: the agent never returned (the spawn itself threw).
+      if (running) out.push({ ...finish, type: 'agent_state', cursor: closeCursor(), agent: 'reviewer', state: 'error' });
+    }
+
+    out.push({
+      ...finish,
+      type: 'run_finished',
+      cursor: `${lastRowId}.${syntheticSub(attempt, finalStatus === 'ERROR' ? ERROR_FINISHED_SLOT : FINISHED_SLOT)}`,
+      finalStatus,
+      gate: null,
+      superseded,
+      review: { mode: run.reviewMode, result, prNumber: run.prNumber },
+    });
+  }
+
+  return out;
+}
+
 export function normalizeRun(run: PipelineRun, rows: AgentEvent[], options: NormalizeOptions = {}): FloorEvent[] {
+  if (run.kind === 'pr-review') return normalizeReviewRun(run, rows);
+
   const out: FloorEvent[] = [];
   const sorted = [...rows].sort((a, b) => a.id - b.id);
   const currentAttempt = Math.max(run.attempt ?? 1, ...sorted.map((row) => row.attempt ?? 1));

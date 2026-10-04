@@ -29,7 +29,14 @@ var SCEN={
   impl:[['frontend',{task:'Build the Excel export button',attempts:[1,2,2]}]],qa:[]},
  crash:{label:'Crash, BullMQ retry',ticket:'GAN-146',title:'Sync stock after a transaction',pr:121,
   desc:'An exception mid-run. The run is marked ERROR, then BullMQ retries the job.',
-  impl:[['backend',{task:'Sync stock after a transaction',attempts:[null],crashOnce:true}]],qa:['pass']}
+  impl:[['backend',{task:'Sync stock after a transaction',attempts:[null],crashOnce:true}]],qa:['pass']},
+ /* PR review jobs: only the Reviewer works, on a PR that already exists. */
+ review:{label:'PR review, changes requested',ticket:'GAN-142',title:'Date filter on the sales report',pr:118,
+  desc:'A /caf-review comment on the PR. The Reviewer assesses it and posts a review asking for changes.',
+  review:{mode:'initial',verdict:'CHANGES REQUESTED'}},
+ fixreview:{label:'Fix review',ticket:'GAN-142',title:'Date filter on the sales report',pr:118,
+  desc:'A /caf-fix-review comment on the PR. The Reviewer works through every review comment and replies to each.',
+  review:{mode:'global',fixed:2,skipped:1,notApplicable:0}}
 };
 
 /* ====== pipeline flow ====== */
@@ -162,11 +169,43 @@ async function pipeline(sc){
   setStatus('success');
   setState(H,'alert','New PR, ready for review','ok');
 }
+/* ====== PR review flow ====== */
+async function reviewRun(sc){
+  var Rv='reviewer',H='human',rv=sc.review,fix=rv.mode!=='initial';
+  var label=fix?'Fix review ('+rv.mode+')':'Review';
+  AF.setSteps([['review',fix?'Fix review':'Review']]);
+  AF.setRun({title:sc.ticket+'  '+sc.title,meta:label+' of PR #'+sc.pr+', repo umkm-pos, branch ai-agent/'+sc.ticket});
+  setStatus('run');
+  log('info','GitHub: '+(fix?'/caf-fix-review':'/caf-review')+' comment on PR #'+sc.pr);
+  log('info',label+' started on PR #'+sc.pr);
+
+  step('review','active');
+  setState(Rv,fix?'fixing':'reviewing',fix?'Read review comments':'Read the diff','info');await ready(Rv);await wait(2200);
+  var notes=fix?['Fix the date parsing','Reply to each thread','Write fix-review-log.md']:['Check approach','Check security','Write review-notes.md'];
+  for(var i=0;i<notes.length;i++){say(Rv,notes[i],'info');await wait(2000);}
+
+  if(fix){
+    var counts=rv.fixed+' fixed, '+rv.skipped+' skipped, '+rv.notApplicable+' n/a';
+    step('review','pass',counts);
+    celebrate(Rv,'Fixes posted');
+    await sendDoc(Rv,'outbox','fix-review-log.md');
+    log('ok','Fix review: '+counts);
+    setStatus('success','Fix review posted');
+    setState(H,'alert','Fix review posted on PR #'+sc.pr,'ok');
+    return;
+  }
+  step('review','pass',rv.verdict);
+  await sendDoc(Rv,'outbox','review-notes.md');
+  log('warn','Verdict: '+rv.verdict);
+  setStatus('success','Review posted');
+  setState(Rv,'blocked','Changes requested','warn');
+  setState(H,'alert','Changes requested on PR #'+sc.pr,'bad');
+}
 function runScenario(key){
   AF.reset();currentKey=key;renderScen();
   var sc=SCEN[key];
   (async function(){
-    try{await pipeline(sc);}catch(e){if(e!==CANCEL)console.error(e);}
+    try{await (sc.review?reviewRun(sc):pipeline(sc));}catch(e){if(e!==CANCEL)console.error(e);}
   })();
 }
 

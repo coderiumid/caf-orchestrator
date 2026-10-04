@@ -35,6 +35,12 @@
       <div class="ph"><h2>Pipeline runs</h2><span class="cnt" id="result-count"></span></div>
       <div class="toolbar">
         <input id="run-search" class="field" type="search" placeholder="Search ticket, title, or repository…" aria-label="Search pipeline runs">
+        <select id="kind-filter" class="field" aria-label="Filter by run type">
+          <option value="ALL">All run types</option>
+          <option value="pipeline">Pipeline</option>
+          <option value="review">Review</option>
+          <option value="fix">Fix review</option>
+        </select>
         <select id="status-filter" class="field" aria-label="Filter by status">
           <option value="ALL">All statuses</option>
           <option value="RUNNING">Running</option>

@@ -89,3 +89,88 @@ describe('db migration (CAF-DASHBOARD-02 T1 added columns)', () => {
     db.close();
   });
 });
+
+// CAF-DASHBOARD-03 T1: kind/review_mode/review_result columns, and the
+// (repo_id, ticket_id) unique index narrowed to pipeline rows.
+describe('db migration (CAF-DASHBOARD-03 T1 run kinds)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'caf-dashboard-03-migrate-'));
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  const indexesOf = (db: Database.Database): string[] =>
+    (db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'pipeline_runs'").all() as Array<{ name: string }>).map(
+      (r) => r.name,
+    );
+  const review = (id: string) => ({
+    id,
+    repoId: 'r',
+    ticketId: 'GAN-1',
+    ticketTitle: 'Old run',
+    startedAt: '2026-10-04T00:00:00.000Z',
+    kind: 'pr-review' as const,
+    reviewMode: 'initial' as const,
+    prNumber: 5,
+  });
+
+  it('upgrades a pre-existing database: columns added, index swapped, rows kept and read as pipeline runs', () => {
+    const path = join(dir, 'legacy.sqlite');
+    const legacy = new Database(path);
+    legacy.exec(LEGACY_SCHEMA);
+    legacy.close();
+
+    const db = openDb(path);
+    expect(columnsOf(db, 'pipeline_runs')).toEqual(expect.arrayContaining(['kind', 'review_mode', 'review_result']));
+    expect(indexesOf(db)).toContain('idx_pipeline_runs_repo_ticket_pipeline');
+    expect(indexesOf(db)).not.toContain('idx_pipeline_runs_repo_ticket');
+    expect(new PipelineRunRepository(db).getPipelineDetail('r', 'GAN-1')?.run).toMatchObject({
+      finalStatus: 'SUCCESS',
+      kind: 'pipeline',
+      reviewMode: null,
+      reviewResult: null,
+    });
+    db.close();
+  });
+
+  it('allows any number of pr-review rows next to the one pipeline row of a ticket', () => {
+    const path = join(dir, 'legacy-reviews.sqlite');
+    const legacy = new Database(path);
+    legacy.exec(LEGACY_SCHEMA);
+    legacy.close();
+
+    const db = openDb(path);
+    const repo = new PipelineRunRepository(db);
+    repo.upsertPipelineRun(review('pr-review:a'));
+    repo.upsertPipelineRun(review('pr-review:b'));
+    repo.setReviewResult('pr-review:a', { type: 'verdict', verdict: 'APPROVE', postedAsComment: false });
+
+    expect(repo.getPipelineRuns('r', {}, 'pr-review').map((r) => r.id).sort()).toEqual(['pr-review:a', 'pr-review:b']);
+    expect(repo.getPipelineRuns('r', {}, 'pipeline').map((r) => r.id)).toEqual(['r:GAN-1']);
+    expect(repo.getPipelineRuns('r')).toHaveLength(3);
+    // repo + ticket still means the pipeline run, never a review of it.
+    expect(repo.getPipelineDetail('r', 'GAN-1')?.run.id).toBe('r:GAN-1');
+    expect(repo.getRunById('pr-review:a')?.run).toMatchObject({
+      kind: 'pr-review',
+      reviewMode: 'initial',
+      prNumber: 5,
+      reviewResult: { type: 'verdict', verdict: 'APPROVE', postedAsComment: false },
+    });
+    expect(repo.getRunById('nope')).toBeUndefined();
+    db.close();
+  });
+
+  it('still refuses a second pipeline row for the same repo + ticket', () => {
+    const db = openDb(':memory:');
+    const repo = new PipelineRunRepository(db);
+    const run = { repoId: 'r', ticketId: 'T-1', ticketTitle: 't', startedAt: '2026-10-04T00:00:00.000Z' };
+    repo.upsertPipelineRun({ id: 'one', ...run });
+    expect(() => repo.upsertPipelineRun({ id: 'two', ...run })).toThrow(/UNIQUE/);
+    db.close();
+  });
+
+  it('is idempotent — migrating twice leaves columns and indexes as they were', () => {
+    const db = openDb(':memory:');
+    const before = [columnsOf(db, 'pipeline_runs'), indexesOf(db)];
+    expect(() => migrate(db)).not.toThrow();
+    expect([columnsOf(db, 'pipeline_runs'), indexesOf(db)]).toEqual(before);
+    db.close();
+  });
+});

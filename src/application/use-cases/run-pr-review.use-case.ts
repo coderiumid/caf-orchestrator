@@ -11,6 +11,13 @@ import {
 } from '../../infrastructure/reports/report-reader.js';
 import { SelfReviewRejectedError } from '../../domain/errors/app-errors.js';
 import { logger } from '../../infrastructure/logging/logger.js';
+import {
+  recordPrReviewStarted,
+  recordPrReviewAgentStart,
+  recordPrReviewAgentEnd,
+  finalizePrReviewRun,
+} from '../../infrastructure/db/pipeline-instrumentation.js';
+import type { ReviewResult } from '../../infrastructure/db/pipeline-run.repository.js';
 
 // Identical to review-command.js's (caf-initiator) mapping table —
 // APPROVE→APPROVE, CHANGES REQUESTED→REQUEST_CHANGES, DEFER→COMMENT. Not
@@ -195,6 +202,12 @@ function buildSummaryBody(ticketKey: string, mode: PrReviewJobPayload['mode'], e
   ].join('\n');
 }
 
+/** What a posting step reports back: the count the notifier already used, plus the dashboard's outcome summary (CAF-DASHBOARD-03). */
+interface PostedReview {
+  entryCount: number;
+  result: ReviewResult;
+}
+
 export class RunPrReviewUseCase {
   constructor(private readonly deps: RunPrReviewDeps) {}
 
@@ -226,11 +239,18 @@ export class RunPrReviewUseCase {
       mode: job.mode,
     });
 
+    // CAF-DASHBOARD-03: dashboard/Agent Floor history. Instrumentation only —
+    // none of these calls can throw (see pipeline-instrumentation.ts).
+    const run = { jobId: job.jobId, repoId: job.repoFullName, ticketId: ticketKey };
+    recordPrReviewStarted({ ...run, prNumber: job.prNumber, mode: job.mode });
+
     try {
       await gitService.clone(job.cloneUrl, job.prHeadBranch, repoPath);
 
       const prompt = buildReviewerPrompt(ticketKey, job.mode, job.commentContext);
+      recordPrReviewAgentStart(run, 'caf-reviewer');
       const result = await agentRunner.run('caf-reviewer', repoPath, prompt);
+      recordPrReviewAgentEnd(run, 'caf-reviewer', result);
       logger.info('caf-reviewer agent run result', undefined, {
         jobId: job.jobId,
         ticketKey,
@@ -265,10 +285,13 @@ export class RunPrReviewUseCase {
       // reply cycle. `scoped`/`global` are untouched (CAF-ORCH-PRREVIEW-03
       // non-negotiable) — same readFixReviewLog + reply + postIssueComment
       // path as before this change.
-      const entryCount =
+      const posted =
         job.mode === 'initial'
           ? await this.postInitialReview(repoPath, ticketKey, owner, repo, job)
           : await this.postFixReview(repoPath, ticketKey, owner, repo, job);
+      const { entryCount } = posted;
+
+      finalizePrReviewRun(run, 'SUCCESS', posted.result);
 
       logger.info('PR review job completed', undefined, {
         jobId: job.jobId,
@@ -286,6 +309,7 @@ export class RunPrReviewUseCase {
         entryCount,
       });
     } catch (err) {
+      finalizePrReviewRun(run, 'ERROR');
       void notifier?.notifyPrReviewFailed({
         jobId: job.jobId,
         ticketKey,
@@ -309,7 +333,7 @@ export class RunPrReviewUseCase {
     owner: string,
     repo: string,
     job: PrReviewJobPayload,
-  ): Promise<number> {
+  ): Promise<PostedReview> {
     const { vcsClient } = this.deps;
 
     const fixReviewLog = await readFixReviewLog(repoPath, ticketKey);
@@ -339,7 +363,12 @@ export class RunPrReviewUseCase {
       body: buildSummaryBody(ticketKey, job.mode, fixReviewLog.entries),
     });
 
-    return fixReviewLog.entries.length;
+    const countOf = (status: FixReviewLogEntry['status']): number =>
+      fixReviewLog.entries.filter((entry) => entry.status === status).length;
+    return {
+      entryCount: fixReviewLog.entries.length,
+      result: { type: 'fix', fixed: countOf('FIXED'), skipped: countOf('SKIPPED'), notApplicable: countOf('NOT_APPLICABLE') },
+    };
   }
 
   // Real INITIAL mode (CAF-ORCH-PRREVIEW-03) — posts an official GitHub PR
@@ -355,7 +384,7 @@ export class RunPrReviewUseCase {
     owner: string,
     repo: string,
     job: PrReviewJobPayload,
-  ): Promise<number> {
+  ): Promise<PostedReview> {
     const { vcsClient } = this.deps;
 
     const report = await readInitialReviewReport(repoPath, ticketKey);
@@ -365,6 +394,7 @@ export class RunPrReviewUseCase {
 
     const event = VERDICT_TO_EVENT[report.verdict];
     const body = buildInitialReviewBody(report.verdict, report.raw);
+    let postedAsComment = false;
 
     try {
       await vcsClient.createPullRequestReview({ owner, repo, prNumber: job.prNumber, event, body });
@@ -389,8 +419,9 @@ export class RunPrReviewUseCase {
         event: 'COMMENT',
         body: buildSelfReviewFallbackBody(report.verdict, report.raw),
       });
+      postedAsComment = true;
     }
 
-    return 1;
+    return { entryCount: 1, result: { type: 'verdict', verdict: report.verdict, postedAsComment } };
   }
 }
