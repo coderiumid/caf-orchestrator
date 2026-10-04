@@ -94,8 +94,8 @@ pipeline stopped for human review.
 ## Live updates
 
 The table updates itself via Server-Sent Events (`/api/events/stream`) — no
-manual refresh needed. The connection-status dot in the top-right corner
-shows `live` (green) when connected, or `disconnected — retrying…` (red) if
+manual refresh needed. The **Feed** badge in the top-right corner shows
+`Connected` (green) when connected, or `Disconnected, retrying` (red) if
 the connection drops; the browser's built-in `EventSource` reconnects
 automatically, no page reload required.
 
@@ -281,6 +281,35 @@ browser reconnects on its own. The SSE stream is authenticated by a one-hour
 cookie that the page sets and that each successful (re)connect renews. If the
 cookie has lapsed anyway — a laptop asleep for longer than that — the page
 reloads itself once to go back through Basic Auth.
+
+## Design system
+
+The dashboard and the Agent Floor share one look: the retro style approved for
+the Agent Floor. It lives in a single stylesheet,
+`src/presentation/web/ui/shared/design-system.css`, served at
+`/dashboard/ds.css` (same Basic Auth) and linked by both pages **before** their
+own stylesheet. `dashboard.css` and `agent-floor.css` hold only page-specific
+layout; anything two pages would both use belongs in the shared file.
+
+What the shared file provides:
+
+| Part | Classes |
+|---|---|
+| Tokens (light + dark, follows the OS setting) | `--bg --surface --ink --ink2 --line --accent --ok --warn --bad`, fonts `--display --body --mono` |
+| Header | `.hd`, `.logo`, `h1`, `.ver`, `.hd-r`, `.stt` |
+| Controls | `.btn`, `.seg`, `.field` (input/select), `.tabs` |
+| Status | `.pill` + `.idle/.run/.success/.needs/.error`, `.conn` + `.up/.down`, `.mock` |
+| Containers | `.panel` / `.ph` / `.pb`, `dialog` + `.dl-h` / `.dl-b`, `.empty-state` |
+| Data | `.kv`, `.stat`, `.steps`, `.log` + `li.ok/.warn/.bad/.info` |
+
+Rules of the style, for any new UI: colors only through the tokens (never a
+raw hex, so dark mode keeps working); 2px solid borders and square corners; no
+gradients, glows, or blur; hover is a hard `3px 3px 0` offset shadow; Pixelify
+Sans for titles and IBM Plex Sans for everything else; animation is stepped
+(`steps(2)`) and switched off under `prefers-reduced-motion`.
+
+The status vocabulary is the same on both pages: `run` (accent), `success`
+(green), `needs` (amber, `NEEDS_HUMAN`), `error` (red).
 
 ## End-to-end verification
 

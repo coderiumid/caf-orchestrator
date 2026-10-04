@@ -15,11 +15,16 @@ import { join } from 'node:path';
  *
  * tsc does not copy non-TypeScript assets to dist/ — the Dockerfile has an
  * explicit COPY for this directory, same as schema.sql.
+ *
+ * The shared design system (shared/design-system.css, served at
+ * `/dashboard/ds.css`) is loaded here too; the Agent Floor page links the
+ * same URL, so both pages get identical tokens and components.
  */
 const dir = join(__dirname, 'dashboard');
 const dashboardHtml = readFileSync(join(dir, 'dashboard.html'), 'utf-8');
 const dashboardCss = readFileSync(join(dir, 'dashboard.css'), 'utf-8');
 const dashboardJs = readFileSync(join(dir, 'dashboard.js'), 'utf-8');
+const designSystemCss = readFileSync(join(__dirname, 'shared', 'design-system.css'), 'utf-8');
 const dashboardLogo = readFileSync(join(__dirname, '..', 'assets', 'logo.png'));
 
 export function renderDashboardHtml(): string {
@@ -32,6 +37,11 @@ export function renderDashboardCss(): string {
 
 export function renderDashboardJs(): string {
   return dashboardJs;
+}
+
+/** The shared design system (tokens + components), linked by every page under /dashboard. */
+export function renderDesignSystemCss(): string {
+  return designSystemCss;
 }
 
 export function renderDashboardLogo(): Buffer {

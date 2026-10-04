@@ -7,6 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Pixelify+Sans:wght@500;600&display=swap">
+<link rel="stylesheet" href="/dashboard/ds.css">
 <link rel="stylesheet" href="/dashboard/agent-floor/app.css">
 </head>
 <body>
@@ -36,7 +37,7 @@
         <div class="pb">
           <div class="lpt" id="lpt" hidden>
             <label for="repo">Repo</label>
-            <select id="repo"></select>
+            <select id="repo" class="field"></select>
           </div>
           <div id="scen"></div>
         </div>
@@ -80,7 +81,7 @@
           <button type="button" role="tab" id="tab-log" aria-selected="true" aria-controls="pane-log">Events</button>
           <button type="button" role="tab" id="tab-ag" aria-selected="false" aria-controls="pane-ag" tabindex="-1">Agent details</button>
         </div>
-        <div class="pb" id="pane-log" role="tabpanel" aria-labelledby="tab-log"><ul id="log" role="log" aria-live="polite"></ul></div>
+        <div class="pb" id="pane-log" role="tabpanel" aria-labelledby="tab-log"><ul id="log" class="log" role="log" aria-live="polite"></ul></div>
         <div class="pb" id="pane-ag" role="tabpanel" aria-labelledby="tab-ag" hidden>
           <p class="ad-name" id="adn"></p>
           <p class="ad-file" id="adf"></p>

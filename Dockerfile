@@ -57,6 +57,7 @@ COPY --from=builder --chown=node:node /app/dist ./dist
 COPY --from=builder --chown=node:node /app/src/infrastructure/db/schema.sql ./dist/infrastructure/db/schema.sql
 # Same reason: the dashboard SPA is plain static html/css/js read via __dirname.
 COPY --from=builder --chown=node:node /app/src/presentation/web/ui/dashboard ./dist/presentation/web/ui/dashboard
+COPY --from=builder --chown=node:node /app/src/presentation/web/ui/shared ./dist/presentation/web/ui/shared
 COPY --from=builder --chown=node:node /app/src/presentation/web/assets/logo.png ./dist/presentation/web/assets/logo.png
 # CAF-DASHBOARD-02: Agent Floor static files (html/css/js), read via __dirname like the dashboard's.
 COPY --from=builder --chown=node:node /app/src/presentation/web/ui/agent-floor ./dist/presentation/web/ui/agent-floor

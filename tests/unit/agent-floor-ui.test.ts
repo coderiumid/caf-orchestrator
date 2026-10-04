@@ -97,6 +97,8 @@ describe('Agent Floor UI routes', () => {
 describe('Agent Floor static files', () => {
   const html = readFileSync(join(UI_DIR, 'agent-floor/agent-floor.html'), 'utf-8');
   const read = (name: string): string => readFileSync(join(UI_DIR, 'agent-floor', name), 'utf-8');
+  // Tokens, base, and shared components moved out of agent-floor.css into the design system.
+  const readDs = (): string => readFileSync(join(UI_DIR, 'shared', 'design-system.css'), 'utf-8');
 
   it('has no inline script, inline event handler, or embedded base64 logo (CSP-safe, uses the project logo)', () => {
     expect(html).not.toMatch(/<script(?![^>]*\bsrc=)[^>]*>/);
@@ -226,13 +228,13 @@ describe('Agent Floor static files', () => {
       // Agents never walk: each has one fixed seat, so a paused page still shows the true state.
       expect(render).toContain('function placeInitial(a){a.x=ST[a.id].cx;a.y=ST[a.id].fy;}');
       expect(render).not.toMatch(/goTo\(|stepAgent|PANTRY/);
-      expect(read('agent-floor.css')).toMatch(/@media \(prefers-reduced-motion:reduce\)\{[^}]*animation:none/);
+      expect(readDs()).toMatch(/@media \(prefers-reduced-motion:reduce\)\{[^}]*animation:none/);
       // Live data must keep arriving while paused: the live gap waits on real time, not simulation time.
       expect(read('adapter.js')).toContain('item.live?realDelay(item.delay):AF.wait(item.delay)');
     });
 
     it('follows the system light/dark theme', () => {
-      expect(read('agent-floor.css')).toContain('@media (prefers-color-scheme:dark)');
+      expect(readDs()).toContain('@media (prefers-color-scheme:dark)');
     });
 
     it('every agent is reachable from the keyboard through the status list, not only by clicking the canvas', () => {
@@ -243,7 +245,7 @@ describe('Agent Floor static files', () => {
     });
 
     it('labels the live regions and the tab pattern for screen readers', () => {
-      expect(html).toMatch(/<ul id="log" role="log" aria-live="polite">/);
+      expect(html).toMatch(/<ul id="log" class="log" role="log" aria-live="polite">/);
       expect(html).toMatch(/id="rpill" aria-live="polite"/);
       expect(html).toMatch(/role="tablist" aria-label=/);
       expect(html).toMatch(/role="tab" id="tab-log" aria-selected="true" aria-controls="pane-log"/);
@@ -256,7 +258,7 @@ describe('Agent Floor static files', () => {
     it('keeps scrolling inside the panels on desktop: the page itself is a fixed-height grid', () => {
       const css = read('agent-floor.css');
       expect(css).toContain('.app{height:100%;display:grid;grid-template-rows:auto minmax(0,1fr)');
-      expect(css).toContain('.pb{flex:1;min-height:0;overflow:auto');
+      expect(readDs()).toContain('.pb{flex:1;min-height:0;overflow:auto');
     });
   });
 
