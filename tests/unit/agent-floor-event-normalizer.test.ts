@@ -467,3 +467,143 @@ describe('normalizeRun', () => {
     for (const bad of ['', '12', 'abc', '1.2.3', '-1.0', '1.x']) expect(parseCursor(bad)).toBeUndefined();
   });
 });
+
+// CAF-DASHBOARD-03 T5: PR review / fix-review runs. One agent, one step.
+describe('normalizeRun — PR review runs', () => {
+  const RUN_ID = 'pr-review:github-job-1';
+  const reviewRun = (overrides: Partial<PipelineRun> = {}): PipelineRun =>
+    makeRun({ id: RUN_ID, kind: 'pr-review', reviewMode: 'initial', reviewResult: null, prNumber: 42, ...overrides });
+  const REVIEW: RowSpec[] = [
+    ['caf-reviewer', 'start'],
+    ['caf-reviewer', 'end'],
+  ];
+  const rows = (specs: RowSpec[] = REVIEW): AgentEvent[] => makeRows(specs, RUN_ID);
+  const shape = (events: FloorEvent[]): string[] =>
+    events.map((e) =>
+      e.type === 'agent_state'
+        ? `agent_state:${e.agent}:${e.state}`
+        : e.type === 'step'
+          ? `step:${e.step}:${e.status}${e.note ? `:${e.note}` : ''}`
+          : e.type === 'handoff'
+            ? `handoff:${e.from}>${e.to}:${e.file}`
+            : e.type === 'run_finished'
+              ? `run_finished:${e.finalStatus}`
+              : e.type,
+    );
+  const cursorsAscend = (events: FloorEvent[]): boolean =>
+    events.every((e, i) => i === 0 || eventsAfter([e], events[i - 1].cursor).length === 1);
+
+  it('a running review: run_started carries kind/mode/PR, only the reviewer works, no run_finished yet', () => {
+    const events = normalizeRun(reviewRun(), rows([['caf-reviewer', 'start']]));
+    expect(shape(events)).toEqual(['run_started', 'step:review:active', 'agent_state:reviewer:reviewing']);
+    expect(events[0]).toMatchObject({
+      type: 'run_started',
+      kind: 'pr-review',
+      reviewMode: 'initial',
+      prNumber: 42,
+      ticket: 'GAN-1',
+      branch: 'ai-agent/GAN-1',
+    });
+  });
+
+  it('APPROVE: review passes with the verdict, review-notes.md goes to the outbox, reviewer celebrates', () => {
+    const result = { type: 'verdict', verdict: 'APPROVE', postedAsComment: false } as const;
+    const events = normalizeRun(reviewRun({ finalStatus: 'SUCCESS', endedAt: at(30), reviewResult: result }), rows());
+    expect(shape(events)).toEqual([
+      'run_started',
+      'step:review:active',
+      'agent_state:reviewer:reviewing',
+      'usage',
+      'agent_state:reviewer:idle',
+      'step:review:pass:APPROVE',
+      'handoff:reviewer>outbox:review-notes.md',
+      'agent_state:reviewer:celebrating',
+      'run_finished:SUCCESS',
+    ]);
+    expect(events.at(-1)).toMatchObject({ gate: null, superseded: false, review: { mode: 'initial', result, prNumber: 42 } });
+    expect(cursorsAscend(events)).toBe(true);
+  });
+
+  it.each([
+    ['CHANGES_REQUESTED', false, 'CHANGES REQUESTED'],
+    ['DEFER', false, 'DEFER'],
+    ['CHANGES_REQUESTED', true, 'CHANGES REQUESTED (posted as COMMENT)'],
+  ] as const)('%s (postedAsComment=%s): finished but no celebration', (verdict, postedAsComment, note) => {
+    const events = normalizeRun(
+      reviewRun({ finalStatus: 'SUCCESS', endedAt: at(30), reviewResult: { type: 'verdict', verdict, postedAsComment } }),
+      rows(),
+    );
+    expect(shape(events).slice(-3)).toEqual([`step:review:pass:${note}`, 'handoff:reviewer>outbox:review-notes.md', 'run_finished:SUCCESS']);
+    expect(shape(events)).not.toContain('agent_state:reviewer:celebrating');
+  });
+
+  it.each(['global', 'scoped'] as const)('fix review (%s): reviewer is fixing, counts on the step, fix-review-log.md to the outbox', (mode) => {
+    const result = { type: 'fix', fixed: 2, skipped: 1, notApplicable: 0 } as const;
+    const events = normalizeRun(reviewRun({ reviewMode: mode, finalStatus: 'SUCCESS', endedAt: at(30), reviewResult: result }), rows());
+    expect(shape(events)).toEqual([
+      'run_started',
+      'step:review:active',
+      'agent_state:reviewer:fixing',
+      'usage',
+      'agent_state:reviewer:idle',
+      'step:review:pass:2 fixed, 1 skipped, 0 n/a',
+      'handoff:reviewer>outbox:fix-review-log.md',
+      'agent_state:reviewer:celebrating',
+      'run_finished:SUCCESS',
+    ]);
+    expect(events.at(-1)).toMatchObject({ review: { mode, result } });
+  });
+
+  it('ERROR after a failed agent: the step fails once, on the end row', () => {
+    const events = normalizeRun(
+      reviewRun({ finalStatus: 'ERROR', endedAt: at(30) }),
+      rows([['caf-reviewer', 'start'], ['caf-reviewer', 'end', { outcome: 'FAILED', exitCode: 1 }]]),
+    );
+    expect(shape(events).slice(3)).toEqual(['usage', 'step:review:fail:FAILED', 'agent_state:reviewer:error', 'run_finished:ERROR']);
+    expect(events.at(-1)).toMatchObject({ review: { mode: 'initial', result: null } });
+  });
+
+  it('ERROR with the agent still running (the spawn itself threw): reviewer errors at the end', () => {
+    const events = normalizeRun(reviewRun({ finalStatus: 'ERROR', endedAt: at(30) }), rows([['caf-reviewer', 'start']]));
+    expect(shape(events).slice(3)).toEqual(['step:review:fail:ERROR', 'agent_state:reviewer:error', 'run_finished:ERROR']);
+  });
+
+  it('a retried job: attempt 1 ends superseded with no status, attempt 2 finishes normally', () => {
+    const result = { type: 'fix', fixed: 1, skipped: 0, notApplicable: 0 } as const;
+    const events = normalizeRun(
+      reviewRun({ reviewMode: 'global', attempt: 2, finalStatus: 'SUCCESS', endedAt: at(60), reviewResult: result }),
+      rows([
+        ['caf-reviewer', 'start'],
+        ['caf-reviewer', 'end', { outcome: 'FAILED', exitCode: 1 }],
+        ['caf-reviewer', 'start', { attempt: 2 }],
+        ['caf-reviewer', 'end', { attempt: 2 }],
+      ]),
+    );
+    const finished = events.filter((e) => e.type === 'run_finished');
+    expect(finished).toHaveLength(2);
+    expect(finished[0]).toMatchObject({ attempt: 1, finalStatus: null, superseded: true, review: { result: null } });
+    expect(finished[1]).toMatchObject({ attempt: 2, finalStatus: 'SUCCESS', superseded: false, review: { result } });
+    expect(events.filter((e) => e.type === 'run_started').map((e) => e.attempt)).toEqual([1, 2]);
+    expect(cursorsAscend(events)).toBe(true);
+  });
+
+  it('is append-only: the events of a running review are a prefix of the finished one', () => {
+    const running = normalizeRun(reviewRun(), rows());
+    const finished = normalizeRun(
+      reviewRun({ finalStatus: 'SUCCESS', endedAt: at(30), reviewResult: { type: 'verdict', verdict: 'APPROVE', postedAsComment: false } }),
+      rows(),
+    );
+    expect(finished.slice(0, running.length)).toEqual(running);
+  });
+
+  it('a pipeline run is unaffected: no review fields on its events, with or without an explicit kind', () => {
+    const implicit = normalizeRun(makeRun({ finalStatus: 'SUCCESS', endedAt: at(90) }), makeRows(HAPPY));
+    const explicit = normalizeRun(
+      makeRun({ finalStatus: 'SUCCESS', endedAt: at(90), kind: 'pipeline', reviewMode: null, reviewResult: null }),
+      makeRows(HAPPY),
+    );
+    expect(explicit).toEqual(implicit);
+    expect(implicit[0]).not.toHaveProperty('kind');
+    expect(implicit.find((e) => e.type === 'run_finished')).not.toHaveProperty('review');
+  });
+});

@@ -286,4 +286,48 @@ describe('Agent Floor static files', () => {
   it('the existing dashboard links to the Agent Floor', () => {
     expect(readFileSync(join(UI_DIR, 'dashboard/dashboard.html'), 'utf-8')).toContain('href="/dashboard/agent-floor"');
   });
+
+  // CAF-DASHBOARD-03: PR review / fix-review runs on both pages.
+  describe('PR review runs (CAF-DASHBOARD-03)', () => {
+    const dashboard = (name: string): string => readFileSync(join(UI_DIR, 'dashboard', name), 'utf-8');
+
+    it('the office knows the fixing state and can swap the stage list, restoring it on reset', () => {
+      const render = read('render.js');
+      expect(render).toContain('var WORKING={planning:1,implementing:1,verifying:1,retrying:1,reviewing:1,fixing:1};');
+      expect(render).toContain("fixing:'Fixing review'");
+      expect(render).toContain("case 'implementing':case 'fixing':return 'code';");
+      expect(render).toContain('function setSteps(list){STEPS=list&&list.length?list:PIPELINE_STEPS;renderSteps();}');
+      expect(render).toContain('STEPS=PIPELINE_STEPS;stepsState={};renderSteps();renderLogEmpty();');
+      expect(render).toContain('setSteps:setSteps');
+    });
+
+    it('the adapter reaches a review run by its run id and tracks the open run by run id', () => {
+      const adapter = read('adapter.js');
+      expect(adapter).toContain("'/api/pipelines/by-run/'+encodeURIComponent(run.runId)");
+      expect(adapter).toContain('function isCurrent(r){return !!current&&current.runId===r.runId;}');
+      // Still read-only.
+      expect(adapter).not.toMatch(/method\s*:/);
+    });
+
+    it('demo mode has a review and a fix-review scenario', () => {
+      const demo = read('demo.js');
+      expect(demo).toContain("review:{mode:'initial',verdict:'CHANGES REQUESTED'}");
+      expect(demo).toContain("review:{mode:'global',fixed:2,skipped:1,notApplicable:0}");
+      expect(demo).toContain('sc.review?reviewRun(sc):pipeline(sc)');
+    });
+
+    it('the dashboard has a run-type filter and opens a review run by its run id', () => {
+      expect(dashboard('dashboard.html')).toContain('id="kind-filter"');
+      const js = dashboard('dashboard.js');
+      expect(js).toContain("'/api/pipelines/by-run/' + encodeURIComponent(run.runId)");
+      expect(js).toContain("kindFilter.value === 'ALL' || runType(run) === kindFilter.value");
+    });
+
+    it('adds no raw colors to either page stylesheet', () => {
+      for (const css of [dashboard('dashboard.css'), read('agent-floor.css')]) {
+        const added = css.split('\n').filter((line) => line.includes('.rail .res'));
+        for (const line of added) expect(line).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(/i);
+      }
+    });
+  });
 });

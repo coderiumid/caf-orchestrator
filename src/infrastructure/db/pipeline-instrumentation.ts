@@ -4,6 +4,8 @@ import {
   type PivPhase,
   type AgentEventType,
   type AgentOutcome,
+  type ReviewMode,
+  type ReviewResult,
 } from './pipeline-run.repository.js';
 import type { VerifyDetails } from '../reports/verify-report-details.js';
 import { parseAgentUsage } from '../agent/agent-cost-parser.js';
@@ -117,9 +119,21 @@ export function recordAgentEvent(
   eventType: AgentEventType,
   options: RecordAgentEventOptions = {},
 ): void {
-  warnOnFailure('recordAgentEvent', { repoId, ticketId, agentName, eventType }, () => {
+  insertAgentEvent(pipelineRunId(repoId, ticketId), repoId, ticketId, agentName, pivPhase, eventType, options);
+}
+
+function insertAgentEvent(
+  runId: string,
+  repoId: string,
+  ticketId: string,
+  agentName: string,
+  pivPhase: PivPhase,
+  eventType: AgentEventType,
+  options: RecordAgentEventOptions = {},
+): void {
+  warnOnFailure('recordAgentEvent', { runId, repoId, ticketId, agentName, eventType }, () => {
     repository().insertEvent({
-      pipelineRunId: pipelineRunId(repoId, ticketId),
+      pipelineRunId: runId,
       agentName,
       pivPhase,
       eventType,
@@ -171,4 +185,68 @@ export function recordAgentEnd(
     outcome: outcomeOf(result),
     verifyDetails,
   });
+}
+
+/**
+ * CAF-DASHBOARD-03: PR review / fix-review jobs (run-pr-review.use-case.ts).
+ * Each job gets its own pipeline_runs row, keyed by the job id rather than by
+ * repo+ticket — a ticket can be reviewed any number of times, and none of
+ * those may touch the ticket's pipeline run row (recordPipelineStarted would
+ * reset its ended_at/final_status). A BullMQ retry carries the same job id,
+ * so it lands on the same row as a new attempt, same as a pipeline retry.
+ */
+export function prReviewRunId(jobId: string): string {
+  return `pr-review:${jobId}`;
+}
+
+export interface PrReviewRunInput {
+  jobId: string;
+  /** owner/repo — same format repoIdFromCloneUrl() produces for pipeline runs. */
+  repoId: string;
+  ticketId: string;
+}
+
+export function recordPrReviewStarted(input: PrReviewRunInput & { prNumber: number; mode: ReviewMode }): void {
+  const { jobId, repoId, ticketId, prNumber, mode } = input;
+  warnOnFailure('recordPrReviewStarted', { jobId, repoId, ticketId }, () => {
+    const repo = repository();
+    // A review job carries no ticket title of its own — reuse the one the
+    // ticket's pipeline run recorded, when there is one.
+    const ticketTitle = repo.getPipelineDetail(repoId, ticketId)?.run.ticketTitle ?? `PR #${prNumber}`;
+    repo.upsertPipelineRun({
+      id: prReviewRunId(jobId),
+      repoId,
+      ticketId,
+      ticketTitle,
+      startedAt: new Date().toISOString(),
+      kind: 'pr-review',
+      reviewMode: mode,
+      prNumber,
+    });
+  });
+  broadcastChange(repoId, ticketId);
+}
+
+export function recordPrReviewAgentStart(input: PrReviewRunInput, agentName: string): void {
+  insertAgentEvent(prReviewRunId(input.jobId), input.repoId, input.ticketId, agentName, 'verify', 'start');
+}
+
+export function recordPrReviewAgentEnd(input: PrReviewRunInput, agentName: string, result: AgentRunOutcomeInput): void {
+  const usage = parseAgentUsage(result.stdout);
+  insertAgentEvent(prReviewRunId(input.jobId), input.repoId, input.ticketId, agentName, 'verify', 'end', {
+    costUsd: usage?.costUsd,
+    exitCode: result.exitCode,
+    outcome: outcomeOf(result),
+  });
+}
+
+/** Concludes a review run. `result` is only known (and only stored) when the job finished normally. */
+export function finalizePrReviewRun(input: PrReviewRunInput, finalStatus: 'SUCCESS' | 'ERROR', result?: ReviewResult): void {
+  const { jobId, repoId, ticketId } = input;
+  warnOnFailure('finalizePrReviewRun', { jobId, repoId, ticketId, finalStatus }, () => {
+    const repo = repository();
+    if (result) repo.setReviewResult(prReviewRunId(jobId), result);
+    repo.finalizePipelineRun(prReviewRunId(jobId), new Date().toISOString(), finalStatus);
+  });
+  broadcastChange(repoId, ticketId);
 }

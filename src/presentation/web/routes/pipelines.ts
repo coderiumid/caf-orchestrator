@@ -7,6 +7,9 @@ import {
   type PipelineRun,
   type AgentEvent,
   type PivPhase,
+  type RunKind,
+  type ReviewMode,
+  type ReviewResult,
 } from '../../../infrastructure/db/pipeline-run.repository.js';
 import { normalizeRun, eventsAfter, parseCursor } from '../agent-floor/event-normalizer.js';
 
@@ -29,6 +32,14 @@ import { normalizeRun, eventsAfter, parseCursor } from '../agent-floor/event-nor
  */
 
 interface PipelineRunApiShape {
+  /** pipeline_runs.id — the only key that identifies a PR-review run, since one ticket can have several (CAF-DASHBOARD-03). */
+  runId: string;
+  /** 'pipeline' for a ticket pipeline run, 'pr-review' for a PR review / fix-review job. */
+  kind: RunKind;
+  /** PR-review runs only: 'initial' (full review) or 'global'/'scoped' (fix review). */
+  reviewMode: ReviewMode | null;
+  /** PR-review runs only, once the job finished normally: the verdict, or FIXED/SKIPPED/NOT_APPLICABLE counts. */
+  reviewResult: ReviewResult | null;
   repoId: string;
   ticketId: string;
   ticketTitle: string;
@@ -73,6 +84,10 @@ function summarizeEvents(events: AgentEvent[]) {
 
 function toApiShape(run: PipelineRun, events: AgentEvent[]): PipelineRunApiShape {
   return {
+    runId: run.id,
+    kind: run.kind,
+    reviewMode: run.reviewMode,
+    reviewResult: run.reviewResult,
     repoId: run.repoId,
     ticketId: run.ticketId,
     ticketTitle: run.ticketTitle,
@@ -86,6 +101,32 @@ function toApiShape(run: PipelineRun, events: AgentEvent[]): PipelineRunApiShape
   };
 }
 
+type RunDetail = { run: PipelineRun; events: AgentEvent[] };
+
+function detailBody(detail: RunDetail) {
+  return { ...toApiShape(detail.run, detail.events), events: detail.events };
+}
+
+// CAF-DASHBOARD-02 T3: the Agent Floor's event feed — the run's rows passed
+// through the normalizer (requirements.md section 7 contract events). Read
+// only. `after` is the `cursor` of the last event the caller already
+// handled; the SSE stream stays a bare "something changed" nudge and the
+// page answers it by asking here for whatever is new, so a dropped and
+// re-established connection can't deliver an event twice. Live and replay
+// both read this same endpoint (replay simply starts with no `after`).
+function floorEventsBody(detail: RunDetail, after: string | undefined) {
+  const all = normalizeRun(detail.run, detail.events, {
+    retryLimits: { qa: config.agents?.qa?.maxRetries ?? null, reviewer: config.agents?.reviewer?.maxRetries ?? null },
+  });
+  return {
+    run: { branch: `ai-agent/${detail.run.ticketId}`, ...toApiShape(detail.run, detail.events) },
+    events: eventsAfter(all, after),
+    // Position of the newest event that exists, whether or not it is in
+    // this response — what to send as `after` next time.
+    nextCursor: all[all.length - 1]?.cursor ?? after ?? null,
+  };
+}
+
 export async function pipelinesRoutes(app: FastifyInstance): Promise<void> {
   if (!config.dashboard.enabled) {
     return;
@@ -94,10 +135,40 @@ export async function pipelinesRoutes(app: FastifyInstance): Promise<void> {
   await registerDashboardBasicAuth(app);
   app.addHook('onRequest', app.basicAuth);
 
+  // Runs of every kind, newest first. `kind=pipeline|pr-review` narrows it;
+  // any other value is ignored rather than rejected.
   app.get('/api/pipelines', async (request) => {
-    const { repoId } = request.query as { repoId?: string };
+    const { repoId, kind } = request.query as { repoId?: string; kind?: string };
     const repo = new PipelineRunRepository(getDb());
-    return repo.getPipelineRuns(repoId).map((run) => toApiShape(run, repo.getEventsForRun(run.id)));
+    const kindFilter = kind === 'pipeline' || kind === 'pr-review' ? kind : undefined;
+    return repo.getPipelineRuns(repoId, {}, kindFilter).map((run) => toApiShape(run, repo.getEventsForRun(run.id)));
+  });
+
+  // CAF-DASHBOARD-03: any run by its `runId`. The only way to reach a
+  // PR-review run — repoId+ticketId below always resolves to the ticket's
+  // pipeline run. Callers must percent-encode the id (it contains ":" and,
+  // for a pipeline run, "/"). "by-run" is a static segment, so it can't be
+  // mistaken for a :repoId (which is always "owner/repo").
+  app.get('/api/pipelines/by-run/:runId', async (request, reply) => {
+    const { runId } = request.params as { runId: string };
+    const detail = new PipelineRunRepository(getDb()).getRunById(runId);
+    if (!detail) {
+      return reply.code(404).send({ error: `No run found for ${runId}` });
+    }
+    return detailBody(detail);
+  });
+
+  app.get('/api/pipelines/by-run/:runId/floor-events', async (request, reply) => {
+    const { runId } = request.params as { runId: string };
+    const { after } = request.query as { after?: string };
+    if (after !== undefined && parseCursor(after) === undefined) {
+      return reply.code(400).send({ error: 'Invalid "after" cursor' });
+    }
+    const detail = new PipelineRunRepository(getDb()).getRunById(runId);
+    if (!detail) {
+      return reply.code(404).send({ error: `No run found for ${runId}` });
+    }
+    return floorEventsBody(detail, after);
   });
 
   // repoId is "owner/repo" (see pipeline-instrumentation.ts's repoIdFromCloneUrl)
@@ -111,16 +182,9 @@ export async function pipelinesRoutes(app: FastifyInstance): Promise<void> {
     if (!detail) {
       return reply.code(404).send({ error: `No pipeline run found for ${repoId}/${ticketId}` });
     }
-    return { ...toApiShape(detail.run, detail.events), events: detail.events };
+    return detailBody(detail);
   });
 
-  // CAF-DASHBOARD-02 T3: the Agent Floor's event feed — the run's rows passed
-  // through the normalizer (requirements.md section 7 contract events). Read
-  // only. `after` is the `cursor` of the last event the caller already
-  // handled; the SSE stream stays a bare "something changed" nudge and the
-  // page answers it by asking here for whatever is new, so a dropped and
-  // re-established connection can't deliver an event twice. Live and replay
-  // both read this same endpoint (replay simply starts with no `after`).
   app.get('/api/pipelines/:repoId/:ticketId/floor-events', async (request, reply) => {
     const { repoId, ticketId } = request.params as { repoId: string; ticketId: string };
     const { after } = request.query as { after?: string };
@@ -133,16 +197,6 @@ export async function pipelinesRoutes(app: FastifyInstance): Promise<void> {
     if (!detail) {
       return reply.code(404).send({ error: `No pipeline run found for ${repoId}/${ticketId}` });
     }
-
-    const all = normalizeRun(detail.run, detail.events, {
-      retryLimits: { qa: config.agents?.qa?.maxRetries ?? null, reviewer: config.agents?.reviewer?.maxRetries ?? null },
-    });
-    return {
-      run: { runId: detail.run.id, branch: `ai-agent/${detail.run.ticketId}`, ...toApiShape(detail.run, detail.events) },
-      events: eventsAfter(all, after),
-      // Position of the newest event that exists, whether or not it is in
-      // this response — what to send as `after` next time.
-      nextCursor: all[all.length - 1]?.cursor ?? after ?? null,
-    };
+    return floorEventsBody(detail, after);
   });
 }

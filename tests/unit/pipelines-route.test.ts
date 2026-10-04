@@ -247,4 +247,126 @@ describe('GET /api/pipelines*', () => {
 
     await app.close();
   });
+  // CAF-DASHBOARD-03 T3: PR review runs alongside pipeline runs.
+  describe('PR review runs', () => {
+    const REVIEW_A = 'pr-review:github-a';
+    const REVIEW_B = 'pr-review:github-b';
+
+    /** CAF-2 (finished pipeline run from seed()) gets two review runs: an initial review and a fix review. */
+    async function seedReviews() {
+      await seed();
+      const { openDb } = await import('../../src/infrastructure/db/connection.js');
+      const { PipelineRunRepository } = await import('../../src/infrastructure/db/pipeline-run.repository.js');
+      const db = openDb(dbPath);
+      const repo = new PipelineRunRepository(db);
+      const common = { repoId: 'ganjardbc/umkm-pos', ticketId: 'CAF-2', ticketTitle: 'Finished ticket', kind: 'pr-review' as const, prNumber: 14 };
+
+      repo.upsertPipelineRun({ id: REVIEW_A, ...common, reviewMode: 'initial', startedAt: '2026-09-08T00:00:00.000Z' });
+      repo.insertEvent({ pipelineRunId: REVIEW_A, agentName: 'caf-reviewer', pivPhase: 'verify', eventType: 'start', createdAt: '2026-09-08T00:00:01.000Z' });
+      repo.insertEvent({
+        pipelineRunId: REVIEW_A,
+        agentName: 'caf-reviewer',
+        pivPhase: 'verify',
+        eventType: 'end',
+        costUsd: 0.5,
+        exitCode: 0,
+        outcome: 'OK',
+        createdAt: '2026-09-08T00:05:00.000Z',
+      });
+      repo.setReviewResult(REVIEW_A, { type: 'verdict', verdict: 'CHANGES_REQUESTED', postedAsComment: false });
+      repo.finalizePipelineRun(REVIEW_A, '2026-09-08T00:05:01.000Z', 'SUCCESS');
+
+      repo.upsertPipelineRun({ id: REVIEW_B, ...common, reviewMode: 'global', startedAt: '2026-09-09T00:00:00.000Z' });
+      repo.insertEvent({ pipelineRunId: REVIEW_B, agentName: 'caf-reviewer', pivPhase: 'verify', eventType: 'start', createdAt: '2026-09-09T00:00:01.000Z' });
+      db.close();
+    }
+
+    const get = async (url: string, headers: Record<string, string> = { authorization: AUTH_HEADER }) => {
+      const app = await buildTestApp();
+      const response = await app.inject({ method: 'GET', url, headers });
+      await app.close();
+      return response;
+    };
+
+    it('lists every kind together, newest first, with kind / mode / result on each row', async () => {
+      await seedReviews();
+      const body = (await get('/api/pipelines?repoId=ganjardbc%2Fumkm-pos')).json() as Array<Record<string, unknown>>;
+
+      expect(body.map((r) => r.runId)).toEqual([REVIEW_B, REVIEW_A, 'ganjardbc/umkm-pos:CAF-1', 'ganjardbc/umkm-pos:CAF-2']);
+      expect(body[0]).toMatchObject({ kind: 'pr-review', reviewMode: 'global', reviewResult: null, status: 'RUNNING', prNumber: 14, ticketId: 'CAF-2' });
+      expect(body[1]).toMatchObject({
+        kind: 'pr-review',
+        reviewMode: 'initial',
+        reviewResult: { type: 'verdict', verdict: 'CHANGES_REQUESTED', postedAsComment: false },
+        status: 'SUCCESS',
+        totalCostUsd: 0.5,
+      });
+      expect(body[2]).toMatchObject({ kind: 'pipeline', reviewMode: null, reviewResult: null });
+      // Same keys whatever the kind.
+      expect(Object.keys(body[0]).sort()).toEqual(Object.keys(body[2]).sort());
+    });
+
+    it('filters by kind, and ignores a kind it does not know', async () => {
+      await seedReviews();
+      const ids = async (query: string) =>
+        ((await get(`/api/pipelines${query}`)).json() as Array<{ runId: string }>).map((r) => r.runId);
+
+      expect(await ids('?kind=pr-review')).toEqual([REVIEW_B, REVIEW_A]);
+      expect(await ids('?kind=pipeline')).toEqual(['ganjardbc/umkm-pos:CAF-1', 'ganjardbc/umkm-pos:CAF-2', 'ganjardbc/other-repo:CAF-9']);
+      expect(await ids('?kind=pr-review&repoId=ganjardbc%2Fother-repo')).toEqual([]);
+      expect(await ids('?kind=bogus')).toHaveLength(5);
+    });
+
+    it('repo + ticket still resolves to the pipeline run, untouched by its reviews', async () => {
+      await seedReviews();
+      const body = (await get('/api/pipelines/ganjardbc%2Fumkm-pos/CAF-2')).json() as Record<string, unknown>;
+      expect(body).toMatchObject({ runId: 'ganjardbc/umkm-pos:CAF-2', kind: 'pipeline', status: 'SUCCESS', endedAt: '2026-09-06T01:00:00.000Z', attempt: 1 });
+      expect(body.events).toEqual([]);
+    });
+
+    it('GET /api/pipelines/by-run/:runId returns one specific review run with its events', async () => {
+      await seedReviews();
+      const response = await get(`/api/pipelines/by-run/${encodeURIComponent(REVIEW_A)}`);
+      expect(response.statusCode).toBe(200);
+      const body = response.json() as Record<string, unknown>;
+      expect(body).toMatchObject({ runId: REVIEW_A, kind: 'pr-review', reviewMode: 'initial', status: 'SUCCESS' });
+      expect((body.events as Array<{ eventType: string }>).map((e) => e.eventType)).toEqual(['start', 'end']);
+    });
+
+    it('by-run also serves a pipeline run (its id contains a slash and a colon)', async () => {
+      await seedReviews();
+      const response = await get(`/api/pipelines/by-run/${encodeURIComponent('ganjardbc/umkm-pos:CAF-1')}`);
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ runId: 'ganjardbc/umkm-pos:CAF-1', kind: 'pipeline', ticketId: 'CAF-1' });
+    });
+
+    it('by-run floor-events: review contract events, cursor paging, bad cursor rejected', async () => {
+      await seedReviews();
+      const url = `/api/pipelines/by-run/${encodeURIComponent(REVIEW_A)}/floor-events`;
+      const first = (await get(url)).json() as { run: Record<string, unknown>; events: Array<Record<string, unknown>>; nextCursor: string };
+
+      expect(first.run).toMatchObject({ runId: REVIEW_A, kind: 'pr-review', branch: 'ai-agent/CAF-2' });
+      expect(first.events[0]).toMatchObject({ type: 'run_started', kind: 'pr-review', reviewMode: 'initial', prNumber: 14 });
+      expect(first.events.at(-1)).toMatchObject({
+        type: 'run_finished',
+        finalStatus: 'SUCCESS',
+        review: { mode: 'initial', result: { verdict: 'CHANGES_REQUESTED' } },
+      });
+      expect(first.events.some((e) => e.type === 'agent_state' && e.state === 'reviewing')).toBe(true);
+
+      const again = (await get(`${url}?after=${encodeURIComponent(first.nextCursor)}`)).json() as { events: unknown[]; nextCursor: string };
+      expect(again.events).toEqual([]);
+      expect(again.nextCursor).toBe(first.nextCursor);
+
+      expect((await get(`${url}?after=nope`)).statusCode).toBe(400);
+    });
+
+    it('by-run: 404 for an unknown run, 401 without auth', async () => {
+      await seedReviews();
+      expect((await get('/api/pipelines/by-run/pr-review%3Amissing')).statusCode).toBe(404);
+      expect((await get('/api/pipelines/by-run/pr-review%3Amissing/floor-events')).statusCode).toBe(404);
+      expect((await get(`/api/pipelines/by-run/${encodeURIComponent(REVIEW_A)}`, {})).statusCode).toBe(401);
+      expect((await get(`/api/pipelines/by-run/${encodeURIComponent(REVIEW_A)}/floor-events`, {})).statusCode).toBe(401);
+    });
+  });
 });

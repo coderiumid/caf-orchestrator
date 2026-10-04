@@ -5,6 +5,7 @@
   var empty = document.getElementById('empty-state');
   var search = document.getElementById('run-search');
   var statusFilter = document.getElementById('status-filter');
+  var kindFilter = document.getElementById('kind-filter');
   var repoFilter = document.getElementById('repo-filter');
   var count = document.getElementById('result-count');
   var inspector = document.getElementById('inspector');
@@ -43,6 +44,37 @@
     return mins < 60 ? mins + 'm' : Math.floor(mins / 60) + 'h ' + (mins % 60) + 'm';
   }
 
+  // ---- Run types: a ticket pipeline, or a PR review / fix-review job ----
+
+  // 'pipeline', 'review' (mode initial) or 'fix' (mode global/scoped).
+  function runType(run) {
+    if (run.kind !== 'pr-review') return 'pipeline';
+    return run.reviewMode === 'initial' ? 'review' : 'fix';
+  }
+
+  function typeLabel(run) {
+    var type = runType(run);
+    if (type === 'review') return 'Review';
+    if (type === 'fix') return 'Fix review (' + run.reviewMode + ')';
+    return 'Pipeline';
+  }
+
+  function resultText(run) {
+    var r = run.reviewResult;
+    if (!r) return run.status === 'RUNNING' ? 'In progress' : 'No result recorded';
+    if (r.type === 'verdict') {
+      return r.verdict.replace('_', ' ') + (r.postedAsComment ? ' (posted as comment)' : '');
+    }
+    return r.fixed + ' fixed, ' + r.skipped + ' skipped, ' + r.notApplicable + ' n/a';
+  }
+
+  // A review run can only be fetched by its run id: repo + ticket always
+  // resolves to the ticket's pipeline run.
+  function detailUrl(run) {
+    if (run.kind === 'pr-review') return '/api/pipelines/by-run/' + encodeURIComponent(run.runId);
+    return '/api/pipelines/' + encodeURIComponent(run.repoId) + '/' + encodeURIComponent(run.ticketId);
+  }
+
   function totalRetries(counts) {
     return Object.keys(counts || {}).reduce(function (sum, key) {
       return sum + counts[key];
@@ -76,7 +108,14 @@
 
   // ---- Rendering: run grid ----
 
+  function reviewRail(run) {
+    var cls = run.status === 'SUCCESS' ? 'pass' : run.status === 'RUNNING' ? 'active running' : 'fail';
+    return '<span class="st ' + cls + '"><span class="m"></span>' + (runType(run) === 'fix' ? 'Fix review' : 'Review') + '</span>' +
+      '<span class="res">' + esc(resultText(run)) + '</span>';
+  }
+
   function phaseRail(run) {
+    if (run.kind === 'pr-review') return reviewRail(run);
     var active = phaseIndex(run.currentPivPhase);
     var running = run.status === 'RUNNING';
     return ['Plan', 'Implement', 'Verify'].map(function (label, i) {
@@ -88,12 +127,13 @@
   }
 
   function runCard(run) {
-    var key = run.repoId + '|' + run.ticketId;
-    return '<button type="button" class="run-card" aria-pressed="' + (key === selected) + '"' +
-      ' data-repo="' + esc(run.repoId) + '" data-ticket="' + esc(run.ticketId) + '">' +
+    var review = run.kind === 'pr-review';
+    var tkey = run.ticketId + (review ? ' · ' + typeLabel(run) : '') + (run.prNumber ? ' · PR #' + run.prNumber : '');
+    return '<button type="button" class="run-card" aria-pressed="' + (run.runId === selected) + '"' +
+      ' data-run="' + esc(run.runId) + '">' +
       '<span class="run-hd">' +
         '<span class="run-id">' +
-          '<span class="tkey">' + esc(run.ticketId) + '</span>' +
+          '<span class="tkey">' + esc(tkey) + '</span>' +
           '<span class="ttl">' + esc(run.ticketTitle || 'Untitled pipeline') + '</span>' +
           '<span class="repo">' + esc(run.repoId) + '</span>' +
         '</span>' +
@@ -102,7 +142,9 @@
       '<span class="rail">' + phaseRail(run) + '</span>' +
       '<span class="run-meta">' +
         '<span><span class="k">Elapsed</span><span class="v">' + esc(elapsed(run)) + '</span></span>' +
-        '<span><span class="k">Retries</span><span class="v">' + totalRetries(run.retryCounts) + '</span></span>' +
+        (review
+          ? '<span><span class="k">Attempt</span><span class="v">' + esc(run.attempt || 1) + '</span></span>'
+          : '<span><span class="k">Retries</span><span class="v">' + totalRetries(run.retryCounts) + '</span></span>') +
         '<span><span class="k">Cost</span><span class="v">' + esc(money(run.totalCostUsd)) + '</span></span>' +
       '</span>' +
     '</button>';
@@ -114,7 +156,8 @@
       var matchesQuery = !q || [run.repoId, run.ticketId, run.ticketTitle].join(' ').toLowerCase().indexOf(q) !== -1;
       var matchesStatus = statusFilter.value === 'ALL' || run.status === statusFilter.value;
       var matchesRepo = repoFilter.value === 'ALL' || run.repoId === repoFilter.value;
-      return matchesQuery && matchesStatus && matchesRepo;
+      var matchesKind = kindFilter.value === 'ALL' || runType(run) === kindFilter.value;
+      return matchesQuery && matchesStatus && matchesRepo && matchesKind;
     });
   }
 
@@ -127,7 +170,7 @@
 
     Array.prototype.forEach.call(grid.querySelectorAll('.run-card'), function (button) {
       button.addEventListener('click', function () {
-        openDetail(button.dataset.repo, button.dataset.ticket);
+        openDetail(button.dataset.run);
       });
     });
   }
@@ -183,22 +226,28 @@
       '<p class="d-repo">' + esc(d.repoId) + ' / ' + esc(d.ticketId) + '</p>' +
       '<dl class="kv">' +
         '<dt>Status</dt><dd>' + statusPill(d.status) + '</dd>' +
+        '<dt>Type</dt><dd>' + esc(typeLabel(d)) + (d.prNumber ? ' · PR #' + esc(d.prNumber) : '') + '</dd>' +
+        (d.kind === 'pr-review' ? '<dt>Result</dt><dd>' + esc(resultText(d)) + '</dd>' : '') +
         '<dt>Elapsed</dt><dd>' + esc(elapsed(d)) + '</dd>' +
         '<dt>Cost</dt><dd>' + esc(money(d.totalCostUsd)) + '</dd>' +
-        '<dt>Retries</dt><dd>' + totalRetries(d.retryCounts) + '</dd>' +
+        (d.kind === 'pr-review'
+          ? '<dt>Attempt</dt><dd>' + esc(d.attempt || 1) + '</dd>'
+          : '<dt>Retries</dt><dd>' + totalRetries(d.retryCounts) + '</dd>') +
       '</dl>' +
       '<h3 class="d-sub">Events · ' + events.length + '</h3>' +
       '<ol class="log">' + timelineItems + '</ol>';
   }
 
-  function openDetail(repo, ticket) {
-    selected = repo + '|' + ticket;
+  function openDetail(runId) {
+    var run = runs.filter(function (r) { return r.runId === runId; })[0];
+    if (!run) return;
+    selected = runId;
     render();
     inspector.hidden = false;
     backdrop.hidden = false;
     detail.innerHTML = '<p class="note">Loading agent events…</p>';
 
-    fetch('/api/pipelines/' + encodeURIComponent(repo) + '/' + encodeURIComponent(ticket))
+    fetch(detailUrl(run))
       .then(function (r) { if (!r.ok) throw new Error(); return r.json(); })
       .then(renderDetail)
       .catch(function () {
@@ -242,10 +291,7 @@
     source.onerror = function () { setConnectionStatus('down'); };
     source.onmessage = function () {
       load();
-      if (selected) {
-        var parts = selected.split('|');
-        openDetail(parts[0], parts[1]);
-      }
+      if (selected) openDetail(selected);
     };
   }
 
@@ -264,6 +310,7 @@
   });
   search.addEventListener('input', render);
   statusFilter.addEventListener('change', render);
+  kindFilter.addEventListener('change', render);
   repoFilter.addEventListener('change', render);
 
   tick();

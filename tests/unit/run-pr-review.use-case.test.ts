@@ -27,6 +27,21 @@ vi.mock('../../src/infrastructure/reports/report-reader.js', () => ({
   readInitialReviewReport: readInitialReviewReportMock,
 }));
 
+// CAF-DASHBOARD-03: the history-store writes are mocked here so this file
+// never opens the real db.path (config is not mocked in this file). The real
+// writes are covered against a throwaway database in
+// pr-review-instrumentation.test.ts.
+const recordPrReviewStartedMock = vi.fn();
+const recordPrReviewAgentStartMock = vi.fn();
+const recordPrReviewAgentEndMock = vi.fn();
+const finalizePrReviewRunMock = vi.fn();
+vi.mock('../../src/infrastructure/db/pipeline-instrumentation.js', () => ({
+  recordPrReviewStarted: recordPrReviewStartedMock,
+  recordPrReviewAgentStart: recordPrReviewAgentStartMock,
+  recordPrReviewAgentEnd: recordPrReviewAgentEndMock,
+  finalizePrReviewRun: finalizePrReviewRunMock,
+}));
+
 const { RunPrReviewUseCase } = await import('../../src/application/use-cases/run-pr-review.use-case.js');
 
 function makeAgentResult(overrides: Partial<AgentRunResult>): AgentRunResult {
@@ -332,6 +347,83 @@ describe('RunPrReviewUseCase', () => {
 
       await expect(useCase.execute(makeJob({ mode: 'initial' }))).rejects.toThrow(/PR is closed/);
       expect(vcsClient.createPullRequestReview).toHaveBeenCalledTimes(1);
+    });
+  });
+  describe('dashboard instrumentation (CAF-DASHBOARD-03)', () => {
+    const RUN = { jobId: 'job-1', repoId: 'ganjardbc/umkm-pos', ticketId: 'CAF-123' };
+
+    it('records the run, the reviewer start/end, and the fix-review counts', async () => {
+      const agentResult = makeAgentResult({ exitCode: 0 });
+      (agentRunner.run as ReturnType<typeof vi.fn>).mockResolvedValue(agentResult);
+      readFixReviewLogMock.mockResolvedValue(
+        makeFixReviewLog({
+          entries: [
+            { commentRef: '1', label: 'INLINE', path: 'a.ts', line: 1, status: 'FIXED', note: '' },
+            { commentRef: '2', label: 'GENERAL', status: 'FIXED', note: '' },
+            { commentRef: '3', label: 'GENERAL', status: 'SKIPPED', note: 'x' },
+            { commentRef: '4', label: 'GENERAL', status: 'NOT_APPLICABLE', note: 'y' },
+          ],
+        }),
+      );
+
+      const useCase = new RunPrReviewUseCase({ gitService, workspaceManager, agentRunner, vcsClient });
+      await useCase.execute(makeJob({ mode: 'global' }));
+
+      expect(recordPrReviewStartedMock).toHaveBeenCalledWith({ ...RUN, prNumber: 42, mode: 'global' });
+      expect(recordPrReviewAgentStartMock).toHaveBeenCalledWith(RUN, 'caf-reviewer');
+      expect(recordPrReviewAgentEndMock).toHaveBeenCalledWith(RUN, 'caf-reviewer', agentResult);
+      expect(finalizePrReviewRunMock).toHaveBeenCalledTimes(1);
+      expect(finalizePrReviewRunMock).toHaveBeenCalledWith(RUN, 'SUCCESS', { type: 'fix', fixed: 2, skipped: 1, notApplicable: 1 });
+    });
+
+    it('records the verdict for mode initial', async () => {
+      (agentRunner.run as ReturnType<typeof vi.fn>).mockResolvedValue(makeAgentResult({ exitCode: 0 }));
+      readInitialReviewReportMock.mockResolvedValue(makeInitialReviewReport({ verdict: 'CHANGES_REQUESTED' }));
+
+      const useCase = new RunPrReviewUseCase({ gitService, workspaceManager, agentRunner, vcsClient });
+      await useCase.execute(makeJob({ mode: 'initial' }));
+
+      expect(finalizePrReviewRunMock).toHaveBeenCalledWith(RUN, 'SUCCESS', {
+        type: 'verdict',
+        verdict: 'CHANGES_REQUESTED',
+        postedAsComment: false,
+      });
+    });
+
+    it('flags a self-review 422 fallback as posted-as-comment', async () => {
+      (agentRunner.run as ReturnType<typeof vi.fn>).mockResolvedValue(makeAgentResult({ exitCode: 0 }));
+      readInitialReviewReportMock.mockResolvedValue(makeInitialReviewReport({ verdict: 'APPROVE' }));
+      (vcsClient.createPullRequestReview as ReturnType<typeof vi.fn>)
+        .mockRejectedValueOnce(new SelfReviewRejectedError('self review'))
+        .mockResolvedValueOnce({ url: 'u', id: 2 });
+
+      const useCase = new RunPrReviewUseCase({ gitService, workspaceManager, agentRunner, vcsClient });
+      await useCase.execute(makeJob({ mode: 'initial' }));
+
+      expect(finalizePrReviewRunMock).toHaveBeenCalledWith(RUN, 'SUCCESS', {
+        type: 'verdict',
+        verdict: 'APPROVE',
+        postedAsComment: true,
+      });
+    });
+
+    it('finalizes ERROR (once, with no result) and still rethrows when the agent fails', async () => {
+      (agentRunner.run as ReturnType<typeof vi.fn>).mockResolvedValue(makeAgentResult({ exitCode: 1, stderr: 'boom' }));
+
+      const useCase = new RunPrReviewUseCase({ gitService, workspaceManager, agentRunner, vcsClient });
+      await expect(useCase.execute(makeJob())).rejects.toThrow(/exited with code 1/);
+
+      expect(recordPrReviewAgentEndMock).toHaveBeenCalledTimes(1);
+      expect(finalizePrReviewRunMock).toHaveBeenCalledTimes(1);
+      expect(finalizePrReviewRunMock).toHaveBeenCalledWith(RUN, 'ERROR');
+    });
+
+    it('records nothing for a PR this pipeline did not produce (no ticket key to file it under)', async () => {
+      const useCase = new RunPrReviewUseCase({ gitService, workspaceManager, agentRunner, vcsClient });
+      await expect(useCase.execute(makeJob({ prHeadBranch: 'main' }))).rejects.toThrow();
+
+      expect(recordPrReviewStartedMock).not.toHaveBeenCalled();
+      expect(finalizePrReviewRunMock).not.toHaveBeenCalled();
     });
   });
 });

@@ -13,7 +13,13 @@
 var NAME={planner:'Planner',backend:'Backend',frontend:'Frontend',qa:'QA',reviewer:'Reviewer',docs:'Docs',human:'Manager'};
 var GATE={implementation:'implementation',qa:'QA',reviewer:'Reviewer'};
 var CHECK_LABEL=[['lint','lint'],['typecheck','typecheck'],['test','test']];
-var WORK_TEXT={planning:'Planning',implementing:'Implementing',verifying:'Testing',reviewing:'Reviewing'};
+var WORK_TEXT={planning:'Planning',implementing:'Implementing',verifying:'Testing',reviewing:'Reviewing',fixing:'Fixing review comments'};
+var VERDICT={APPROVE:'APPROVE',CHANGES_REQUESTED:'CHANGES REQUESTED',DEFER:'DEFER'};
+
+/* PR review runs (kind 'pr-review'): mode initial is a review, global/scoped a fix review. */
+function isFix(mode){return mode==='global'||mode==='scoped';}
+function reviewLabel(mode){return isFix(mode)?'Fix review ('+mode+')':'Review';}
+function prText(n){return n?'PR #'+n:'the PR';}
 
 function money(v){return '$'+v.toFixed(4);}
 
@@ -43,6 +49,18 @@ function translate(e,ctx){
   switch(e.type){
     case 'run_started':
       calls.push(['reset']);
+      if(e.kind==='pr-review'){
+        /* One stage only: a review job has no plan, implement, or QA step. */
+        calls.push(['setSteps',[['review',isFix(e.reviewMode)?'Fix review':'Review']]]);
+        calls.push(['setRun',{
+          title:e.ticket+'  '+e.ticketTitle,
+          meta:reviewLabel(e.reviewMode)+' of '+prText(e.prNumber)+', repo '+e.repo+', branch '+e.branch+(e.attempt>1?', attempt '+e.attempt:''),
+          startedAt:e.startedAt
+        }]);
+        calls.push(['setStatus','run']);
+        calls.push(['log','info',e.attempt>1?reviewLabel(e.reviewMode)+' restarted, attempt '+e.attempt:reviewLabel(e.reviewMode)+' started on '+prText(e.prNumber),0]);
+        break;
+      }
       calls.push(['setRun',{
         title:e.ticket+'  '+e.ticketTitle,
         meta:'repo '+e.repo+', branch '+e.branch+(e.attempt>1?', attempt '+e.attempt:''),
@@ -105,7 +123,29 @@ function translate(e,ctx){
       break;
 
     case 'run_finished':
-      if(e.finalStatus==='SUCCESS'){
+      if(e.review&&e.finalStatus==='SUCCESS'){
+        var res=e.review.result,pr=prText(e.review.prNumber);
+        calls.push(['setStatus','success',isFix(e.review.mode)?'Fix review posted':'Review posted']);
+        if(res&&res.type==='verdict'){
+          var vt=VERDICT[res.verdict]||res.verdict,posted=res.postedAsComment?' (posted as COMMENT)':'';
+          if(res.verdict==='APPROVE'){
+            calls.push(['setState','human','alert',pr+' approved','ok']);
+            log('ok','Verdict: '+vt+posted);
+          } else {
+            /* The job finished, but the PR still needs a person. */
+            calls.push(['setState','reviewer','blocked',res.verdict==='DEFER'?'Deferred to Manager':'Changes requested','warn']);
+            calls.push(['setState','human','alert',(res.verdict==='DEFER'?'Review deferred on ':'Changes requested on ')+pr,'bad']);
+            log('warn','Verdict: '+vt+posted);
+          }
+        } else if(res&&res.type==='fix'){
+          var counts=res.fixed+' fixed, '+res.skipped+' skipped, '+res.notApplicable+' n/a';
+          calls.push(['setState','human','alert','Fix review posted on '+pr,'ok']);
+          log('ok','Fix review: '+counts);
+        } else {
+          calls.push(['setState','human','alert','Review finished','ok']);
+        }
+        log('ok','final_status: SUCCESS');
+      } else if(e.finalStatus==='SUCCESS'){
         calls.push(['setStatus','success']);
         calls.push(['setState','human','alert','Run finished','ok']);
         log('ok','final_status: SUCCESS');

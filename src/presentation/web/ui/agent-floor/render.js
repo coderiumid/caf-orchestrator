@@ -30,9 +30,9 @@ function R(g,x,y,w,h,c){
 }
 var CHK=['Lint','Typecheck','Test'];
 var ORDER=['planner','backend','frontend','qa','reviewer','docs','human'];
-var WORKING={planning:1,implementing:1,verifying:1,retrying:1,reviewing:1};
-var BACKFACE={planning:1,implementing:1,verifying:1,reviewing:1};
-var STATE_LABEL={idle:'Idle',planning:'Planning',implementing:'Implementing',verifying:'Verifying',retrying:'Retrying',reviewing:'Reviewing',celebrating:'Done',blocked:'Needs human',error:'Error',offduty:'Off duty',alert:'Notification'};
+var WORKING={planning:1,implementing:1,verifying:1,retrying:1,reviewing:1,fixing:1};
+var BACKFACE={planning:1,implementing:1,verifying:1,reviewing:1,fixing:1};
+var STATE_LABEL={idle:'Idle',planning:'Planning',implementing:'Implementing',verifying:'Verifying',retrying:'Retrying',reviewing:'Reviewing',fixing:'Fixing review',celebrating:'Done',blocked:'Needs human',error:'Error',offduty:'Off duty',alert:'Notification'};
 
 /* One open-plan room. Everything that is drawn in two places (once into the
    static background, once per frame for its animated part) takes its
@@ -121,7 +121,9 @@ var cv=$('#cv'),ctx=cv.getContext('2d'),scene=$('#scene'),ov=$('#ov'),stage=$('#
 var simT=0,speed=1,paused=false,epoch=0,timers=[],runT0=0,runEnd=null;
 var A={},docs=[],bugs=[],outboxFlag=false,selected='planner',nextIdleAt=0,nextPatrolAt=0;
 var stepsState={};
-var STEPS=[['plan','Plan'],['impl','Implement and verify'],['qa','QA'],['review','Review'],['pr','PR and Linear']];
+var PIPELINE_STEPS=[['plan','Plan'],['impl','Implement and verify'],['qa','QA'],['review','Review'],['pr','PR and Linear']];
+/* The stages listed for the current run. A PR review run replaces them through setSteps(); reset puts the pipeline's back. */
+var STEPS=PIPELINE_STEPS;
 /* mock=true only in demo mode: cost, tokens, and work time are computed from
    sample rates. Otherwise all three change only through usage(). */
 var mock=false,runClock=null;
@@ -346,11 +348,13 @@ function renderSteps(){
   });
 }
 function step(id,status,note){stepsState[id]={status:status,note:note||''};renderSteps();}
+function setSteps(list){STEPS=list&&list.length?list:PIPELINE_STEPS;renderSteps();}
 var PILL={idle:['Waiting for ticket','NULL'],run:['Running','NULL'],success:['Done, PR ready for review','SUCCESS'],needs:['Needs human','NEEDS_HUMAN'],error:['Error, BullMQ will retry','ERROR']};
-function setStatus(k){
+/* text (optional): replaces the pill's default wording, e.g. for a PR review run, which opens no PR of its own. */
+function setStatus(k,text){
   var p=$('#rpill');
   if(k==='success'||k==='needs')runEnd=simT; else if(k==='run'||k==='idle')runEnd=null;
-  p.className='pill '+k;p.textContent=PILL[k][0];$('#rfs').textContent=PILL[k][1];
+  p.className='pill '+k;p.textContent=text||PILL[k][0];$('#rfs').textContent=PILL[k][1];
 }
 /* Fills the "Current run" panel. clock (optional): a function returning the run's elapsed ms from real data. */
 function setRun(r){
@@ -371,7 +375,7 @@ function resetWorld(){
     placeInitial(a);
   });
   say(A.docs,'zZ','mute');
-  stepsState={};renderSteps();renderLogEmpty();
+  STEPS=PIPELINE_STEPS;stepsState={};renderSteps();renderLogEmpty();
   setRun({});setStatus('idle');
 }
 
@@ -467,7 +471,7 @@ var CHKC=['#4a5270','#ffcf4a','#4ade80','#ff5d52'];
 function screenMode(a){
   switch(a.state){
     case 'planning':return 'text';
-    case 'implementing':return 'code';
+    case 'implementing':case 'fixing':return 'code';
     case 'verifying':case 'retrying':return a.checks?'checks':'diff';
     case 'reviewing':return 'diff';
     case 'celebrating':return 'ok';
@@ -811,7 +815,7 @@ requestAnimationFrame(frame);
 
 window.AgentFloor={
   setState:setState,say:say,sendDoc:sendDoc,step:step,setStatus:setStatus,log:log,
-  reset:resetWorld,setRun:setRun,usage:usage,checks:checks,
+  reset:resetWorld,setRun:setRun,setSteps:setSteps,usage:usage,checks:checks,
   wait:wait,ready:ready,later:later,fire:fire,celebrate:celebrate,CANCEL:CANCEL,
   setMock:function(v){mock=!!v;},
   isPaused:function(){return paused;},
