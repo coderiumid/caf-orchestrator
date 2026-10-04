@@ -295,20 +295,28 @@ What the shared file provides:
 
 | Part | Classes |
 |---|---|
-| Tokens (light + dark, follows the OS setting) | `--bg --surface --ink --ink2 --line --accent --ok --warn --bad`, fonts `--display --body --mono` |
+| Tokens (one light theme; there is no dark mode) | `--page --bg --surface --head --ink --ink2 --line --border --accent --accent-on --info --ok --warn --bad`, fonts `--display --body --mono` |
 | Header | `.hd`, `.logo`, `h1`, `.ver`, `.hd-r`, `.stt` |
-| Controls | `.btn`, `.seg`, `.field` (input/select), `.tabs` |
+| Controls | `.btn` (+ `.primary`), `.seg`, `.field` (input/select), `.tabs` |
 | Status | `.pill` + `.idle/.run/.success/.needs/.error`, `.conn` + `.up/.down`, `.mock` |
 | Containers | `.panel` / `.ph` / `.pb`, `dialog` + `.dl-h` / `.dl-b`, `.empty-state` |
-| Data | `.kv`, `.stat`, `.steps`, `.log` + `li.ok/.warn/.bad/.info` |
+| Data | `.kv`, `.stat` (+ `.info/.ok/.warn/.brand` tints), `.steps`, `.log` + `li.ok/.warn/.bad/.info` |
+
+The palette is deliberately warm and easy on the eyes — cream paper, brown
+ink, burnt-orange accent, no pure black or white. `--page` is the page, `--bg` a card on it, `--head`
+a panel header, `--surface` a recessed or selected area. `--accent` is for
+brand and interaction (title, primary button, selected item); status colors
+carry meaning only. Status fills are the status color mixed into `--bg`
+(`color-mix`), so they need no extra tokens.
 
 Rules of the style, for any new UI: colors only through the tokens (never a
-raw hex, so dark mode keeps working); 2px solid borders and square corners; no
+raw hex); 2px solid borders in `--border` (a soft tint of the accent, never
+black; `--line` is the lighter divider inside a panel) and square corners; no
 gradients, glows, or blur; hover is a hard `3px 3px 0` offset shadow; Pixelify
 Sans for titles and IBM Plex Sans for everything else; animation is stepped
 (`steps(2)`) and switched off under `prefers-reduced-motion`.
 
-The status vocabulary is the same on both pages: `run` (accent), `success`
+The status vocabulary is the same on both pages: `run` (`--info`, teal — kept apart from the orange accent so "running" never reads as a warning), `success`
 (green), `needs` (amber, `NEEDS_HUMAN`), `error` (red).
 
 ## End-to-end verification

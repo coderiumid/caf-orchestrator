@@ -233,8 +233,9 @@ describe('Agent Floor static files', () => {
       expect(read('adapter.js')).toContain('item.live?realDelay(item.delay):AF.wait(item.delay)');
     });
 
-    it('follows the system light/dark theme', () => {
-      expect(readDs()).toContain('@media (prefers-color-scheme:dark)');
+    it('has a single light theme, regardless of the system setting', () => {
+      expect(readDs()).toContain('color-scheme:light');
+      expect(readDs()).not.toContain('prefers-color-scheme');
     });
 
     it('every agent is reachable from the keyboard through the status list, not only by clicking the canvas', () => {

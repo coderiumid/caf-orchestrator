@@ -16,12 +16,13 @@ main{display:grid;gap:12px;min-width:0}
 
 /* ===== run grid & cards ===== */
 .run-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
-.run-card{display:grid;gap:12px;width:100%;text-align:left;border:2px solid var(--ink);background:var(--bg);padding:10px 12px}
-.run-card:hover{box-shadow:3px 3px 0 var(--ink)}
+.run-card{display:grid;gap:12px;width:100%;text-align:left;border:2px solid var(--border);background:var(--bg);padding:10px 12px}
+.run-card:hover{box-shadow:3px 3px 0 var(--border)}
 .run-card[aria-pressed="true"]{background:var(--surface);box-shadow:3px 3px 0 var(--accent)}
 .run-hd{display:flex;justify-content:space-between;align-items:start;gap:12px}
 .run-id{display:block;min-width:0}
 .run-card .tkey,.run-card .repo{display:block;color:var(--ink2);font:500 12px var(--mono);overflow-wrap:anywhere}
+.run-card .tkey{color:var(--accent);font-weight:600}
 .run-card .ttl{display:block;font-weight:600;font-size:15px;line-height:1.3;margin:2px 0}
 
 /* Plan / Implement / Verify: the design system's .steps markers, laid flat */
@@ -29,7 +30,7 @@ main{display:grid;gap:12px;min-width:0}
 .rail .st{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600}
 .rail .m{flex:none;width:16px;height:16px;border:2px solid var(--line)}
 .rail .st.pending{color:var(--ink2);font-weight:500}
-.rail .st.active .m{background:var(--accent);border-color:var(--accent)}
+.rail .st.active .m{background:var(--info);border-color:var(--info)}
 .rail .st.active.running .m{animation:blink 1s steps(2) infinite}
 .rail .st.pass .m{background:var(--ok);border-color:var(--ok)}
 .rail .st.fail .m{background:var(--bad);border-color:var(--bad)}
@@ -40,7 +41,7 @@ main{display:grid;gap:12px;min-width:0}
 
 /* ===== run inspector (side panel) ===== */
 .inspector-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:10}
-.inspector{position:fixed;z-index:11;top:0;right:0;bottom:0;width:min(570px,100%);display:flex;flex-direction:column;background:var(--bg);border-left:2px solid var(--ink)}
+.inspector{position:fixed;z-index:11;top:0;right:0;bottom:0;width:min(570px,100%);display:flex;flex-direction:column;background:var(--bg);border-left:2px solid var(--border)}
 .inspector-b{flex:1;min-height:0;overflow:auto;padding:12px 16px 16px}
 .d-title{font:600 20px/1.2 var(--display);margin:0}
 .d-repo{color:var(--ink2);font:500 12px var(--mono);margin:4px 0 0;overflow-wrap:anywhere}
@@ -49,7 +50,7 @@ main{display:grid;gap:12px;min-width:0}
 .ev-hd{display:flex;justify-content:space-between;gap:12px}
 .ev-agent{font-weight:600;text-transform:capitalize}
 .ev-type{margin-left:8px;font-size:12px;font-weight:600;color:var(--ink2)}
-.log li.ok .ev-type{color:var(--ok)}.log li.warn .ev-type{color:var(--warn)}.log li.bad .ev-type{color:var(--bad)}.log li.info .ev-type{color:var(--accent)}
+.log li.ok .ev-type{color:var(--ok)}.log li.warn .ev-type{color:var(--warn)}.log li.bad .ev-type{color:var(--bad)}.log li.info .ev-type{color:var(--info)}
 .ev-hd time{font-size:12px;white-space:nowrap}
 .ev-meta,.ev-art{font-size:12px;color:var(--ink2)}
 .ev-art{font-family:var(--mono);overflow-wrap:anywhere}
