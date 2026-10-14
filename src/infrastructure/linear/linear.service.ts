@@ -1,4 +1,5 @@
 import type { ILinearClient } from '../../domain/interfaces/linear-client.interface.js';
+import type { TicketComment } from '../../domain/interfaces/ticket-comment.interface.js';
 import { LinearApiError } from '../../domain/errors/app-errors.js';
 import { config } from '../../config/index.js';
 import { logger } from '../logging/logger.js';
@@ -50,10 +51,36 @@ const ISSUE_UPDATE_MUTATION = `
   }
 `;
 
+const ISSUE_COMMENTS_QUERY = `
+  query IssueComments($issueId: String!) {
+    issue(id: $issueId) {
+      comments(first: 100) {
+        nodes {
+          id
+          body
+          createdAt
+          botActor { id }
+        }
+      }
+    }
+  }
+`;
+
+interface IssueCommentsResponse {
+  issue: { comments: { nodes: Array<{ id: string; body: string; createdAt?: string; botActor?: { id: string } | null }> } } | null;
+}
+
 export class LinearService implements ILinearClient {
   async postComment(ticketId: string, body: string): Promise<void> {
     await graphqlRequest(COMMENT_CREATE_MUTATION, { issueId: ticketId, body });
     logger.info('Posted Linear comment', undefined, { ticketId });
+  }
+
+  async listComments(ticketId: string): Promise<TicketComment[]> {
+    const data = await graphqlRequest<IssueCommentsResponse>(ISSUE_COMMENTS_QUERY, { issueId: ticketId });
+    return (data.issue?.comments.nodes ?? [])
+      .map((node) => ({ id: node.id, body: node.body, authorIsBot: !!node.botActor, createdAt: node.createdAt }))
+      .sort((a, b) => (a.createdAt ?? '').localeCompare(b.createdAt ?? ''));
   }
 
   async updateStatus(ticketId: string, stateId: string): Promise<void> {

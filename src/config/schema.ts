@@ -124,6 +124,9 @@ const yamlSchema = z.object({
       .uuid('linear.readyStateId must be a valid UUID'),
     webhookTimestampToleranceMs: z.coerce.number().int().positive().default(60_000),
     deliveryDedupeTtlSeconds: z.coerce.number().int().positive().default(86_400),
+    // CAF-SDD-04c: a ticket carrying this label waits for human approval of the
+    // planner's spec (Draft PR + /caf-approve-spec) before implementation runs.
+    specGateLabel: z.string().min(1, 'linear.specGateLabel cannot be empty').default('spec-approval'),
   }),
 
   github: z.object({
@@ -135,7 +138,14 @@ const yamlSchema = z.object({
     // GitHub analog of linear.readyStateId: the label that transitions a
     // GitHub Issue into "Ready for AI" and triggers the full agent pipeline.
     readyLabel: z.string().min(1, 'github.readyLabel cannot be empty').default('ready-for-ai'),
-  }).default(() => ({ apiUrl: 'https://api.github.com', deliveryDedupeTtlSeconds: 86_400, readyLabel: 'ready-for-ai' })),
+    // CAF-SDD-04c: GitHub counterpart of linear.specGateLabel.
+    specGateLabel: z.string().min(1, 'github.specGateLabel cannot be empty').default('spec-approval'),
+  }).default(() => ({
+    apiUrl: 'https://api.github.com',
+    deliveryDedupeTtlSeconds: 86_400,
+    readyLabel: 'ready-for-ai',
+    specGateLabel: 'spec-approval',
+  })),
 
   claude: z.object({
     command: z.string().default('claude'),

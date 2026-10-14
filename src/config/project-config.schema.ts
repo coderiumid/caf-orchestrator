@@ -32,6 +32,10 @@ export const projectConfigSchema = z.object({
       maxOrchestrationRetries: z.coerce.number().int().nonnegative().optional(),
     })
     .default(() => ({})),
+  // CAF-SDD-04c: optional per-project spec-gate label, one per tracker; when
+  // unset the global github.specGateLabel / linear.specGateLabel applies.
+  github: z.object({ specGateLabel: z.string().min(1, 'specGateLabel cannot be empty').optional() }).optional(),
+  linear: z.object({ specGateLabel: z.string().min(1, 'specGateLabel cannot be empty').optional() }).optional(),
 });
 
 export type ProjectConfig = z.infer<typeof projectConfigSchema>;

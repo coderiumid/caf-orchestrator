@@ -14,6 +14,11 @@ import { logger } from '../logging/logger.js';
 export type OrchestrationGate = 'implementation' | 'validate' | 'reviewer';
 export type StoredOrchestrationGate = OrchestrationGate | 'qa';
 
+// CAF-SDD-04c: the pipeline stopped on purpose, not on a failed gate, and waits
+// for a person: `clarify` for answers on the ticket, `spec-approval` for the
+// spec PR. Optional so state files written before this change read unchanged.
+export type OrchestrationWaiting = 'clarify' | 'spec-approval';
+
 export interface OrchestrationState {
   orchestrationRetryCount: number;
   lastFailedGate: StoredOrchestrationGate | null;
@@ -26,6 +31,7 @@ export interface OrchestrationState {
   // fresh ticketTitle/ticketDescription the way the first run's webhook payload did.
   ticketTitle: string;
   ticketDescription: string;
+  waitingFor?: OrchestrationWaiting;
 }
 
 export interface TicketContext {
@@ -94,6 +100,44 @@ export async function recordGateFailure(
     ticketTitle: ticketContext.ticketTitle,
     ticketDescription: ticketContext.ticketDescription,
   });
+}
+
+/**
+ * Marks a deliberate stop for a person (CAF-SDD-04c). Keeps the retry count and
+ * the last failed gate of an existing state: waiting is not a failure and never
+ * spends the retry budget. A gate failure written later replaces the whole
+ * state, which ends the waiting.
+ */
+export async function recordWaitingState(
+  workspacePath: string,
+  ticketKey: string,
+  waitingFor: OrchestrationWaiting,
+  commitSha: string,
+  ticketContext: TicketContext,
+): Promise<void> {
+  const existing = await readOrchestrationState(workspacePath, ticketKey);
+  await writeState(workspacePath, ticketKey, {
+    orchestrationRetryCount: existing?.orchestrationRetryCount ?? 0,
+    lastFailedGate: existing?.lastFailedGate ?? null,
+    lastFailedAt: existing?.lastFailedAt ?? null,
+    lastKnownCommitSha: commitSha,
+    ticketTitle: ticketContext.ticketTitle,
+    ticketDescription: ticketContext.ticketDescription,
+    waitingFor,
+  });
+}
+
+/** Ends a wait: deletes a state that existed only to wait, otherwise strips the marker and keeps the history. */
+export async function clearWaitingState(workspacePath: string, ticketKey: string): Promise<void> {
+  const existing = await readOrchestrationState(workspacePath, ticketKey);
+  if (!existing?.waitingFor) return;
+  if (existing.orchestrationRetryCount === 0 && existing.lastFailedGate === null) {
+    await resetOrchestrationState(workspacePath, ticketKey);
+    return;
+  }
+  const rest: OrchestrationState = { ...existing };
+  delete rest.waitingFor;
+  await writeState(workspacePath, ticketKey, rest);
 }
 
 /**

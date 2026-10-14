@@ -1,3 +1,5 @@
+import type { TicketComment } from './ticket-comment.interface.js';
+
 export interface CreatePullRequestInput {
   owner: string;
   repo: string;
@@ -61,6 +63,12 @@ export interface CreatePullRequestReviewResult {
   id: number;
 }
 
+export interface ListTicketCommentsInput {
+  owner: string;
+  repo: string;
+  issueNumber: number;
+}
+
 export interface IVcsClient {
   createPullRequest(input: CreatePullRequestInput): Promise<CreatePullRequestResult>;
   replyToReviewComment(input: ReplyToReviewCommentInput): Promise<void>;
@@ -75,4 +83,6 @@ export interface IVcsClient {
   // before opening a new one — undefined when none is open.
   findOpenPullRequestByHead(input: FindPullRequestByHeadInput): Promise<CreatePullRequestResult | undefined>;
   updatePullRequest(input: UpdatePullRequestInput): Promise<CreatePullRequestResult>;
+  // CAF-SDD-04c: comments of a GitHub Issue, oldest first — the answers to a Clarify.
+  listTicketComments(input: ListTicketCommentsInput): Promise<TicketComment[]>;
 }
