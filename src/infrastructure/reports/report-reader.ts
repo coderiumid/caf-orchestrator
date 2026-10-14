@@ -237,6 +237,13 @@ export async function readFixReviewLog(workspacePath: string, ticketKey: string)
 
   for (const rawLine of raw.split('\n')) {
     const line = rawLine.trim();
+    // CAF-SDD-04b: a `## ...` section (e.g. `## Proposed Spec Changes`) ends the
+    // comment blocks; its lines must not be swallowed into the last note.
+    if (/^##\s/.test(line)) {
+      flush();
+      current = undefined;
+      continue;
+    }
     const header = COMMENT_HEADER.exec(line);
     if (header) {
       flush();

@@ -258,6 +258,26 @@ describe('RunPrReviewUseCase', () => {
       expect(prompt).toContain('tulis `.caf/tasks/CAF-123/fix-review-log.md` saja');
       expect(prompt).not.toContain('review-notes.md');
     });
+
+    // CAF-SDD-04b AC-14 (Q-6): the spec is not the fix-review job's to change.
+    for (const mode of ['global', 'scoped'] as const) {
+      it(`mode ${mode}: prompt forbids editing requirements.md / tasks.md and routes the request to ## Proposed Spec Changes as SKIPPED`, async () => {
+        (agentRunner.run as ReturnType<typeof vi.fn>).mockResolvedValue(makeAgentResult({ exitCode: 0 }));
+        readFixReviewLogMock.mockResolvedValue(makeFixReviewLog());
+
+        const useCase = new RunPrReviewUseCase({ gitService, workspaceManager, agentRunner, vcsClient });
+        await useCase.execute(makeJob({ mode, commentContext: [{ id: 5, label: 'GENERAL', body: 'change AC-2' }] }));
+
+        const prompt = (agentRunner.run as ReturnType<typeof vi.fn>).mock.calls[0][2] as string;
+        expect(prompt).toContain('.caf/tasks/CAF-123/requirements.md');
+        expect(prompt).toContain('.caf/tasks/CAF-123/tasks.md');
+        expect(prompt).toContain('JANGAN');
+        expect(prompt).toContain('## Proposed Spec Changes');
+        expect(prompt).toContain('fix-review-log.md');
+        expect(prompt).toContain('Status: SKIPPED');
+        expect(prompt).not.toContain('review-notes.md');
+      });
+    }
   });
 
   describe('mode initial — real INITIAL (Verdict-producing) contract', () => {
