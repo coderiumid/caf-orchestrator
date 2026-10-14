@@ -58,6 +58,12 @@ Run history is stored in a SQLite file (`db.path`, default `./data/caf-dashboard
 
 Both generations of target repo work without any config change. The pipeline looks at the checkout: with `.claude/agents/caf-validator.md` it runs `caf-validator` and reads `validate-report.md` (falling back to `qa-report.md`), otherwise `caf-qa` and `qa-report.md`; without `.claude/agents/caf-documentation.md` the docs step is skipped instead of failing. Reports are read the same way for both: an anchored `Status:` line (`PASS` for the gate report, `SUCCESS` for `verify-report.md`, which falls back to "`SUCCESS` anywhere" only when it has no `Status:` line), and fix-review notes as either `Notes:` or `Catatan:`.
 
+**Acceptance criteria and `UNVERIFIED` (CAF-SDD-04b).** When the ticket's `requirements.md` has `- AC-n:` lines, the orchestrator counts each AC against the per-AC table of the gate report (`validate-report.md` / `qa-report.md`) and puts a deterministic summary (PASS / FAIL / UNVERIFIED counts, the UNVERIFIED list with reasons, and any `Proposed Spec Changes:` line from the report's `### Notes`) at the top of the PR body — normal and Draft PRs alike, with the artifact text below it unchanged. An AC missing from the report counts as `UNVERIFIED` ("tidak dilaporkan"). The gate passes when there is no `FAIL`; the one exception is a report that says `Status: PASS` while *every* AC is `UNVERIFIED` — nothing was proven, so it is treated as `NEEDS_HUMAN` (Draft PR and comment, no retry). Without any `AC-n` line in `requirements.md` none of this applies.
+
+The resume state names the validation gate `validate` (`orchestration-state.json`, `lastFailedGate`); a stored `qa` from older runs is still read, as the same gate. Comments and PR bodies keep saying "qa". `/caf-fix-review` jobs never edit `requirements.md` or `tasks.md`: a comment asking for a spec change is logged under `## Proposed Spec Changes` in `fix-review-log.md` and marked `Status: SKIPPED`.
+
+A target repo that is a single app (not split front/back) is set up with `--role frontend|backend` — the orchestrator does not route `caf-implementer`.
+
 ## Setup
 
 ```bash
