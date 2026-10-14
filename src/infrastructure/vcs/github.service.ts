@@ -8,7 +8,9 @@ import type {
   CreatePullRequestReviewResult,
   FindPullRequestByHeadInput,
   UpdatePullRequestInput,
+  ListTicketCommentsInput,
 } from '../../domain/interfaces/vcs-client.interface.js';
+import type { TicketComment } from '../../domain/interfaces/ticket-comment.interface.js';
 import { GithubApiError, SelfReviewRejectedError } from '../../domain/errors/app-errors.js';
 import { config } from '../../config/index.js';
 import { logger } from '../logging/logger.js';
@@ -74,6 +76,13 @@ export interface GithubIssueComment {
 interface GithubIssueCommentResponse {
   id: number;
   body: string;
+}
+
+interface GithubTicketCommentResponse {
+  id: number;
+  body: string;
+  created_at?: string;
+  user?: { type?: string } | null;
 }
 
 async function githubGet<T>(path: string): Promise<T> {
@@ -292,6 +301,15 @@ export class GithubService implements IVcsClient {
   async listIssueComments(owner: string, repo: string, prNumber: number): Promise<GithubIssueComment[]> {
     const json = await githubGet<GithubIssueCommentResponse[]>(`/repos/${owner}/${repo}/issues/${prNumber}/comments`);
     return json.map((c) => ({ id: c.id, body: c.body }));
+  }
+
+  // CAF-SDD-04c: the comments of a GitHub Issue as TicketComments (the Clarify
+  // answers). Same endpoint as listIssueComments, but keeps the author kind and
+  // time, which that PR-review-oriented method drops. GitHub returns oldest first.
+  async listTicketComments(input: ListTicketCommentsInput): Promise<TicketComment[]> {
+    const { owner, repo, issueNumber } = input;
+    const json = await githubGet<GithubTicketCommentResponse[]>(`/repos/${owner}/${repo}/issues/${issueNumber}/comments?per_page=100`);
+    return json.map((c) => ({ id: String(c.id), body: c.body, authorIsBot: c.user?.type === 'Bot', createdAt: c.created_at }));
   }
 }
 

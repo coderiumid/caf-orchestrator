@@ -11,6 +11,9 @@ linear:
   readyStateId: 00000000-0000-0000-0000-000000000000
   webhookTimestampToleranceMs: 60000
   deliveryDedupeTtlSeconds: 86400
+  # Label that makes a ticket wait for human approval of its spec (Draft PR +
+  # /caf-approve-spec) before implementation runs. Default: spec-approval.
+  # specGateLabel: spec-approval
 
 github:
   apiUrl: https://api.github.com
@@ -19,6 +22,8 @@ github:
   # the full agent pipeline — the GitHub analog of linear.readyStateId.
   # Attach it on GitHub via the `issues` webhook event (action: labeled).
   readyLabel: ready-for-ai
+  # GitHub counterpart of linear.specGateLabel. Default: spec-approval.
+  # specGateLabel: spec-approval
 
 # Claude Code agent spawning
 claude:
@@ -63,6 +68,11 @@ projects:
     # global default.
     # orchestration:
     #   maxOrchestrationRetries: 3
+    # Optional per-project spec-gate labels (default: the global ones above).
+    # linear:
+    #   specGateLabel: spec-approval
+    # github:
+    #   specGateLabel: spec-approval
 
 queue:
   jobTtlSeconds: 86400

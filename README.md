@@ -13,6 +13,7 @@ It also runs AI review on existing PRs, driven by PR comments.
 | Linear ticket moves into the `linear.readyStateId` state | `POST /webhooks/linear` | Full agent pipeline |
 | GitHub Issue gets the `github.readyLabel` label (default `ready-for-ai`) | `POST /webhooks/github` | Full agent pipeline |
 | `/caf-retry-pipeline` comment on a Draft PR, or a Linear ticket re-entering "Ready for AI" while its branch still exists | either webhook | Resume a pipeline that stopped at a gate |
+| `/caf-approve-spec` comment on a spec Draft PR | `POST /webhooks/github` | Approve the spec and continue with implementation (see below) |
 | `/caf-review` comment on a PR | `POST /webhooks/github` | Full review, posted as a GitHub PR review |
 | `/caf-fix-review` comment on a PR | `POST /webhooks/github` | Reviewer addresses every review comment on the PR |
 | Reply inside an inline review thread | `POST /webhooks/github` | Reviewer addresses that one thread |
@@ -20,6 +21,17 @@ It also runs AI review on existing PRs, driven by PR comments.
 GitHub-side triggers require the commenter/labeler to have `write`, `maintain` or `admin` permission on the repo. The PR-comment triggers only work on PRs this pipeline produced (head branch `ai-agent/<TICKET-KEY>`). `ENABLE_PIPELINE_TRIGGER=false` is a kill switch for all of them.
 
 When a pipeline gate (implementation verify, QA, reviewer) is exhausted, the work is not left stranded: the branch is pushed and a **Draft PR** is opened with the failing report as its body, so a human can either fix it by hand or comment `/caf-retry-pipeline`.
+
+### Clarify and the spec gate
+
+When the target repo keeps a spec at `.caf/tasks/<TICKET-KEY>/requirements.md` (an anchored `Status:` line, written by the planner), the pipeline reads it right after the planner and does not run implementation agents on a spec that is unclear or not yet approved:
+
+- **Clarify** — `Status: NEEDS_CLARIFICATION` always stops the pipeline. The draft spec is committed and pushed to `ai-agent/<TICKET-KEY>` (no PR), and a comment on the ticket lists every `- Q-n [BLOCKING] ...` question that has no `— Answer:` yet. Answer in a comment on the ticket, then move a Linear ticket back to "Ready for AI" / remove and re-apply the `github.readyLabel` label on a GitHub Issue. The planner continues the saved draft with the comments written after the last clarification request (comments from bot accounts are skipped).
+- **Spec gate** — a ticket carrying the gate label (`spec-approval` by default) stops after the planner with `Status: DRAFT`: the spec folder is pushed and a Draft PR holding only the spec is opened. Review it (edit on the branch if needed), then comment `/caf-approve-spec` on the PR. The orchestrator changes only the `Status:` line to `APPROVED`, commits and pushes that, and resumes from implementation, skipping the planner. It refuses (and says why on the PR) if the PR is not waiting for approval, the spec is `NEEDS_CLARIFICATION`, or a BLOCKING question is unanswered. Tickets without the label run straight through after the planner.
+- Neither a Clarify answer nor a spec approval uses up `orchestration.maxOrchestrationRetries`: waiting for a person is not a failure.
+- A repo without `requirements.md`, or whose file has no `Status:` line, is unaffected: no Clarify and no gate.
+
+The gate label is configured with `linear.specGateLabel` and `github.specGateLabel` in `caf.config.yaml` (both default `spec-approval`); a project can override either under `projects.<name>.linear` / `projects.<name>.github`. It is read from the labels on the ticket at the moment the trigger fires.
 
 ## Architecture
 
@@ -143,6 +155,7 @@ See `caf.config.example.yaml` for every field and its default. The parts you mus
 
 Commonly tuned:
 
+- `linear.specGateLabel` / `github.specGateLabel` — label that puts a ticket behind spec approval (default `spec-approval`; overridable per project).
 - `workspace.mode` — `ephemeral` (default, fresh clone per job) or `persistent` (reuse one checkout per repo; for large repos only).
 - `agents.qa.maxRetries` / `agents.reviewer.maxRetries` — gate retries within one run (default 1 each).
 - `orchestration.maxOrchestrationRetries` — how many times a gate-exhausted ticket can be resumed (default 2; overridable per project).

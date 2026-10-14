@@ -19,7 +19,7 @@ import { pipelineQueue } from '../../../infrastructure/queue/client.js';
 import type { ExistingJobPayload, PrReviewCommentContext, PrReviewJobPayload } from '../../../domain/interfaces/queue.interface.js';
 import { checkReviewPermission } from '../../../infrastructure/vcs/github-permission.js';
 import { githubService, parseGithubRepo } from '../../../infrastructure/vcs/github.service.js';
-import { resolveMaxOrchestrationRetries, type ProjectConfig } from '../../../config/project-registry.js';
+import { resolveMaxOrchestrationRetries, resolveSpecGateLabel, type ProjectConfig } from '../../../config/project-registry.js';
 
 // Slash-command prefixes that trigger a pr-review job from a general PR
 // comment (`issue_comment`). Checked in this order because
@@ -32,6 +32,8 @@ const FIX_ALL_COMMAND = '/caf-fix-review';
 // Draft PR. Distinct string from the two above, no prefix collision either
 // direction — order among the three doesn't matter for correctness.
 const RETRY_PIPELINE_COMMAND = '/caf-retry-pipeline';
+// CAF-SDD-04c: approves the spec on a spec-gate Draft PR and resumes at implementation.
+const APPROVE_SPEC_COMMAND = '/caf-approve-spec';
 
 function splitRepoFullName(fullName: string): { owner: string; repo: string } {
   const [owner, repo] = fullName.split('/');
@@ -69,6 +71,16 @@ async function enqueuePrReview(job: PrReviewJobPayload): Promise<string> {
     mode: job.mode,
   });
   return queuedId;
+}
+
+// Label names out of a tracker payload (`[{ name }]` on both Linear and GitHub);
+// anything else — an absent field, an older payload shape — reads as no labels.
+function labelNames(labels: unknown): string[] {
+  if (!Array.isArray(labels)) return [];
+  return labels.flatMap((label) => {
+    const name = (label as { name?: unknown } | null)?.name;
+    return typeof name === 'string' ? [name] : [];
+  });
 }
 
 const AI_AGENT_BRANCH_PATTERN = /^ai-agent\/(.+)$/;
@@ -143,6 +155,65 @@ async function handleRetryPipelineCommand(payload: GithubIssueCommentPayload, re
   return reply.status(202).send({ status: 'enqueued', jobId: queuedId });
 }
 
+/**
+ * `/caf-approve-spec` on the Draft PR holding a ticket's spec (CAF-SDD-04c).
+ * Same front door as `/caf-retry-pipeline` (permission, kill switch, branch and
+ * project lookup); whether the PR is actually waiting for approval, and whether
+ * the spec is approvable, can only be read from the branch, so the worker job
+ * decides and explains on the PR. An `approveSpec` job is not an `isRetry` one:
+ * it must not spend the retry budget.
+ */
+async function handleApproveSpecCommand(payload: GithubIssueCommentPayload, reply: FastifyReply): Promise<FastifyReply> {
+  const { owner, repo } = splitRepoFullName(payload.repository.full_name);
+  const prNumber = payload.issue.number;
+
+  if (!(await checkReviewPermission(owner, repo, payload.sender.login))) {
+    logger.info('Approve-spec trigger rejected: insufficient permission', undefined, { owner, repo, username: payload.sender.login });
+    return reply.status(200).send({ status: 'ignored', reason: 'ok' });
+  }
+
+  if (!config.ENABLE_PIPELINE_TRIGGER) {
+    return reply.status(200).send({ status: 'disabled', reason: 'Pipeline trigger is disabled' });
+  }
+
+  const branch = await githubService.getPullRequestHeadRef(owner, repo, prNumber);
+  const branchMatch = AI_AGENT_BRANCH_PATTERN.exec(branch);
+  if (!branchMatch) {
+    logger.info('Approve-spec trigger ignored: PR head branch is not an ai-agent/* branch', undefined, { owner, repo, prNumber, branch });
+    await githubService.postIssueComment({
+      owner,
+      repo,
+      issueNumber: prNumber,
+      body: `⚠️ /caf-approve-spec: this PR's branch \`${branch}\` is not an \`ai-agent/*\` branch, so there is no pipeline spec to approve here. Nothing was changed.`,
+    });
+    return reply.status(200).send({ status: 'ignored', reason: 'PR head branch is not an ai-agent/* branch' });
+  }
+  const ticketKey = branchMatch[1];
+
+  const prefix = extractTicketPrefix(ticketKey);
+  const project = prefix ? projectRegistry.getByPrefix(prefix) : undefined;
+  if (!project) {
+    logger.error('Approve-spec trigger: no project registered for ticket prefix', undefined, { ticketKey, prefix });
+    return reply.status(200).send({ status: 'ignored', reason: 'No project registered for ticket prefix' });
+  }
+
+  const jobData: ExistingJobPayload = {
+    jobId: `github-approve-spec-${randomUUID()}`,
+    ticketId: ticketKey,
+    ticketKey,
+    // Placeholders — replaced from orchestration-state.json inside the job, like a retry.
+    ticketTitle: `Spec approved: ${ticketKey}`,
+    ticketDescription: '',
+    projectConfig: toJobProjectContext(project),
+    approveSpec: true,
+    retryContext: { owner, repo, prNumber },
+  };
+
+  const queuedId = await pipelineQueue.addJob('agent-pipeline', jobData as unknown as Record<string, unknown>);
+  logger.info('Approve-spec trigger enqueued', undefined, { jobId: queuedId, ticketKey, prNumber });
+  return reply.status(202).send({ status: 'enqueued', jobId: queuedId });
+}
+
 async function handleIssueComment(payload: GithubIssueCommentPayload, reply: FastifyReply): Promise<FastifyReply> {
   // Anti-self-trigger guard, checked before anything else (including
   // slash-command matching): this route itself posts summary comments back
@@ -173,6 +244,10 @@ async function handleIssueComment(payload: GithubIssueCommentPayload, reply: Fas
 
   if (body.startsWith(RETRY_PIPELINE_COMMAND)) {
     return handleRetryPipelineCommand(payload, reply);
+  }
+
+  if (body.startsWith(APPROVE_SPEC_COMMAND)) {
+    return handleApproveSpecCommand(payload, reply);
   }
 
   const mode = body.startsWith(FIX_ALL_COMMAND) ? 'global' : body.startsWith(REVIEW_AGAIN_COMMAND) ? 'initial' : undefined;
@@ -322,7 +397,34 @@ async function handleIssuesEvent(payload: GithubIssueEventPayload, reply: Fastif
     ticketDescription: payload.issue.body ?? '',
     projectConfig: toJobProjectContext(project),
     ticketSource: 'github',
+    ticketLabels: labelNames(payload.issue.labels),
+    specGateLabel: resolveSpecGateLabel(project, 'github', config),
   };
+
+  // CAF-SDD-04c: the ready label re-applied on a ticket whose branch already
+  // exists (a Clarify waiting for its answers, a gate stop) is a resume, exactly
+  // as for Linear below — the job syncs onto the existing branch instead of
+  // branching off baseBranch again and failing on the push.
+  const { owner: ghOwner, repo: ghRepo } = parseGithubRepo(project.repoCloneUrl);
+  const resumeBranch = `ai-agent/${ticketKey}`;
+  if (await githubService.branchExists(ghOwner, ghRepo, resumeBranch)) {
+    const openPr = await githubService.findOpenPullRequestByHead({ owner: ghOwner, repo: ghRepo, head: resumeBranch });
+    const resumeJobData: ExistingJobPayload = {
+      ...jobData,
+      jobId: `github-issue-retry-${randomUUID()}`,
+      isRetry: true,
+      maxOrchestrationRetries: resolveMaxOrchestrationRetries(project, config.orchestration.maxOrchestrationRetries),
+      retryContext: openPr ? { owner: ghOwner, repo: ghRepo, prNumber: openPr.number } : undefined,
+    };
+    const queuedResumeId = await pipelineQueue.addJob('agent-pipeline', resumeJobData as unknown as Record<string, unknown>);
+    logger.info('GitHub Issue ready-for-AI trigger on an existing branch — resuming', undefined, {
+      jobId: queuedResumeId,
+      ticketKey,
+      branch: resumeBranch,
+      hasOpenPr: !!openPr,
+    });
+    return reply.status(202).send({ status: 'enqueued', jobId: queuedResumeId });
+  }
 
   const queuedId = await pipelineQueue.addJob('agent-pipeline', jobData as unknown as Record<string, unknown>);
 
@@ -407,6 +509,8 @@ export async function webhookRoutes(app: FastifyInstance): Promise<void> {
     // behavior (planner skipped, implementation re-run with the failed
     // gate's artifact as context). See CLAUDE.md's "/caf-retry-pipeline
     // resume" section.
+    const ticketLabels = labelNames((payload.data as { labels?: unknown }).labels);
+    const specGateLabel = resolveSpecGateLabel(projectConfig, 'linear', config);
     const { owner: ghOwner, repo: ghRepo } = parseGithubRepo(projectConfig.repoCloneUrl);
     const retryBranch = `ai-agent/${payload.data.identifier}`;
     const isResume = await githubService.branchExists(ghOwner, ghRepo, retryBranch);
@@ -426,6 +530,8 @@ export async function webhookRoutes(app: FastifyInstance): Promise<void> {
         isRetry: true,
         maxOrchestrationRetries,
         retryContext: openPr ? { owner: ghOwner, repo: ghRepo, prNumber: openPr.number } : undefined,
+        ticketLabels,
+        specGateLabel,
       };
 
       const queuedResumeId = await pipelineQueue.addJob('agent-pipeline', resumeJobData as unknown as Record<string, unknown>);
@@ -448,6 +554,8 @@ export async function webhookRoutes(app: FastifyInstance): Promise<void> {
       ticketTitle: payload.data.title,
       ticketDescription: payload.data.description ?? '',
       projectConfig: toJobProjectContext(projectConfig),
+      ticketLabels,
+      specGateLabel,
     };
 
     const queuedId = await pipelineQueue.addJob('agent-pipeline', jobData as unknown as Record<string, unknown>);

@@ -56,8 +56,11 @@ vi.mock('../../src/infrastructure/vcs/github-permission.js', () => ({
   checkReviewPermission: checkReviewPermissionMock,
 }));
 
+// CAF-SDD-04c: the issues trigger now asks whether ai-agent/<KEY> already
+// exists (to resume it, like the Linear trigger) — "no" keeps every case below
+// on the new-ticket path they were written for.
 vi.mock('../../src/infrastructure/vcs/github.service.js', () => ({
-  githubService: {},
+  githubService: { branchExists: vi.fn().mockResolvedValue(false), findOpenPullRequestByHead: vi.fn().mockResolvedValue(undefined) },
   parseGithubRepo,
 }));
 

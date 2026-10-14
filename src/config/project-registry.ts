@@ -62,3 +62,18 @@ export class ProjectRegistry {
 export function resolveMaxOrchestrationRetries(project: ProjectConfig, globalDefault: number): number {
   return project.orchestration.maxOrchestrationRetries ?? globalDefault;
 }
+
+export const DEFAULT_SPEC_GATE_LABEL = 'spec-approval';
+
+/**
+ * Label that puts a ticket behind the spec-approval gate (CAF-SDD-04c): the
+ * project's own label for that tracker wins, then the global one, then the
+ * `spec-approval` default (also what a partial config mock without the key gets).
+ */
+export function resolveSpecGateLabel(
+  project: ProjectConfig,
+  source: 'github' | 'linear',
+  globals: { github?: { specGateLabel?: string }; linear?: { specGateLabel?: string } },
+): string {
+  return project[source]?.specGateLabel ?? globals[source]?.specGateLabel ?? DEFAULT_SPEC_GATE_LABEL;
+}
