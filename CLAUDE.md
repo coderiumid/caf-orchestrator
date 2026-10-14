@@ -78,7 +78,7 @@ When `retryContext` is set, every status comment for the run — including the e
 
 The orchestrator runs against both target-repo generations without a config key. `IAgentCatalog` (`domain/interfaces/agent-catalog.interface.ts`; adapter `infrastructure/agent/workspace-agent-catalog.ts`, wired in `worker.ts`) answers "does the checkout have `.claude/agents/<name>.md`?" — the use case asks it rather than touching `fs` itself:
 
-- `caf-validator.md` present → the validation gate runs `caf-validator` and reads `validate-report.md`, falling back to `qa-report.md` if it wrote none; absent → `caf-qa` and `qa-report.md`, exactly as before. Both share the `qa` orchestration gate (`lastFailedGate: 'qa'`), `agents.qa.maxRetries`, and the `- QA:` skip directive; gate-aware resume re-reads whichever report the repo's gate agent writes.
+- `caf-validator.md` present → the validation gate runs `caf-validator` and reads `validate-report.md`, falling back to `qa-report.md` if it wrote none; absent → `caf-qa` and `qa-report.md`, exactly as before. Both share one orchestration gate (stored as `lastFailedGate: 'validate'` since CAF-SDD-04b, legacy `'qa'` still read), `agents.qa.maxRetries`, and the `- QA:` skip directive; gate-aware resume re-reads whichever report the repo's gate agent writes.
 - `caf-documentation.md` absent → the docs step is skipped with a note (no failure comment).
 - The agent and report actually used are what ticket comments, PR bodies (`- Validator: …/validate-report.md`), `agent_events.agent_name`/`artifact_link` and the Agent Floor show. A `caf-qa` run keeps its old wording byte for byte.
 - Without an `agentCatalog` dependency (e.g. older tests), every repo is treated as old: `caf-qa`, documentation agent present.

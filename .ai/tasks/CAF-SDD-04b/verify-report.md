@@ -13,7 +13,7 @@ AC parser/counter (`infrastructure/reports/ac-summary.ts`), UNVERIFIED policy (Q
 | AC-2 | PASS | automated-test | tests/unit/ac-summary.sdd04b.test.ts::AC-2: parseReportAcTable (status + Evidence, backtick/bold/lowercase/suffix/escaped pipe) |
 | AC-3 | PASS | automated-test | tests/unit/ac-summary.sdd04b.test.ts::summarizeAcs > AC-3: an AC absent from the report counts UNVERIFIED... |
 | AC-4 | PASS | automated-test | tests/unit/ac-summary.sdd04b.test.ts::summarizeAcs > AC-4: an AC in the report but not in requirements.md is not counted |
-| AC-5 | PASS | automated-test | ac-summary.sdd04b.test.ts::AC-5 (unit); run-agent-pipeline.ac-summary.sdd04b.test.ts::AC-5: no requirements.md / no AC lines (both cases); all 595 pre-existing tests pass unchanged except the one noted below |
+| AC-5 | PASS | automated-test | ac-summary.sdd04b.test.ts::AC-5 (unit); run-agent-pipeline.ac-summary.sdd04b.test.ts::AC-5: no requirements.md / no AC lines (both cases); all pre-existing tests pass unchanged except the one noted below |
 | AC-6 | PASS | automated-test | run-agent-pipeline.ac-summary.sdd04b.test.ts::AC-6 (stops without retry/reviewer; stop after a retry; not applied when gate skipped) |
 | AC-7 | PASS | automated-test | run-agent-pipeline.ac-summary.sdd04b.test.ts::AC-7: passes even though some ACs are UNVERIFIED |
 | AC-8 | PASS | automated-test | run-agent-pipeline.ac-summary.sdd04b.test.ts::AC-8 / AC-10 > starts with counts and the UNVERIFIED list with reasons; keeps the artifact text below the summary unchanged |
@@ -39,7 +39,6 @@ Unverified: 0
 - A2: no real validator output exists in this repo; parser tested against fixtures in the 03b1 shape (columns AC, Status, Evidence kind, Evidence). If real reports differ, the failure mode is conservative: unparsed rows count as "tidak dilaporkan"; and if *all* rows fail to parse, a `Status: PASS` report would trip the Q-1 stop (human review) rather than pass silently.
 
 ## Proposed Spec Changes
-- Q-6 text in requirements.md §4 says verify-report.md vs fix-review-log.md; AC-14/§4 are consistent with fix-review-log.md as implemented — no change needed.
 - Consider adding an AC for the reviewer-gate Draft PR carrying the summary (implemented as interpretation 1 above, not covered by an AC; covered by no dedicated test).
 - Consider stating in requirements.md that the Q-1 stop does not apply to a Planner-skipped gate (interpretation 2; tested in `AC-6 > does not apply when the Planner skipped the gate`).
 
