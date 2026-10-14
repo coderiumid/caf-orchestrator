@@ -51,7 +51,17 @@ function splitRow(line: string): string[] {
   const cells: string[] = [];
   let current = '';
   for (let i = 0; i < line.length; i++) {
-    if (line[i] === '\\' && line[i + 1] === '|') {
+    if (line[i] === '`') {
+      // A `|` inside a backtick pair stays in the cell; an unpaired backtick is
+      // an ordinary character (old behaviour).
+      const close = line.indexOf('`', i + 1);
+      if (close !== -1) {
+        current += line.slice(i, close + 1).replace(/\\\|/g, '|');
+        i = close;
+        continue;
+      }
+      current += line[i];
+    } else if (line[i] === '\\' && line[i + 1] === '|') {
       current += '|';
       i++;
     } else if (line[i] === '|') {
