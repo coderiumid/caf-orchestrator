@@ -18,10 +18,19 @@ export function isAllowedModel(model: string, allowedModels: readonly string[]):
 }
 
 // The set of `--agent <name>` values the pipeline ever spawns (see
-// run-agent-pipeline.use-case.ts: caf-planner/caf-qa/caf-reviewer/caf-documentation are
-// hardcoded literals, caf-frontend/caf-backend come from task-router.ts's TaskAgent union).
+// run-agent-pipeline.use-case.ts: caf-planner/caf-qa/caf-validator/caf-reviewer/caf-documentation
+// are hardcoded literals — caf-validator replaces caf-qa in repos that ship it, CAF-SDD-04a —
+// caf-frontend/caf-backend come from task-router.ts's TaskAgent union).
 // There is no single existing source of truth for this list in the codebase — this is it.
-export const KNOWN_AGENT_NAMES = ['caf-planner', 'caf-frontend', 'caf-backend', 'caf-qa', 'caf-reviewer', 'caf-documentation'] as const;
+export const KNOWN_AGENT_NAMES = [
+  'caf-planner',
+  'caf-frontend',
+  'caf-backend',
+  'caf-qa',
+  'caf-validator',
+  'caf-reviewer',
+  'caf-documentation',
+] as const;
 
 export interface AgentModelOverridesValidationResult {
   errors: string[];

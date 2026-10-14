@@ -41,6 +41,7 @@ const AGENT_PIV_PHASE: Record<string, PivPhase> = {
   'caf-frontend': 'implement',
   'caf-backend': 'implement',
   'caf-qa': 'verify',
+  'caf-validator': 'verify',
   'caf-reviewer': 'verify',
 };
 

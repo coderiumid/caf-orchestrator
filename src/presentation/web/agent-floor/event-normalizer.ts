@@ -135,6 +135,8 @@ const AGENT_BY_NAME: Record<string, FloorAgent> = {
   'caf-frontend': 'frontend',
   'caf-backend': 'backend',
   'caf-qa': 'qa',
+  // CAF-SDD-04a: the validator sits at the QA desk — same gate, same step.
+  'caf-validator': 'qa',
   'caf-reviewer': 'reviewer',
 };
 
@@ -157,8 +159,12 @@ const RUNNING_STATE: Record<FloorAgent, FloorAgentState> = {
 const GATE_BY_AGENT_NAME: Record<string, FloorGate> = {
   'implementation-agents': 'implementation',
   'caf-qa': 'qa',
+  'caf-validator': 'qa',
   'caf-reviewer': 'reviewer',
 };
+
+/** caf-validator's report, which replaces qa-report.md wherever the attempt's gate agent was the validator. */
+const VALIDATOR_REPORT = 'validate-report.md';
 
 /** The report each agent leaves behind — what travels to the PR box when that agent was the last to run. */
 const OUTPUT_FILE: Record<FloorAgent, string> = {
@@ -238,6 +244,8 @@ interface AttemptState {
   pendingRetry: FloorGate | null;
   stepStatus: Partial<Record<FloorStep, FloorStepStatus>>;
   exhaustedGate: FloorGate | null;
+  /** The QA desk's report this attempt: qa-report.md, or validate-report.md once a caf-validator row is seen (CAF-SDD-04a). */
+  qaFile: string;
 }
 
 function newAttemptState(): AttemptState {
@@ -249,6 +257,7 @@ function newAttemptState(): AttemptState {
     pendingRetry: null,
     stepStatus: {},
     exhaustedGate: null,
+    qaFile: GATE_ARTIFACT.qa,
   };
 }
 
@@ -394,6 +403,8 @@ export function normalizeRun(run: PipelineRun, rows: AgentEvent[], options: Norm
     const attemptRows = sorted.filter((row) => (row.attempt ?? 1) === attempt);
     const state = newAttemptState();
     const base = { runId: run.id, attempt };
+    const gateFile = (gate: FloorGate): string => (gate === 'qa' ? state.qaFile : GATE_ARTIFACT[gate]);
+    const outputFile = (agent: FloorAgent): string => (agent === 'qa' ? state.qaFile : OUTPUT_FILE[agent]);
 
     const startedAt = attempt === 1 ? run.startedAt : (attemptRows[0]?.createdAt ?? lastTimestamp);
     out.push({
@@ -426,6 +437,7 @@ export function normalizeRun(run: PipelineRun, rows: AgentEvent[], options: Norm
 
       lastRowId = row.id;
       lastTimestamp = row.createdAt;
+      if (row.agentName === 'caf-validator') state.qaFile = VALIDATOR_REPORT;
 
       if (row.eventType === 'gate_exhausted') {
         const gate = GATE_BY_AGENT_NAME[row.agentName];
@@ -438,7 +450,7 @@ export function normalizeRun(run: PipelineRun, rows: AgentEvent[], options: Norm
           out.push({ ...at, type: 'agent_state', cursor: nextCursor(), agent, state: 'blocked', gate });
         }
         const sender = blocked[blocked.length - 1];
-        if (sender) handoff(sender, 'human', row.artifactLink ? basename(row.artifactLink) : GATE_ARTIFACT[gate]);
+        if (sender) handoff(sender, 'human', row.artifactLink ? basename(row.artifactLink) : gateFile(gate));
         continue;
       }
 
@@ -463,7 +475,7 @@ export function normalizeRun(run: PipelineRun, rows: AgentEvent[], options: Norm
 
         if (step === 'impl') {
           if (state.pendingRetry) {
-            handoff(state.pendingRetry === 'qa' ? 'qa' : 'reviewer', agent, GATE_ARTIFACT[state.pendingRetry]);
+            handoff(state.pendingRetry === 'qa' ? 'qa' : 'reviewer', agent, gateFile(state.pendingRetry));
             state.pendingRetry = null;
           } else if (state.lastEnded === 'planner') {
             handoff('planner', agent, 'requirements.md');
@@ -477,8 +489,8 @@ export function normalizeRun(run: PipelineRun, rows: AgentEvent[], options: Norm
           if (state.lastEnded && STEP_OF[state.lastEnded] === 'impl') handoff(state.lastEnded, 'qa', 'verify-report.md');
         } else if (step === 'review') {
           passIfActive('impl', 'verify-report.md');
-          passIfActive('qa', 'qa-report.md');
-          if (state.lastEnded === 'qa') handoff('qa', 'reviewer', 'qa-report.md');
+          passIfActive('qa', state.qaFile);
+          if (state.lastEnded === 'qa') handoff('qa', 'reviewer', state.qaFile);
           else if (state.lastEnded && STEP_OF[state.lastEnded] === 'impl') handoff(state.lastEnded, 'reviewer', 'verify-report.md');
         }
 
@@ -551,7 +563,7 @@ export function normalizeRun(run: PipelineRun, rows: AgentEvent[], options: Norm
           cursor: closeCursor(),
           from: state.lastEnded,
           to: 'outbox',
-          file: OUTPUT_FILE[state.lastEnded],
+          file: outputFile(state.lastEnded),
         });
         out.push({ ...finish, type: 'agent_state', cursor: closeCursor(), agent: state.lastEnded, state: 'celebrating' });
       }
