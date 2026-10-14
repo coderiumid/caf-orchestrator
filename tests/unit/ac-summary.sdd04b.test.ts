@@ -68,6 +68,21 @@ describe('AC-2: parseReportAcTable', () => {
     expect(table.get('AC-7b')).toEqual({ status: 'PASS', reason: 'a | b' });
   });
 
+  it('keeps a pipe inside a backtick pair in the cell', () => {
+    const table = parseReportAcTable(report(['| AC-2 | PASS | command | `pnpm test | grep ok` |']));
+    expect(table.get('AC-2')).toEqual({ status: 'PASS', reason: 'pnpm test | grep ok' });
+  });
+
+  it('keeps a pipe inside a backtick pair and an escaped pipe outside it', () => {
+    const table = parseReportAcTable(report(['| AC-2 | PASS | command | `a | b` and c \\| d |']));
+    expect(table.get('AC-2')).toEqual({ status: 'PASS', reason: 'a | b and c | d' });
+  });
+
+  it('splits at a pipe after an unpaired backtick (old behaviour)', () => {
+    const table = parseReportAcTable(report(['| AC-2 | PASS | command | run ` x | extra |']));
+    expect(table.get('AC-2')).toEqual({ status: 'PASS', reason: 'run  x' });
+  });
+
   it('skips the header and separator rows', () => {
     expect(parseReportAcTable(report([])).size).toBe(0);
   });
