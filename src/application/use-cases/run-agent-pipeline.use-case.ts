@@ -24,6 +24,7 @@ import {
   type QaReport,
   type ReviewerReport,
 } from '../../infrastructure/reports/report-reader.js';
+import { summarizeAcs, renderAcSummary, readRequirementsText, type AcSummary } from '../../infrastructure/reports/ac-summary.js';
 import { readVerifyDetails } from '../../infrastructure/reports/verify-report-details.js';
 import {
   readOrchestrationState,
@@ -31,6 +32,7 @@ import {
   resetOrchestrationState,
   incrementOrchestrationRetryCount,
   type OrchestrationGate,
+  type StoredOrchestrationGate,
   type OrchestrationState,
 } from '../../infrastructure/reports/orchestration-state.js';
 import { parseGithubRepo } from '../../infrastructure/vcs/github.service.js';
@@ -97,8 +99,13 @@ function buildPrBody(
   reviewerReport: ReviewerReport,
   qualityGateWarning: string,
   validation: { label: string; reportFile: string },
+  acSummaryText = '',
 ): string {
   const lines: string[] = [];
+
+  if (acSummaryText) {
+    lines.push(acSummaryText, '');
+  }
 
   if (qualityGateWarning) {
     lines.push(qualityGateWarning, '');
@@ -126,9 +133,18 @@ function buildPrBody(
 
 const GATE_ARTIFACT_FILE: Record<OrchestrationGate, string> = {
   implementation: 'verify-report.md',
-  qa: 'qa-report.md',
+  validate: 'qa-report.md',
   reviewer: 'review-notes.md',
 };
+
+/**
+ * Gate name as shown in comments, commit messages and PR bodies. The `validate`
+ * state name (CAF-SDD-04b) is internal: people keep reading "qa", the wording
+ * since before caf-validator existed (CAF-SDD-04a kept it byte for byte).
+ */
+function gateLabel(gate: StoredOrchestrationGate): string {
+  return gate === 'validate' ? 'qa' : gate;
+}
 
 /**
  * PR body for a gate-exhaustion Draft PR (CAF-RETRYPIPELINE-01 Task 3) —
@@ -141,14 +157,16 @@ function buildGateExhaustionPrBody(
   gate: OrchestrationGate,
   artifactRaw: string,
   artifactFile: string,
+  acSummaryText = '',
 ): string {
   return [
+    ...(acSummaryText ? [acSummaryText, ''] : []),
     `Ticket: ${job.ticketKey}`,
     job.ticketDescription || '',
     '',
-    `## Pipeline stopped — gate exhausted: ${gate}`,
+    `## Pipeline stopped — gate exhausted: ${gateLabel(gate)}`,
     '',
-    `Automated retries at the ${gate} gate did not pass. Work completed so far has been pushed here for human review.`,
+    `Automated retries at the ${gateLabel(gate)} gate did not pass. Work completed so far has been pushed here for human review.`,
     '',
     '## Reports',
     `- Requirements: \`.caf/tasks/${job.ticketKey}/requirements.md\``,
@@ -399,7 +417,7 @@ export class RunAgentPipelineUseCase {
         const gate = state.lastFailedGate ?? 'implementation';
         const gateArtifact = await this.readGateArtifact(repoPath, job.ticketKey, gate);
 
-        const contextParts: string[] = [`Resuming after a previous automated run stopped at the ${gate} gate.`];
+        const contextParts: string[] = [`Resuming after a previous automated run stopped at the ${gateLabel(gate)} gate.`];
         if (gateArtifact) {
           contextParts.push(`Previous ${gateArtifact.file}:\n\n${gateArtifact.raw}`);
         }
@@ -666,10 +684,25 @@ export class RunAgentPipelineUseCase {
         ({ report: qaReport, reportFile: qaReportFile } = await this.runQaGate(repoPath, job, repoId, validationGate));
       }
 
+      // CAF-SDD-04b: counts of the final gate report against requirements.md's
+      // AC ids. Undefined (no summary, no Q-1 rule) without AC lines, and while
+      // the gate was skipped — then there is no report to count.
+      const acSummary: AcSummary | undefined =
+        qaReportFile === undefined ? undefined : await this.buildAcSummary(repoPath, job, qaReport.raw);
+      const acSummaryText = acSummary ? renderAcSummary(acSummary) : '';
+
       if (qaReport.status === 'FAIL') {
         const gateArtifact = { agentName: validationGate.agentName, file: qaReportFile ?? validationGate.reportFile };
-        await this.recordGateExhaustion(repoPath, job, repoId, 'qa', gateArtifact);
-        const pushResult = await this.pushAndOpenGatePr(repoPath, job, branch, 'qa', qaReport.raw, gateArtifact.file);
+        await this.recordGateExhaustion(repoPath, job, repoId, 'validate', gateArtifact);
+        const pushResult = await this.pushAndOpenGatePr(
+          repoPath,
+          job,
+          branch,
+          'validate',
+          qaReport.raw,
+          gateArtifact.file,
+          acSummaryText,
+        );
         // caf-qa keeps its pre-CAF-SDD-04a wording; caf-validator names itself and its report.
         const headline =
           validationGate === QA_GATE
@@ -688,6 +721,40 @@ export class RunAgentPipelineUseCase {
           jobId: job.jobId,
           ticketKey: job.ticketKey,
           reason: `${validationGate === QA_GATE ? 'QA' : validationGate.agentName} failed after ${qaRetryCount} retry`,
+        });
+        return;
+      }
+
+      // Q-1: `Status: PASS` with not one AC proven is not a pass. Same stop as
+      // any exhausted gate — Draft PR + comment, no retry (nothing to retry on).
+      if (acSummary?.allUnverified && qaReportFile !== undefined) {
+        const gateArtifact = { agentName: validationGate.agentName, file: qaReportFile };
+        await this.recordGateExhaustion(repoPath, job, repoId, 'validate', gateArtifact);
+        const pushResult = await this.pushAndOpenGatePr(
+          repoPath,
+          job,
+          branch,
+          'validate',
+          qaReport.raw,
+          gateArtifact.file,
+          acSummaryText,
+        );
+        await this.postTicketComment(
+          job,
+          this.appendPushResultNote(
+            `Agent pipeline needs human review (${validationGate.label} proved none of the ${acSummary.results.length} acceptance criteria — all UNVERIFIED):\n\n${acSummaryText}\n\n${qaReport.raw}`,
+            pushResult,
+          ),
+        );
+        logger.info('Pipeline stopped: validation gate reported PASS but every AC is UNVERIFIED', undefined, {
+          jobId: job.jobId,
+          ticketKey: job.ticketKey,
+          acCount: acSummary.results.length,
+        });
+        await notifier?.notifyPipelineNeedsHuman({
+          jobId: job.jobId,
+          ticketKey: job.ticketKey,
+          reason: `${validationGate.agentName} reported PASS but all ${acSummary.results.length} acceptance criteria are UNVERIFIED`,
         });
         return;
       }
@@ -727,7 +794,15 @@ export class RunAgentPipelineUseCase {
 
       if (reviewerReport.verdict === 'CHANGES_REQUESTED') {
         await this.recordGateExhaustion(repoPath, job, repoId, 'reviewer');
-        const pushResult = await this.pushAndOpenGatePr(repoPath, job, branch, 'reviewer', reviewerReport.raw);
+        const pushResult = await this.pushAndOpenGatePr(
+          repoPath,
+          job,
+          branch,
+          'reviewer',
+          reviewerReport.raw,
+          undefined,
+          acSummaryText,
+        );
         await this.postTicketComment(
           job,
           this.appendPushResultNote(
@@ -849,7 +924,7 @@ export class RunAgentPipelineUseCase {
         body: buildPrBody(job, docsNote, qaReport, reviewerReport, qualityGateWarning, {
           label: validationGate.label,
           reportFile: qaReportFile ?? validationGate.reportFile,
-        }),
+        }, acSummaryText),
       });
       recordPullRequest(repoId, job.ticketKey, pullRequest.number);
       logger.info('Pull request created', undefined, {
@@ -897,12 +972,12 @@ export class RunAgentPipelineUseCase {
   ): Promise<void> {
     const gateAgent: Record<OrchestrationGate, string> = {
       implementation: 'implementation-agents',
-      qa: 'caf-qa',
+      validate: 'caf-qa',
       reviewer: 'caf-reviewer',
     };
     const gatePhase: Record<OrchestrationGate, PivPhase> = {
       implementation: 'implement',
-      qa: 'verify',
+      validate: 'verify',
       reviewer: 'verify',
     };
     recordAgentEvent(repoId, job.ticketKey, actual?.agentName ?? gateAgent[gate], gatePhase[gate], 'gate_exhausted', {
@@ -1000,14 +1075,16 @@ export class RunAgentPipelineUseCase {
   private async readGateArtifact(
     repoPath: string,
     ticketKey: string,
-    gate: OrchestrationGate,
+    gate: StoredOrchestrationGate,
   ): Promise<{ raw: string; file: string } | undefined> {
     switch (gate) {
       case 'implementation': {
         const raw = (await readVerifyReport(repoPath, ticketKey))?.raw;
         return raw === undefined ? undefined : { raw, file: GATE_ARTIFACT_FILE.implementation };
       }
-      case 'qa': {
+      // `qa` is the pre-CAF-SDD-04b stored name of the same gate.
+      case 'qa':
+      case 'validate': {
         const result = await this.readValidationReport(repoPath, ticketKey, await this.resolveValidationGate(repoPath));
         return result && { raw: result.report.raw, file: result.reportFile };
       }
@@ -1016,6 +1093,11 @@ export class RunAgentPipelineUseCase {
         return raw === undefined ? undefined : { raw, file: GATE_ARTIFACT_FILE.reviewer };
       }
     }
+  }
+
+  /** Deterministic AC counts for the gate report (CAF-SDD-04b); no model involved. */
+  private async buildAcSummary(repoPath: string, job: ExistingJobPayload, reportRaw: string): Promise<AcSummary | undefined> {
+    return summarizeAcs(await readRequirementsText(repoPath, job.ticketKey), reportRaw);
   }
 
   /** caf-validator when the workspace ships `.claude/agents/caf-validator.md`, caf-qa otherwise (CAF-SDD-04a Q-1). */
@@ -1066,18 +1148,19 @@ export class RunAgentPipelineUseCase {
     gate: OrchestrationGate,
     artifactRaw: string,
     artifactFile: string = GATE_ARTIFACT_FILE[gate],
+    acSummaryText = '',
   ): Promise<{ pr?: CreatePullRequestResult; error?: string }> {
     const { gitService, vcsClient } = this.deps;
     try {
       await gitService.commitAll(
         repoPath,
-        `AI agent pipeline: ${job.ticketKey} (needs human review — ${gate} gate)`,
+        `AI agent pipeline: ${job.ticketKey} (needs human review — ${gateLabel(gate)} gate)`,
         job.projectConfig.workspaceDir,
       );
       await gitService.push(repoPath, branch, job.projectConfig.workspaceDir);
 
       const { owner, repo } = parseGithubRepo(job.projectConfig.repoCloneUrl);
-      const body = buildGateExhaustionPrBody(job, gate, artifactRaw, artifactFile);
+      const body = buildGateExhaustionPrBody(job, gate, artifactRaw, artifactFile, acSummaryText);
       const existing = await vcsClient.findOpenPullRequestByHead({ owner, repo, head: branch });
 
       const pr = existing

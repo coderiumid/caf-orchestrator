@@ -681,7 +681,7 @@ describe('RunAgentPipelineUseCase', () => {
       expect.stringContaining('needs human review (QA failed after retry)'),
     );
     expect(notifier.notifyPipelineNeedsHuman).toHaveBeenCalledTimes(1);
-    expect(recordGateFailureMock).toHaveBeenCalledWith(expect.any(String), 'CAF-123', 'qa', 'deadbeef', {
+    expect(recordGateFailureMock).toHaveBeenCalledWith(expect.any(String), 'CAF-123', 'validate', 'deadbeef', {
       ticketTitle: 'Test ticket',
       ticketDescription: 'Test description',
     });

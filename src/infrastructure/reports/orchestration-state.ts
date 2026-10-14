@@ -8,11 +8,15 @@ import { logger } from '../logging/logger.js';
 // file is written by the orchestrator itself, not an agent — structured
 // JSON, not loose-regex-over-markdown, since there's no agent-authoring
 // contract to stay compatible with.
-export type OrchestrationGate = 'implementation' | 'qa' | 'reviewer';
+// CAF-SDD-04b Q-4: the validation gate is named `validate` in newly written
+// state. `qa` is only ever *read* (state files written before this change);
+// consumers treat it exactly like `validate`.
+export type OrchestrationGate = 'implementation' | 'validate' | 'reviewer';
+export type StoredOrchestrationGate = OrchestrationGate | 'qa';
 
 export interface OrchestrationState {
   orchestrationRetryCount: number;
-  lastFailedGate: OrchestrationGate | null;
+  lastFailedGate: StoredOrchestrationGate | null;
   lastFailedAt: string | null;
   lastKnownCommitSha: string | null;
   // Carried so a resume job (/caf-retry-pipeline, Task 4; Linear re-trigger,

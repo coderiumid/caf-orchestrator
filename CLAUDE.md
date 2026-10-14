@@ -78,10 +78,20 @@ When `retryContext` is set, every status comment for the run — including the e
 
 The orchestrator runs against both target-repo generations without a config key. `IAgentCatalog` (`domain/interfaces/agent-catalog.interface.ts`; adapter `infrastructure/agent/workspace-agent-catalog.ts`, wired in `worker.ts`) answers "does the checkout have `.claude/agents/<name>.md`?" — the use case asks it rather than touching `fs` itself:
 
-- `caf-validator.md` present → the validation gate runs `caf-validator` and reads `validate-report.md`, falling back to `qa-report.md` if it wrote none; absent → `caf-qa` and `qa-report.md`, exactly as before. Both share the `qa` orchestration gate (`lastFailedGate: 'qa'`), `agents.qa.maxRetries`, and the `- QA:` skip directive; gate-aware resume re-reads whichever report the repo's gate agent writes.
+- `caf-validator.md` present → the validation gate runs `caf-validator` and reads `validate-report.md`, falling back to `qa-report.md` if it wrote none; absent → `caf-qa` and `qa-report.md`, exactly as before. Both share one orchestration gate (stored as `lastFailedGate: 'validate'` since CAF-SDD-04b, legacy `'qa'` still read), `agents.qa.maxRetries`, and the `- QA:` skip directive; gate-aware resume re-reads whichever report the repo's gate agent writes.
 - `caf-documentation.md` absent → the docs step is skipped with a note (no failure comment).
 - The agent and report actually used are what ticket comments, PR bodies (`- Validator: …/validate-report.md`), `agent_events.agent_name`/`artifact_link` and the Agent Floor show. A `caf-qa` run keeps its old wording byte for byte.
 - Without an `agentCatalog` dependency (e.g. older tests), every repo is treated as old: `caf-qa`, documentation agent present.
+
+### AC summary and the UNVERIFIED policy (CAF-SDD-04b)
+
+`infrastructure/reports/ac-summary.ts` (pure, no model call) lists the `- AC-n:` ids of `.caf/tasks/<KEY>/requirements.md` (suffix ids like `AC-7b` included) and reads each AC's status and Evidence text from the pipe table of the gate report (`validate-report.md` or `qa-report.md`: id in column 1, status in column 2, evidence in column 4; backticks/bold/lowercase tolerated, an unknown status reads as `UNVERIFIED`). An AC absent from the report is `UNVERIFIED` with reason "tidak dilaporkan"; an AC only in the report is ignored. `renderAcSummary()` produces the block placed at the very top of the PR body by `buildPrBody` and, for gate stops, `buildGateExhaustionPrBody` (artifact text below is untouched), plus the report's `Proposed Spec Changes:` line when it is under `### Notes` and not "none".
+
+Policy (Q-1/Q-2): the gate passes when nothing is `FAIL`, except when there is at least one AC and all are `UNVERIFIED` — then, even with `Status: PASS`, `runPipelineFromImplementation` stops like any exhausted gate (`recordGateExhaustion('validate')`, Draft PR, ticket comment, no retry). No `requirements.md`, or none with `AC-n` lines, means no summary and no policy: the pre-existing behavior. A Planner-skipped validation gate has no report, so neither applies. The module is deliberately outside `report-reader.ts`: use-case tests mock that module with a closed factory.
+
+Gate name (Q-4): `OrchestrationGate` is `implementation | validate | reviewer`; `recordGateFailure` writes `validate` for both `caf-qa` and `caf-validator` repos. `StoredOrchestrationGate` adds the legacy `qa`, which `readGateArtifact`/resume treat identically (no data migration). User-visible wording ("qa gate" in comments, commit messages, Draft PR headings) is unchanged via `gateLabel()`.
+
+Fix-review (Q-6): `buildFixReviewPrompt()` in `run-pr-review.use-case.ts` (modes `scoped` and `global`) tells `caf-reviewer` never to edit `requirements.md`/`tasks.md`; a comment asking for that is recorded under `## Proposed Spec Changes` in `fix-review-log.md` with `Status: SKIPPED`. `readFixReviewLog` treats a `## ` heading as the end of the comment blocks. A single-app target repo uses `--role frontend|backend` (no `caf-implementer` routing).
 
 ### Dynamic agent skip (`AGENT_SKIP_ENABLED`)
 

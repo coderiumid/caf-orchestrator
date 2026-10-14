@@ -115,6 +115,14 @@ function buildFixReviewPrompt(ticketKey: string, mode: PrReviewJobPayload['mode'
     'Catatan: {alasan singkat, terutama wajib diisi untuk SKIPPED/NOT_APPLICABLE}',
     '```',
     'Satu blok `### Comment ...` per comment yang diproses.',
+    '',
+    '## Aturan spec',
+    `Spec (\`.caf/tasks/${ticketKey}/requirements.md\` dan \`.caf/tasks/${ticketKey}/tasks.md\`) bukan untuk`,
+    'diubah di job ini. Bila sebuah comment meminta perubahan pada salah satu berkas itu:',
+    '- JANGAN edit berkas spec tersebut.',
+    `- Catat usulannya di \`fix-review-log.md\` pada bagian \`## Proposed Spec Changes\` (satu butir per usulan).`,
+    '- Tandai blok comment-nya `Status: SKIPPED` dengan `Catatan:` yang menyebut bahwa itu perubahan spec dan sudah dicatat sebagai usulan.',
+    'Perubahan kode yang diminta comment lain tetap dikerjakan seperti biasa.',
   ].join('\n');
 }
 
