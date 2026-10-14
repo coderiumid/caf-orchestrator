@@ -63,6 +63,15 @@ export interface ExistingJobPayload {
   // override falling back to the global default. Required whenever isRetry is true.
   maxOrchestrationRetries?: number;
   retryContext?: RetryContext;
+  // CAF-SDD-04c: names of the labels on the ticket when the trigger fired, and
+  // the label that puts a ticket behind the spec-approval gate (resolved at
+  // trigger time per project). Both absent on older payloads — no label, no gate.
+  ticketLabels?: string[];
+  specGateLabel?: string;
+  // CAF-SDD-04c: set by a `/caf-approve-spec` comment on the spec Draft PR.
+  // Resumes at implementation on the existing branch like a retry, but is not
+  // one: it never spends orchestration retry budget. `retryContext` carries the PR.
+  approveSpec?: boolean;
 }
 
 /**

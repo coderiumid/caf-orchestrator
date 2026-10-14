@@ -4,6 +4,7 @@ import { WorkspaceLockError } from '../../domain/errors/app-errors.js';
 import type { IAgentRunner } from '../../domain/interfaces/agent-runner.interface.js';
 import type { IAgentCatalog } from '../../domain/interfaces/agent-catalog.interface.js';
 import type { ILinearClient } from '../../domain/interfaces/linear-client.interface.js';
+import type { TicketComment } from '../../domain/interfaces/ticket-comment.interface.js';
 import type { INotifier } from '../../domain/interfaces/notifier.interface.js';
 import type { IVcsClient, CreatePullRequestResult } from '../../domain/interfaces/vcs-client.interface.js';
 import type { ExistingJobPayload } from '../../domain/interfaces/queue.interface.js';
@@ -27,11 +28,24 @@ import {
 import { summarizeAcs, renderAcSummary, readRequirementsText, type AcSummary } from '../../infrastructure/reports/ac-summary.js';
 import { readVerifyDetails } from '../../infrastructure/reports/verify-report-details.js';
 import {
+  readSpecText,
+  writeSpecText,
+  parseSpecStatus,
+  findUnansweredBlockingQuestions,
+  setSpecStatusApproved,
+  selectClarifyAnswers,
+  CLARIFY_COMMENT_MARKER,
+  type SpecQuestion,
+} from '../../infrastructure/reports/spec-status.js';
+import {
   readOrchestrationState,
   recordGateFailure,
+  recordWaitingState,
+  clearWaitingState,
   resetOrchestrationState,
   incrementOrchestrationRetryCount,
   type OrchestrationGate,
+  type OrchestrationWaiting,
   type StoredOrchestrationGate,
   type OrchestrationState,
 } from '../../infrastructure/reports/orchestration-state.js';
@@ -195,6 +209,71 @@ function buildQualityGateWarning(skips: Array<{ label: string; reason: string }>
   ].join('\n');
 }
 
+/** A spec question as shown to people: the bullet text without its empty `— Answer:` tail. */
+function formatQuestion(question: SpecQuestion): string {
+  return question.text.replace(/\s*[—-]+\s*Answer:\s*$/i, '').trim();
+}
+
+/**
+ * Context handed to the planner on a Clarify resume: the draft is on the
+ * branch already and must be continued, with the people's answers attached.
+ */
+function buildClarifyAnswersContext(ticketKey: string, answers: TicketComment[]): string {
+  const lines = [
+    `This ticket was paused for clarification. The draft spec is already on this branch at .caf/tasks/${ticketKey}/requirements.md — continue that draft, do not start over. Write each answer below that settles a BLOCKING question after its \`— Answer:\`, then set Status accordingly.`,
+    '',
+    'Answers from the ticket (comments written after the last clarification request):',
+  ];
+  if (answers.length === 0) {
+    lines.push('(no new comments were found on the ticket)');
+  }
+  answers.forEach((answer, index) => lines.push('', `### Comment ${index + 1}`, answer.body));
+  return lines.join('\n');
+}
+
+function buildClarifyComment(job: ExistingJobPayload, branch: string, questions: SpecQuestion[], pushError: string | undefined): string {
+  const readyAgain =
+    job.ticketSource === 'github'
+      ? `remove and re-apply the \`${config.github?.readyLabel ?? 'ready-for-ai'}\` label on this issue`
+      : 'move this ticket back to "Ready for AI"';
+  return [
+    CLARIFY_COMMENT_MARKER,
+    `Agent pipeline paused: the spec for ${job.ticketKey} has questions that must be answered before implementation can start.`,
+    '',
+    questions.length > 0
+      ? 'Open questions:'
+      : `No unanswered BLOCKING question could be listed — check .caf/tasks/${job.ticketKey}/requirements.md on branch \`${branch}\`.`,
+    ...questions.map((q) => `- ${formatQuestion(q)}`),
+    '',
+    `To continue: answer in a comment on this ticket, then ${readyAgain}. The planner resumes the draft saved on branch \`${branch}\` with the comments written after this one. This does not use up a retry.`,
+    ...(pushError ? ['', `⚠️ Could not push the draft spec to \`${branch}\`: ${pushError}. The planner will start the spec again on the next trigger.`] : []),
+  ].join('\n');
+}
+
+function buildSpecPrBody(job: ExistingJobPayload): string {
+  return [
+    `Ticket: ${job.ticketKey}`,
+    job.ticketDescription || '',
+    '',
+    '## Spec review — approval needed before implementation',
+    '',
+    'This PR holds the spec only; no implementation has run. Review it (edit it on this branch if needed), then comment `/caf-approve-spec` to approve and start implementation.',
+    '',
+    '## Spec',
+    `- Requirements: \`.caf/tasks/${job.ticketKey}/requirements.md\``,
+    `- Tasks: \`.caf/tasks/${job.ticketKey}/tasks.md\``,
+  ].join('\n');
+}
+
+function buildSpecApprovalComment(job: ExistingJobPayload, pr: CreatePullRequestResult | undefined, error: string | undefined): string {
+  return [
+    `Agent pipeline paused: the spec for ${job.ticketKey} awaits your approval before implementation starts.`,
+    pr ? `Spec PR: ${pr.url}` : `⚠️ Could not open the spec Draft PR automatically: ${error ?? 'unknown error'}. The spec is still in the workspace only.`,
+    '',
+    'Review the spec there, then comment `/caf-approve-spec` on the PR to approve it and continue. This does not use up a retry.',
+  ].join('\n');
+}
+
 function ms(start: bigint): number {
   return Math.round(Number(process.hrtime.bigint() - start) / 1e6);
 }
@@ -228,7 +307,7 @@ export class RunAgentPipelineUseCase {
   }
 
   async execute(job: ExistingJobPayload): Promise<void> {
-    const { gitService, workspaceManager, agentRunner, linearClient, notifier } = this.deps;
+    const { gitService, workspaceManager, linearClient, notifier } = this.deps;
 
     // Fire-and-forget: don't await, don't let notification failure affect the
     // pipeline. send() internally catches all errors already.
@@ -302,7 +381,11 @@ export class RunAgentPipelineUseCase {
       let tasksMarkdown: string;
       let resumeContext: string | undefined;
 
-      if (job.isRetry) {
+      if (job.isRetry || job.approveSpec) {
+        // CAF-SDD-04c: /caf-approve-spec shares this sync with a retry (same
+        // branch, same destructive-reset guards); only the wording differs.
+        const stopped = job.approveSpec ? '/caf-approve-spec stopped' : 'Retry stopped';
+        const again = job.approveSpec ? 'approving again' : 'retrying again';
         // CAF-RESUMEBRANCH-01: confirm ai-agent/{ticketKey} still exists on
         // the remote BEFORE the destructive preflightCleanup/clone below
         // assumes it does. A ticket can re-enter "Ready for AI" (or get a
@@ -315,7 +398,7 @@ export class RunAgentPipelineUseCase {
         // an already-completed ticket without a human decision.
         const branchExists = await gitService.remoteBranchExists(job.projectConfig.repoCloneUrl, branch, workspacePath);
         if (!branchExists) {
-          logger.warn('Retry stopped: ai-agent branch not found on remote (likely already merged and deleted)', undefined, {
+          logger.warn(`${stopped}: ai-agent branch not found on remote (likely already merged and deleted)`, undefined, {
             jobId: job.jobId,
             ticketKey: job.ticketKey,
             branch,
@@ -323,8 +406,8 @@ export class RunAgentPipelineUseCase {
           await this.postTicketComment(
             job,
             [
-              `🚫 Retry stopped: branch \`${branch}\` was not found on the remote.`,
-              'This usually means the ticket was already completed — its PR merged and GitHub auto-deleted the branch — before this retry was triggered.',
+              `🚫 ${stopped}: branch \`${branch}\` was not found on the remote.`,
+              `This usually means the ticket was already completed — its PR merged and GitHub auto-deleted the branch — before this ${job.approveSpec ? 'approval' : 'retry'} was triggered.`,
               'Please check the ticket status in Linear before retriggering. Nothing was touched; no fresh checkout was started automatically.',
             ].join('\n'),
           );
@@ -347,7 +430,7 @@ export class RunAgentPipelineUseCase {
         if (existsSync(`${repoPath}/.git`)) {
           const status = await gitService.getWorkspaceStatus(repoPath, workspaceRoot);
           if (status.hasUncommittedChanges) {
-            logger.warn('Retry sync aborted: unexpected uncommitted changes in persistent workspace', undefined, {
+            logger.warn(`${job.approveSpec ? 'Approve-spec' : 'Retry'} sync aborted: unexpected uncommitted changes in persistent workspace`, undefined, {
               jobId: job.jobId,
               ticketKey: job.ticketKey,
               statusOutput: status.statusOutput,
@@ -355,8 +438,8 @@ export class RunAgentPipelineUseCase {
             await this.postTicketComment(
               job,
               [
-                `🚫 Retry stopped: unexpected uncommitted changes found in the workspace before syncing to \`${branch}\`.`,
-                'This may be residue from an interrupted run. Nothing was touched or discarded — please investigate the workspace manually (or ask a maintainer) before retrying again.',
+                `🚫 ${stopped}: unexpected uncommitted changes found in the workspace before syncing to \`${branch}\`.`,
+                `This may be residue from an interrupted run. Nothing was touched or discarded — please investigate the workspace manually (or ask a maintainer) before ${again}.`,
                 '',
                 '```',
                 status.statusOutput,
@@ -381,65 +464,97 @@ export class RunAgentPipelineUseCase {
           await gitService.clone(job.projectConfig.repoCloneUrl, branch, repoPath, workspaceRoot);
         }
 
-        const retryGate = await this.checkAndConsumeRetryBudget(repoPath, job, repoId);
-        if (!retryGate.allowed) {
-          return;
-        }
-        const { state } = retryGate;
+        if (job.approveSpec) {
+          const approvedTasks = await this.approveSpecAndReadTasks(job, repoPath, branch, repoId, workspaceRoot);
+          if (approvedTasks === undefined) {
+            return;
+          }
+          tasksMarkdown = approvedTasks;
+        } else {
+          // CAF-SDD-04c: a branch the pipeline left on purpose (waiting for
+          // Clarify answers or for spec approval) is not a failed run to retry:
+          // no budget check, no counter.
+          const priorState = await readOrchestrationState(repoPath, job.ticketKey);
 
-        // Manual-change detection (Task 6): compare the just-synced HEAD
-        // against the sha recorded at the moment the gate failed. A
-        // difference means a human committed to the branch in between —
-        // surfaced as context for the resumed agent, never a stop condition
-        // (only unexpected *uncommitted* residue, checked above, stops the
-        // pipeline).
-        let manualChangesSinceLastRun: string | undefined;
-        if (state.lastKnownCommitSha) {
-          const newHeadSha = await gitService.getHeadCommit(repoPath);
-          if (newHeadSha !== state.lastKnownCommitSha) {
-            try {
-              manualChangesSinceLastRun = await gitService.diffStat(repoPath, state.lastKnownCommitSha, newHeadSha, workspaceRoot);
-            } catch (err) {
-              logger.error(
-                'Failed to compute manual-change diff stat — proceeding without it',
-                err instanceof Error ? err : new Error(String(err)),
-                { jobId: job.jobId, ticketKey: job.ticketKey },
+          if (priorState?.waitingFor === 'clarify') {
+            const planned = await this.resumeAfterClarify(job, repoPath, branch, repoId, workspaceRoot);
+            if (planned === undefined) {
+              return;
+            }
+            tasksMarkdown = planned;
+          } else if (priorState?.waitingFor === 'spec-approval') {
+            await this.postTicketComment(
+              job,
+              `⚠️ ${job.ticketKey} is waiting for approval of its spec, not for a retry. Review the spec Draft PR and comment /caf-approve-spec there to continue. Nothing was run and no retry was used.`,
+            );
+            logger.info('Trigger ignored: ticket is waiting for spec approval', undefined, {
+              jobId: job.jobId,
+              ticketKey: job.ticketKey,
+            });
+            finalizePipelineRun(repoId, job.ticketKey, 'NEEDS_HUMAN');
+            return;
+          } else {
+            const retryGate = await this.checkAndConsumeRetryBudget(repoPath, job, repoId, priorState);
+            if (!retryGate.allowed) {
+              return;
+            }
+            const { state } = retryGate;
+
+            // Manual-change detection (Task 6): compare the just-synced HEAD
+            // against the sha recorded at the moment the gate failed. A
+            // difference means a human committed to the branch in between —
+            // surfaced as context for the resumed agent, never a stop condition
+            // (only unexpected *uncommitted* residue, checked above, stops the
+            // pipeline).
+            let manualChangesSinceLastRun: string | undefined;
+            if (state.lastKnownCommitSha) {
+              const newHeadSha = await gitService.getHeadCommit(repoPath);
+              if (newHeadSha !== state.lastKnownCommitSha) {
+                try {
+                  manualChangesSinceLastRun = await gitService.diffStat(repoPath, state.lastKnownCommitSha, newHeadSha, workspaceRoot);
+                } catch (err) {
+                  logger.error(
+                    'Failed to compute manual-change diff stat — proceeding without it',
+                    err instanceof Error ? err : new Error(String(err)),
+                    { jobId: job.jobId, ticketKey: job.ticketKey },
+                  );
+                }
+              }
+            }
+
+            // Gate-aware resume: skip the planner entirely and jump straight to
+            // re-running the implementation agent(s) with the failing gate's own
+            // artifact as context — same agents the existing per-invocation
+            // QA-fail/reviewer-CHANGES_REQUESTED retry loops already re-run, just
+            // entered across a job boundary instead of within one.
+            const gate = state.lastFailedGate ?? 'implementation';
+            const gateArtifact = await this.readGateArtifact(repoPath, job.ticketKey, gate);
+
+            const contextParts: string[] = [`Resuming after a previous automated run stopped at the ${gateLabel(gate)} gate.`];
+            if (gateArtifact) {
+              contextParts.push(`Previous ${gateArtifact.file}:\n\n${gateArtifact.raw}`);
+            }
+            if (manualChangesSinceLastRun) {
+              contextParts.push(
+                `Manual changes were made directly to the branch since the last automated run — do not assume file contents match what the last run left behind:\n\n${manualChangesSinceLastRun}`,
               );
             }
+            resumeContext = contextParts.join('\n\n');
+
+            const existingTasksMarkdown = await readTasks(repoPath, job.ticketKey);
+            if (!existingTasksMarkdown) {
+              throw new Error(`Resume job found no existing tasks.md on branch ${branch} — cannot resume without it`);
+            }
+            tasksMarkdown = existingTasksMarkdown;
+
+            logger.info('Gate-aware resume: skipping planner, resuming implementation with prior gate context', undefined, {
+              jobId: job.jobId,
+              ticketKey: job.ticketKey,
+              gate,
+              hasManualChanges: !!manualChangesSinceLastRun,
+            });
           }
         }
-
-        // Gate-aware resume: skip the planner entirely and jump straight to
-        // re-running the implementation agent(s) with the failing gate's own
-        // artifact as context — same agents the existing per-invocation
-        // QA-fail/reviewer-CHANGES_REQUESTED retry loops already re-run, just
-        // entered across a job boundary instead of within one.
-        const gate = state.lastFailedGate ?? 'implementation';
-        const gateArtifact = await this.readGateArtifact(repoPath, job.ticketKey, gate);
-
-        const contextParts: string[] = [`Resuming after a previous automated run stopped at the ${gateLabel(gate)} gate.`];
-        if (gateArtifact) {
-          contextParts.push(`Previous ${gateArtifact.file}:\n\n${gateArtifact.raw}`);
-        }
-        if (manualChangesSinceLastRun) {
-          contextParts.push(
-            `Manual changes were made directly to the branch since the last automated run — do not assume file contents match what the last run left behind:\n\n${manualChangesSinceLastRun}`,
-          );
-        }
-        resumeContext = contextParts.join('\n\n');
-
-        const existingTasksMarkdown = await readTasks(repoPath, job.ticketKey);
-        if (!existingTasksMarkdown) {
-          throw new Error(`Resume job found no existing tasks.md on branch ${branch} — cannot resume without it`);
-        }
-        tasksMarkdown = existingTasksMarkdown;
-
-        logger.info('Gate-aware resume: skipping planner, resuming implementation with prior gate context', undefined, {
-          jobId: job.jobId,
-          ticketKey: job.ticketKey,
-          gate,
-          hasManualChanges: !!manualChangesSinceLastRun,
-        });
       } else {
         // CAF-WSMODE-01: a persistent workspace already holding a prior job's
         // clone (existsSync check, not a hidden mode branch) gets fetched +
@@ -452,64 +567,11 @@ export class RunAgentPipelineUseCase {
         }
         await gitService.createBranch(repoPath, branch, workspaceRoot);
 
-        const plannerPrompt = [
-          `Ticket ${job.ticketKey}: ${job.ticketTitle}`,
-          '',
-          job.ticketDescription || '(no description provided)',
-        ].join('\n');
-
-        void notifier?.notifyAgentStarted({ jobId: job.jobId, ticketKey: job.ticketKey, agentName: 'caf-planner' });
-        recordAgentEvent(repoId, job.ticketKey, 'caf-planner', 'plan', 'start');
-        const plannerResult = await agentRunner.run(
-          'caf-planner',
-          repoPath,
-          plannerPrompt,
-          job.projectConfig.agents.modelOverrides['caf-planner'],
-        );
-        recordAgentEnd(repoId, job.ticketKey, 'caf-planner', 'plan', plannerResult);
-        logger.info('caf-planner agent run result', undefined, {
-          jobId: job.jobId,
-          ticketKey: job.ticketKey,
-          agentName: 'caf-planner',
-          exitCode: plannerResult.exitCode,
-          signal: plannerResult.signal,
-          timedOut: plannerResult.timedOut,
-          stdout: plannerResult.stdout,
-          stderr: plannerResult.stderr,
-        });
-        if (plannerResult.signal || plannerResult.exitCode !== 0) {
-          logger.error('caf-planner agent run failed', undefined, {
-            jobId: job.jobId,
-            ticketKey: job.ticketKey,
-            agentName: 'caf-planner',
-            exitCode: plannerResult.exitCode,
-            signal: plannerResult.signal,
-            timedOut: plannerResult.timedOut,
-            stdout: plannerResult.stdout,
-            stderr: plannerResult.stderr,
-          });
+        const planned = await this.planTicket(job, repoPath, branch, repoId, workspaceRoot);
+        if (planned === undefined) {
+          return;
         }
-        if (plannerResult.signal) {
-          throw new Error(`caf-planner agent killed by signal ${plannerResult.signal}`);
-        }
-        if (plannerResult.exitCode !== 0) {
-          await this.stopIfNonRetryable('caf-planner', plannerResult, job);
-          throw new Error(`caf-planner agent exited with code ${plannerResult.exitCode}: ${plannerResult.stderr}`);
-        }
-
-        const freshTasksMarkdown = await readTasks(repoPath, job.ticketKey);
-        if (!freshTasksMarkdown) {
-          // Log agent output at ERROR level so it's visible even when INFO is filtered.
-          // A silent exit-0 without producing tasks.md is the hardest failure to debug.
-          logger.error('caf-planner exited 0 but did not produce tasks.md', undefined, {
-            jobId: job.jobId,
-            ticketKey: job.ticketKey,
-            stdout: plannerResult.stdout,
-            stderr: plannerResult.stderr,
-          });
-          throw new Error('caf-planner did not produce tasks.md');
-        }
-        tasksMarkdown = freshTasksMarkdown;
+        tasksMarkdown = planned;
       }
 
       await this.runPipelineFromImplementation(job, repoPath, branch, workspaceRoot, jobStart, tasksMarkdown, resumeContext);
@@ -544,6 +606,336 @@ export class RunAgentPipelineUseCase {
     } finally {
       await workspaceManager.cleanupWorkspace(workspacePath, workspaceRoot, workspacePurpose);
     }
+  }
+
+  /**
+   * The planner step, shared by a new ticket and a Clarify resume (CAF-SDD-04c).
+   * Runs caf-planner, then looks at the spec it left: a spec that still needs
+   * clarification, or that waits behind the ticket's spec-gate label, ends the
+   * job here (returns undefined) instead of handing it to the implementation
+   * agents. Otherwise returns the freshly written tasks.md.
+   */
+  private async planTicket(
+    job: ExistingJobPayload,
+    repoPath: string,
+    branch: string,
+    repoId: string,
+    workspaceRoot: string,
+    clarifyAnswers?: TicketComment[],
+  ): Promise<string | undefined> {
+    const { agentRunner, notifier } = this.deps;
+
+    const plannerPrompt = [
+      `Ticket ${job.ticketKey}: ${job.ticketTitle}`,
+      '',
+      job.ticketDescription || '(no description provided)',
+      ...(clarifyAnswers ? ['', buildClarifyAnswersContext(job.ticketKey, clarifyAnswers)] : []),
+    ].join('\n');
+
+    void notifier?.notifyAgentStarted({ jobId: job.jobId, ticketKey: job.ticketKey, agentName: 'caf-planner' });
+    recordAgentEvent(repoId, job.ticketKey, 'caf-planner', 'plan', 'start');
+    const plannerResult = await agentRunner.run(
+      'caf-planner',
+      repoPath,
+      plannerPrompt,
+      job.projectConfig.agents.modelOverrides['caf-planner'],
+    );
+    recordAgentEnd(repoId, job.ticketKey, 'caf-planner', 'plan', plannerResult);
+    logger.info('caf-planner agent run result', undefined, {
+      jobId: job.jobId,
+      ticketKey: job.ticketKey,
+      agentName: 'caf-planner',
+      exitCode: plannerResult.exitCode,
+      signal: plannerResult.signal,
+      timedOut: plannerResult.timedOut,
+      stdout: plannerResult.stdout,
+      stderr: plannerResult.stderr,
+    });
+    if (plannerResult.signal || plannerResult.exitCode !== 0) {
+      logger.error('caf-planner agent run failed', undefined, {
+        jobId: job.jobId,
+        ticketKey: job.ticketKey,
+        agentName: 'caf-planner',
+        exitCode: plannerResult.exitCode,
+        signal: plannerResult.signal,
+        timedOut: plannerResult.timedOut,
+        stdout: plannerResult.stdout,
+        stderr: plannerResult.stderr,
+      });
+    }
+    if (plannerResult.signal) {
+      throw new Error(`caf-planner agent killed by signal ${plannerResult.signal}`);
+    }
+    if (plannerResult.exitCode !== 0) {
+      await this.stopIfNonRetryable('caf-planner', plannerResult, job);
+      throw new Error(`caf-planner agent exited with code ${plannerResult.exitCode}: ${plannerResult.stderr}`);
+    }
+
+
+    if (await this.stopForSpecIfNeeded(job, repoPath, branch, repoId, workspaceRoot)) {
+      return undefined;
+    }
+
+    const freshTasksMarkdown = await readTasks(repoPath, job.ticketKey);
+    if (!freshTasksMarkdown) {
+      // Log agent output at ERROR level so it's visible even when INFO is filtered.
+      // A silent exit-0 without producing tasks.md is the hardest failure to debug.
+      logger.error('caf-planner exited 0 but did not produce tasks.md', undefined, {
+        jobId: job.jobId,
+        ticketKey: job.ticketKey,
+        stdout: plannerResult.stdout,
+        stderr: plannerResult.stderr,
+      });
+      throw new Error('caf-planner did not produce tasks.md');
+    }
+
+    return freshTasksMarkdown;
+  }
+
+  /**
+   * A ticket re-triggered while its branch holds a draft spec waiting for
+   * answers (CAF-SDD-04c): the planner continues that draft with the comments
+   * written since the last Clarify request. Not a retry — the budget is neither
+   * checked nor spent. Returns the tasks, or undefined when it stops again.
+   */
+  private async resumeAfterClarify(
+    job: ExistingJobPayload,
+    repoPath: string,
+    branch: string,
+    repoId: string,
+    workspaceRoot: string,
+  ): Promise<string | undefined> {
+    const answers = await this.collectClarifyAnswers(job);
+    await clearWaitingState(repoPath, job.ticketKey);
+    logger.info('Clarify resume: continuing the draft spec with ticket answers', undefined, {
+      jobId: job.jobId,
+      ticketKey: job.ticketKey,
+      answerCount: answers.length,
+    });
+    return this.planTicket(job, repoPath, branch, repoId, workspaceRoot, answers);
+  }
+
+  private async collectClarifyAnswers(job: ExistingJobPayload): Promise<TicketComment[]> {
+    if (job.ticketSource === 'github') {
+      const { owner, repo } = parseGithubRepo(job.projectConfig.repoCloneUrl);
+      return selectClarifyAnswers(await this.deps.vcsClient.listTicketComments({ owner, repo, issueNumber: Number(job.ticketId) }));
+    }
+    return selectClarifyAnswers(await this.deps.linearClient.listComments(job.ticketId));
+  }
+
+  private isSpecGated(job: ExistingJobPayload): boolean {
+    const gate = job.specGateLabel?.toLowerCase();
+    return !!gate && (job.ticketLabels ?? []).some((label) => label.toLowerCase() === gate);
+  }
+
+  /**
+   * After the planner (CAF-SDD-04c): `NEEDS_CLARIFICATION` always stops to ask;
+   * `DRAFT` on a ticket with the spec-gate label stops for approval. No
+   * requirements.md or no anchored `Status:` line (a repo without the spec
+   * convention) and every other status fall through — the behavior before this
+   * ticket. True when the job stopped here.
+   */
+  private async stopForSpecIfNeeded(
+    job: ExistingJobPayload,
+    repoPath: string,
+    branch: string,
+    repoId: string,
+    workspaceRoot: string,
+  ): Promise<boolean> {
+    const spec = await readSpecText(repoPath, job.ticketKey);
+    const status = spec === undefined ? undefined : parseSpecStatus(spec);
+    if (spec === undefined || status === undefined) return false;
+
+    if (status === 'NEEDS_CLARIFICATION') {
+      await this.stopForClarification(job, repoPath, branch, repoId, workspaceRoot, findUnansweredBlockingQuestions(spec));
+      return true;
+    }
+    if (status === 'DRAFT' && this.isSpecGated(job)) {
+      await this.stopForSpecApproval(job, repoPath, branch, repoId, workspaceRoot);
+      return true;
+    }
+    return false;
+  }
+
+  /** Writes the waiting marker, commits and pushes the spec as it stands. The push never throws: its failure is returned for the comment. */
+  private async parkSpecOnBranch(
+    job: ExistingJobPayload,
+    repoPath: string,
+    branch: string,
+    workspaceRoot: string,
+    waitingFor: OrchestrationWaiting,
+    commitMessage: string,
+  ): Promise<string | undefined> {
+    const { gitService } = this.deps;
+    await recordWaitingState(repoPath, job.ticketKey, waitingFor, await gitService.getHeadCommit(repoPath), {
+      ticketTitle: job.ticketTitle,
+      ticketDescription: job.ticketDescription,
+    });
+    try {
+      await gitService.commitAll(repoPath, commitMessage, workspaceRoot);
+      await gitService.push(repoPath, branch, workspaceRoot);
+      return undefined;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.error('Failed to push the spec to the ticket branch', err instanceof Error ? err : new Error(message), {
+        jobId: job.jobId,
+        ticketKey: job.ticketKey,
+        waitingFor,
+      });
+      return message;
+    }
+  }
+
+  private async stopForClarification(
+    job: ExistingJobPayload,
+    repoPath: string,
+    branch: string,
+    repoId: string,
+    workspaceRoot: string,
+    questions: SpecQuestion[],
+  ): Promise<void> {
+    const pushError = await this.parkSpecOnBranch(
+      job,
+      repoPath,
+      branch,
+      workspaceRoot,
+      'clarify',
+      `AI agent pipeline: ${job.ticketKey} (spec draft, needs clarification)`,
+    );
+
+    await this.postTicketComment(job, buildClarifyComment(job, branch, questions, pushError));
+    logger.info('Pipeline stopped: spec needs clarification', undefined, {
+      jobId: job.jobId,
+      ticketKey: job.ticketKey,
+      openQuestions: questions.length,
+    });
+    finalizePipelineRun(repoId, job.ticketKey, 'NEEDS_HUMAN');
+    await this.deps.notifier?.notifyPipelineNeedsHuman({
+      jobId: job.jobId,
+      ticketKey: job.ticketKey,
+      reason: `Spec needs clarification (${questions.length} open BLOCKING question(s)) — answer on the ticket and re-trigger`,
+    });
+  }
+
+  private async stopForSpecApproval(
+    job: ExistingJobPayload,
+    repoPath: string,
+    branch: string,
+    repoId: string,
+    workspaceRoot: string,
+  ): Promise<void> {
+    const { vcsClient } = this.deps;
+    const pushError = await this.parkSpecOnBranch(
+      job,
+      repoPath,
+      branch,
+      workspaceRoot,
+      'spec-approval',
+      `AI agent pipeline: ${job.ticketKey} (spec awaiting approval)`,
+    );
+
+    let pr: CreatePullRequestResult | undefined;
+    let prError: string | undefined = pushError;
+    if (!pushError) {
+      try {
+        const { owner, repo } = parseGithubRepo(job.projectConfig.repoCloneUrl);
+        const body = buildSpecPrBody(job);
+        const existing = await vcsClient.findOpenPullRequestByHead({ owner, repo, head: branch });
+        pr = existing
+          ? await vcsClient.updatePullRequest({ owner, repo, prNumber: existing.number, body })
+          : await vcsClient.createPullRequest({
+              owner,
+              repo,
+              head: branch,
+              base: job.projectConfig.baseBranch,
+              title: `${job.ticketKey}: ${job.ticketTitle}`,
+              body,
+              draft: true,
+            });
+        recordPullRequest(repoId, job.ticketKey, pr.number);
+      } catch (err) {
+        prError = err instanceof Error ? err.message : String(err);
+        logger.error('Failed to open the spec Draft PR', err instanceof Error ? err : new Error(prError), {
+          jobId: job.jobId,
+          ticketKey: job.ticketKey,
+        });
+      }
+    }
+
+    await this.postTicketComment(job, buildSpecApprovalComment(job, pr, prError));
+    logger.info('Pipeline stopped: spec awaiting approval', undefined, { jobId: job.jobId, ticketKey: job.ticketKey, prUrl: pr?.url });
+    finalizePipelineRun(repoId, job.ticketKey, 'NEEDS_HUMAN');
+    await this.deps.notifier?.notifyPipelineNeedsHuman({
+      jobId: job.jobId,
+      ticketKey: job.ticketKey,
+      reason: `Spec awaiting approval${pr ? ` — ${pr.url}` : ''}: comment /caf-approve-spec on the PR`,
+    });
+  }
+
+  /**
+   * `/caf-approve-spec` (CAF-SDD-04c), after the workspace is on the ticket
+   * branch: only a branch waiting for spec approval is approvable, and only a
+   * spec with no NEEDS_CLARIFICATION and no unanswered BLOCKING question. The
+   * single change made is the `Status:` line → APPROVED (no commit when a human
+   * already set it). Reads tasks.md from the branch, the planner being skipped.
+   * Returns undefined after explaining on the PR when the job stops.
+   */
+  private async approveSpecAndReadTasks(
+    job: ExistingJobPayload,
+    repoPath: string,
+    branch: string,
+    repoId: string,
+    workspaceRoot: string,
+  ): Promise<string | undefined> {
+    const { gitService } = this.deps;
+
+    const reject = async (message: string): Promise<undefined> => {
+      await this.postTicketComment(job, `⚠️ /caf-approve-spec: ${message} Nothing was changed.`);
+      logger.info('Approve-spec rejected', undefined, { jobId: job.jobId, ticketKey: job.ticketKey, reason: message });
+      finalizePipelineRun(repoId, job.ticketKey, 'NEEDS_HUMAN');
+      return undefined;
+    };
+
+    const state = await readOrchestrationState(repoPath, job.ticketKey);
+    if (state?.waitingFor !== 'spec-approval') {
+      return reject(
+        `${job.ticketKey} is not waiting for spec approval${state?.waitingFor === 'clarify' ? ' — it is waiting for answers to its clarifying questions on the ticket' : ''}.`,
+      );
+    }
+
+    const spec = await readSpecText(repoPath, job.ticketKey);
+    const status = spec === undefined ? undefined : parseSpecStatus(spec);
+    if (spec === undefined || status === undefined) {
+      return reject('requirements.md has no `Status:` line on this branch, so there is nothing to approve.');
+    }
+    if (status === 'NEEDS_CLARIFICATION') {
+      return reject('the spec is still `Status: NEEDS_CLARIFICATION` — resolve the clarifying questions first.');
+    }
+    const open = findUnansweredBlockingQuestions(spec);
+    if (open.length > 0) {
+      return reject(`the spec still has unanswered BLOCKING questions:\n${open.map((q) => `- ${formatQuestion(q)}`).join('\n')}\n`);
+    }
+
+    const approved = setSpecStatusApproved(spec);
+    if (approved?.changed) {
+      await writeSpecText(repoPath, job.ticketKey, approved.text);
+      await gitService.commitAll(repoPath, `AI agent pipeline: ${job.ticketKey} (spec approved via /caf-approve-spec)`, workspaceRoot);
+      await gitService.push(repoPath, branch, workspaceRoot);
+    }
+
+    job.ticketTitle = state.ticketTitle || job.ticketTitle;
+    job.ticketDescription = state.ticketDescription || job.ticketDescription;
+
+    const tasksMarkdown = await readTasks(repoPath, job.ticketKey);
+    if (!tasksMarkdown) {
+      throw new Error(`Approved spec found no existing tasks.md on branch ${branch} — cannot resume without it`);
+    }
+    logger.info('Spec approved: skipping planner, resuming implementation', undefined, {
+      jobId: job.jobId,
+      ticketKey: job.ticketKey,
+      statusCommitted: !!approved?.changed,
+    });
+    return tasksMarkdown;
   }
 
   /**
@@ -915,17 +1307,26 @@ export class RunAgentPipelineUseCase {
       const qualityGateWarning = buildQualityGateWarning(qualityGateSkips);
 
       const { owner, repo } = parseGithubRepo(job.projectConfig.repoCloneUrl);
-      const pullRequest = await vcsClient.createPullRequest({
-        owner,
-        repo,
-        head: branch,
-        base: job.projectConfig.baseBranch,
-        title: `${job.ticketKey}: ${job.ticketTitle}`,
-        body: buildPrBody(job, docsNote, qaReport, reviewerReport, qualityGateWarning, {
-          label: validationGate.label,
-          reportFile: qaReportFile ?? validationGate.reportFile,
-        }, acSummaryText),
-      });
+      const prBody = buildPrBody(job, docsNote, qaReport, reviewerReport, qualityGateWarning, {
+        label: validationGate.label,
+        reportFile: qaReportFile ?? validationGate.reportFile,
+      }, acSummaryText);
+      // CAF-SDD-04c AC-16: a resumed run (retry or spec approval) may already
+      // have an open PR on this branch — the spec PR or a gate Draft PR. It is
+      // updated, never joined by a second one (GitHub would reject that anyway).
+      // A first run has none by construction and skips the lookup.
+      const existingPr =
+        job.isRetry || job.approveSpec ? await vcsClient.findOpenPullRequestByHead({ owner, repo, head: branch }) : undefined;
+      const pullRequest = existingPr
+        ? await vcsClient.updatePullRequest({ owner, repo, prNumber: existingPr.number, body: prBody })
+        : await vcsClient.createPullRequest({
+            owner,
+            repo,
+            head: branch,
+            base: job.projectConfig.baseBranch,
+            title: `${job.ticketKey}: ${job.ticketTitle}`,
+            body: prBody,
+          });
       recordPullRequest(repoId, job.ticketKey, pullRequest.number);
       logger.info('Pull request created', undefined, {
         jobId: job.jobId,
@@ -1021,8 +1422,8 @@ export class RunAgentPipelineUseCase {
     repoPath: string,
     job: ExistingJobPayload,
     repoId: string,
+    state: OrchestrationState | undefined,
   ): Promise<{ allowed: false } | { allowed: true; state: OrchestrationState }> {
-    const state = await readOrchestrationState(repoPath, job.ticketKey);
     if (!state) {
       await this.postTicketComment(
         job,
