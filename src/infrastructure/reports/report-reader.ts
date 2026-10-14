@@ -28,11 +28,27 @@ export interface VerifyReport {
   raw: string;
 }
 
+// CAF-SDD-04a: the report's own `Status:` line decides, when it has one —
+// `Status: SUCCESS` (new template) or `## Status: SUCCESS` (old Layer 3
+// heading), optionally wrapped in markdown emphasis. Only a line that *starts*
+// with `Status:` counts, so a "Lint Status: FAIL" checklist entry is not the
+// report status. Exact value after stripping emphasis, same as readQaReport():
+// an unfilled `SUCCESS | NEEDS_HUMAN` placeholder must not pass.
+const VERIFY_STATUS_LINE = /^[\s#>*_-]*Status:\s*(.*)$/m;
+
 export async function readVerifyReport(workspacePath: string, ticketKey: string): Promise<VerifyReport | undefined> {
   const raw = await readIfExists(join(taskDir(workspacePath, ticketKey), 'verify-report.md'));
   if (raw === undefined) return undefined;
 
-  const status: VerifyStatus = /\bSUCCESS\b/.test(raw) ? 'SUCCESS' : 'NEEDS_HUMAN';
+  const statusLine = VERIFY_STATUS_LINE.exec(raw);
+  if (!statusLine) {
+    // No Status: line at all — the pre-CAF-SDD-04a rule, unchanged for old reports (Q-2).
+    const status: VerifyStatus = /\bSUCCESS\b/.test(raw) ? 'SUCCESS' : 'NEEDS_HUMAN';
+    return { status, raw };
+  }
+
+  const value = statusLine[1].replace(/[*_`]/g, '').trim();
+  const status: VerifyStatus = value === 'SUCCESS' ? 'SUCCESS' : 'NEEDS_HUMAN';
   return { status, raw };
 }
 
@@ -51,8 +67,8 @@ export interface QaReport {
 // line entirely, is fail-safe FAIL, never a silent PASS.
 const QA_STATUS_LINE = /^.*Status:\s*(.+)$/m;
 
-export async function readQaReport(workspacePath: string, ticketKey: string): Promise<QaReport | undefined> {
-  const raw = await readIfExists(join(taskDir(workspacePath, ticketKey), 'qa-report.md'));
+async function readGateReport(workspacePath: string, ticketKey: string, fileName: string): Promise<QaReport | undefined> {
+  const raw = await readIfExists(join(taskDir(workspacePath, ticketKey), fileName));
   if (raw === undefined) return undefined;
 
   // Exact match, not prefix: `/^PASS\b/` let an unfilled skeleton placeholder
@@ -61,6 +77,19 @@ export async function readQaReport(workspacePath: string, ticketKey: string): Pr
   const statusLine = QA_STATUS_LINE.exec(raw)?.[1] ?? '';
   const status: QaStatus = statusLine.trim() === 'PASS' ? 'PASS' : 'FAIL';
   return { status, raw };
+}
+
+export async function readQaReport(workspacePath: string, ticketKey: string): Promise<QaReport | undefined> {
+  return readGateReport(workspacePath, ticketKey, 'qa-report.md');
+}
+
+/**
+ * caf-validator's report (CAF-SDD-04a). Its `Status:` line has the same shape
+ * as qa-report.md's (caf-initiator CAF-SDD-03b1), so the same rule applies:
+ * exactly `PASS` passes; `FAIL`, `NEEDS_HUMAN` or no Status line do not.
+ */
+export async function readValidateReport(workspacePath: string, ticketKey: string): Promise<QaReport | undefined> {
+  return readGateReport(workspacePath, ticketKey, 'validate-report.md');
 }
 
 export type ReviewerVerdict = 'APPROVE' | 'CHANGES_REQUESTED' | 'DEFER';
@@ -174,11 +203,12 @@ export interface FixReviewLog {
 
 // Block format is fixed by caf-initiator's fix-review-command.js spawnSection()
 // (CAF-PRREVIEW-01 Checkpoint A, `### Comment {id} [{INLINE path:line | GENERAL}]`,
-// `Status:`, `Catatan:` lines) — loose-regex-over-markdown per CLAUDE.md "Report
+// `Status:`, `Catatan:` lines; newer templates write `Notes:` instead — both are
+// accepted, CAF-SDD-04a) — loose-regex-over-markdown per CLAUDE.md "Report
 // contract", not structured JSON.
 const COMMENT_HEADER = /^###\s*Comment\s+(\S+)\s*\[(INLINE\s+([^\]:]+):(\d+)|GENERAL)\]\s*$/;
 const STATUS_LINE = /^Status:\s*(FIXED|SKIPPED|NOT_APPLICABLE)\s*$/i;
-const NOTE_LINE = /^Catatan:\s*(.*)$/i;
+const NOTE_LINE = /^(?:Catatan|Notes):\s*(.*)$/i;
 const TRIGGERED_BY_LINE = /^Triggered by:\s*(scoped|global)\s*$/im;
 
 export async function readFixReviewLog(workspacePath: string, ticketKey: string): Promise<FixReviewLog | undefined> {
