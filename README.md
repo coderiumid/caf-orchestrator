@@ -2,7 +2,7 @@
 
 Webhook receiver + Claude Code agent pipeline orchestrator.
 
-When a ticket becomes "Ready for AI" — a Linear ticket entering the configured workflow state, or a GitHub Issue getting the configured label — this service clones the target repo, runs a chain of headless `claude --agent <name>` processes (`caf-planner` → `caf-frontend`/`caf-backend` → `caf-qa` → `caf-reviewer` → `caf-documentation`), pushes an `ai-agent/<TICKET-KEY>` branch, opens a GitHub PR, and reports results back on the ticket.
+When a ticket becomes "Ready for AI" — a Linear ticket entering the configured workflow state, or a GitHub Issue getting the configured label — this service clones the target repo, runs a chain of headless `claude --agent <name>` processes (`caf-planner` → `caf-frontend`/`caf-backend` → `caf-qa` or `caf-validator` → `caf-reviewer` → `caf-documentation`, when the repo has it), pushes an `ai-agent/<TICKET-KEY>` branch, opens a GitHub PR, and reports results back on the ticket.
 
 It also runs AI review on existing PRs, driven by PR comments.
 
@@ -54,7 +54,9 @@ Run history is stored in a SQLite file (`db.path`, default `./data/caf-dashboard
 - pnpm
 - Redis
 - `git`, with push access to the target repo(s)
-- `claude` CLI available on PATH, with agent definitions (`caf-planner`, `caf-frontend`, `caf-backend`, `caf-qa`, `caf-reviewer`, `caf-documentation`) present in the **target repo's** `.claude/agents/` — this repo only knows their names and invokes them
+- `claude` CLI available on PATH, with agent definitions (`caf-planner`, `caf-frontend`, `caf-backend`, `caf-qa` or `caf-validator`, `caf-reviewer`, optionally `caf-documentation`) present in the **target repo's** `.claude/agents/` — this repo only knows their names and invokes them
+
+Both generations of target repo work without any config change. The pipeline looks at the checkout: with `.claude/agents/caf-validator.md` it runs `caf-validator` and reads `validate-report.md` (falling back to `qa-report.md`), otherwise `caf-qa` and `qa-report.md`; without `.claude/agents/caf-documentation.md` the docs step is skipped instead of failing. Reports are read the same way for both: an anchored `Status:` line (`PASS` for the gate report, `SUCCESS` for `verify-report.md`, which falls back to "`SUCCESS` anywhere" only when it has no `Status:` line), and fix-review notes as either `Notes:` or `Catatan:`.
 
 ## Setup
 

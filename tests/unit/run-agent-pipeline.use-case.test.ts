@@ -688,14 +688,21 @@ describe('RunAgentPipelineUseCase', () => {
     expect(resetOrchestrationStateMock).not.toHaveBeenCalled();
   });
 
-  it('throws when qa-report.md is not produced', async () => {
+  // CAF-SDD-04a Q-3: a missing gate report is an ordinary gate failure (retry,
+  // then Draft PR + comment), no longer a thrown error retried by BullMQ.
+  it('treats a missing qa-report.md as a failed QA gate, not a thrown error', async () => {
     (agentRunner.run as ReturnType<typeof vi.fn>).mockResolvedValue(makeAgentResult({ exitCode: 0 }));
     readQaReportMock.mockResolvedValue(undefined);
 
     const useCase = new RunAgentPipelineUseCase({ gitService, workspaceManager, agentRunner, linearClient, vcsClient, notifier });
 
-    await expect(useCase.execute(makeJob())).rejects.toThrow(/No qa-report.md produced/);
-    expect(notifier.notifyPipelineFailed).toHaveBeenCalledTimes(1);
+    await expect(useCase.execute(makeJob())).resolves.toBeUndefined();
+    expect(notifier.notifyPipelineFailed).not.toHaveBeenCalled();
+    expect(notifier.notifyPipelineNeedsHuman).toHaveBeenCalledTimes(1);
+    expect(linearClient.postComment).toHaveBeenCalledWith(
+      'ticket-uuid-1',
+      expect.stringContaining('No qa-report.md produced by caf-qa.'),
+    );
   });
 
   it('completes the pipeline when reviewer approves on first try', async () => {

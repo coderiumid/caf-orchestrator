@@ -5,6 +5,7 @@ import { RunPrReviewUseCase } from './application/use-cases/run-pr-review.use-ca
 import { GitService } from './infrastructure/git/git.service.js';
 import { WorkspaceManager } from './infrastructure/git/workspace.manager.js';
 import { spawnAgentService } from './infrastructure/agent/spawn-agent.service.js';
+import { WorkspaceAgentCatalog } from './infrastructure/agent/workspace-agent-catalog.js';
 import { linearService } from './infrastructure/linear/linear.service.js';
 import { githubService } from './infrastructure/vcs/github.service.js';
 import { TelegramNotifier } from './infrastructure/notifications/telegram.notifier.js';
@@ -23,6 +24,7 @@ const agentPipelineUseCase = new RunAgentPipelineUseCase({
   linearClient: linearService,
   vcsClient: githubService,
   notifier,
+  agentCatalog: new WorkspaceAgentCatalog(),
 });
 
 const prReviewUseCase = new RunPrReviewUseCase({
