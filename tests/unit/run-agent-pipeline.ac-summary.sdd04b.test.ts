@@ -180,6 +180,7 @@ describe('RunAgentPipelineUseCase — CAF-SDD-04b AC summary and validate gate',
       createPullRequestReview: vi.fn().mockResolvedValue({ url: 'x', id: 1 }),
       findOpenPullRequestByHead: vi.fn().mockResolvedValue(undefined),
       updatePullRequest: vi.fn().mockResolvedValue({ url: 'https://github.com/ganjardbc/umkm-pos/pull/1', number: 1 }),
+      markPullRequestReadyForReview: vi.fn().mockResolvedValue(true),
     };
     notifier = {
       notifyPipelineStarted: vi.fn().mockResolvedValue(undefined),
@@ -409,5 +410,40 @@ describe('RunAgentPipelineUseCase — CAF-SDD-04b AC summary and validate gate',
         expect(prompt).toContain('Previous qa-report.md');
       });
     }
+  });
+  describe('CAF-SDD-04d: summary and Q-1 only for caf-validator', () => {
+    it('AC-1: caf-qa + AC-n lines + Status PASS completes; no summary in PR body, ticket comment or Q-1 stop', async () => {
+      // no caf-validator.md → caf-qa gate; qa-report.md has no per-AC table
+      readQaReportMock.mockResolvedValue({ status: 'PASS', raw: '## QA Report\nStatus: PASS' });
+
+      await makeUseCase().execute(makeJob());
+
+      expect(ranAgents()).toContain('caf-qa');
+      expect(vcsClient.createPullRequest).toHaveBeenCalledTimes(1);
+      expect(prBodies()[0]).not.toContain('AC Summary');
+      expect(comments().at(-1)).toContain('Agent pipeline complete');
+      expect(comments().at(-1)).not.toContain('AC Summary');
+      expect(recordGateFailureMock).not.toHaveBeenCalled();
+    });
+
+    it('AC-1: a caf-qa gate Draft PR carries no summary either', async () => {
+      readQaReportMock.mockResolvedValue({ status: 'FAIL', raw: '## QA Report\nStatus: FAIL' });
+
+      await makeUseCase().execute(makeJob());
+
+      expect(prBodies()[0]).not.toContain('AC Summary');
+    });
+
+    it('AC-3: reviewer CHANGES_REQUESTED after retry on a validator repo → Draft PR body has the summary above the reviewer artifact', async () => {
+      useValidator(MIXED);
+      readReviewerReportMock.mockResolvedValue({ verdict: 'CHANGES_REQUESTED', raw: 'Verdict: CHANGES_REQUESTED\nfix X' });
+
+      await makeUseCase().execute(makeJob());
+
+      expect(recordGateFailureMock).toHaveBeenCalledWith(expect.anything(), 'CAF-123', 'reviewer', expect.anything(), expect.anything());
+      const body = prBodies()[0];
+      expect(body.startsWith('## AC Summary\nPASS: 1 · FAIL: 0 · UNVERIFIED: 2')).toBe(true);
+      expect(body.indexOf('AC Summary')).toBeLessThan(body.indexOf('fix X'));
+    });
   });
 });

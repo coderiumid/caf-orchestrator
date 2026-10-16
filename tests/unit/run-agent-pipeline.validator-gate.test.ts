@@ -151,6 +151,7 @@ describe('RunAgentPipelineUseCase — CAF-SDD-04a validator gate', () => {
       createPullRequestReview: vi.fn().mockResolvedValue({ url: 'x', id: 1 }),
       findOpenPullRequestByHead: vi.fn().mockResolvedValue(undefined),
       updatePullRequest: vi.fn().mockResolvedValue({ url: 'https://github.com/ganjardbc/umkm-pos/pull/1', number: 1 }),
+      markPullRequestReadyForReview: vi.fn().mockResolvedValue(true),
     };
     notifier = {
       notifyPipelineStarted: vi.fn().mockResolvedValue(undefined),

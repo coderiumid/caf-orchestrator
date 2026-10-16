@@ -9,6 +9,7 @@ import type {
   FindPullRequestByHeadInput,
   UpdatePullRequestInput,
   ListTicketCommentsInput,
+  MarkPullRequestReadyInput,
 } from '../../domain/interfaces/vcs-client.interface.js';
 import type { TicketComment } from '../../domain/interfaces/ticket-comment.interface.js';
 import { GithubApiError, SelfReviewRejectedError } from '../../domain/errors/app-errors.js';
@@ -34,6 +35,23 @@ interface GithubPullRequestResponse {
 interface GithubPullRequestDetailResponse {
   number: number;
   head: { ref: string };
+}
+
+interface GithubPullRequestReadyStateResponse {
+  draft?: boolean;
+  node_id: string;
+}
+
+interface GithubGraphqlResponse {
+  errors?: Array<{ message: string }>;
+}
+
+// github.com serves GraphQL at https://api.github.com/graphql, next to its REST
+// API. Any other host is assumed to put /graphql under the configured apiUrl;
+// GHES (<host>/api/v3 for REST, <host>/api/graphql) is deliberately not guessed.
+function graphqlUrl(): string {
+  const url = new URL(config.github.apiUrl);
+  return url.hostname === 'api.github.com' ? `${url.origin}/graphql` : `${config.github.apiUrl.replace(/\/+$/, '')}/graphql`;
 }
 
 interface GithubPullRequestReviewResponse {
@@ -166,6 +184,41 @@ export class GithubService implements IVcsClient {
     logger.info('Updated GitHub pull request', undefined, { owner, repo, prNumber });
 
     return { url: json.html_url, number: json.number };
+  }
+
+  // CAF-SDD-04d: a PR the pipeline opened as Draft (spec or gate stop) becomes
+  // Ready for review once a resumed run succeeds. REST has no endpoint for it:
+  // GET the PR for `draft` + `node_id`, then the GraphQL mutation. An already
+  // non-draft PR is left alone (no mutation).
+  async markPullRequestReadyForReview(input: MarkPullRequestReadyInput): Promise<boolean> {
+    const { owner, repo, prNumber } = input;
+    const pr = await githubGet<GithubPullRequestReadyStateResponse>(`/repos/${owner}/${repo}/pulls/${prNumber}`);
+    if (pr.draft !== true) return false;
+
+    const res = await fetch(graphqlUrl(), {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${config.GITHUB_TOKEN}`,
+        Accept: 'application/vnd.github+json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        query:
+          'mutation($id: ID!) { markPullRequestReadyForReview(input: { pullRequestId: $id }) { pullRequest { number isDraft } } }',
+        variables: { id: pr.node_id },
+      }),
+    });
+    if (!res.ok) {
+      const responseBody = await res.text();
+      throw new GithubApiError(`GitHub API request failed (${res.status}): ${responseBody}`);
+    }
+    // GraphQL reports failures as 200 + errors[].
+    const json = (await res.json()) as GithubGraphqlResponse;
+    if (json.errors?.length) {
+      throw new GithubApiError(`GitHub GraphQL markPullRequestReadyForReview failed: ${json.errors.map((e) => e.message).join('; ')}`);
+    }
+    logger.info('Marked GitHub pull request ready for review', undefined, { owner, repo, prNumber });
+    return true;
   }
 
   // Reply endpoint for an existing PR review (inline) comment thread — same one

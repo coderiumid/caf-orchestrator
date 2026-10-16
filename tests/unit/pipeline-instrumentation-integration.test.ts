@@ -157,6 +157,7 @@ describe('CAF-DASHBOARD-01 Task 3: pipeline_runs/agent_events instrumentation', 
       createPullRequestReview: vi.fn().mockResolvedValue({ url: 'https://github.com/ganjardbc/umkm-pos/pull/1#review-1', id: 1 }),
       findOpenPullRequestByHead: vi.fn().mockResolvedValue(undefined),
       updatePullRequest: vi.fn().mockResolvedValue({ url: 'https://github.com/ganjardbc/umkm-pos/pull/1', number: 1 }),
+      markPullRequestReadyForReview: vi.fn().mockResolvedValue(true),
     };
 
     notifier = {

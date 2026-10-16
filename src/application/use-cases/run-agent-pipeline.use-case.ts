@@ -375,7 +375,15 @@ export class RunAgentPipelineUseCase {
     });
 
     const repoId = repoIdFromCloneUrl(job.projectConfig.repoCloneUrl);
-    recordPipelineStarted(repoId, job.ticketKey, job.ticketTitle);
+    // CAF-SDD-04d: recordPipelineStarted resets the ticket's dashboard row
+    // (clears ended_at/final_status, bumps attempt). A first run starts it
+    // here, as always. A resumed job (retry / approve-spec) only starts it once
+    // it is certain to run an agent, so a command that is turned away leaves
+    // the row of the earlier run exactly as it was.
+    const startRun = (): void => recordPipelineStarted(repoId, job.ticketKey, job.ticketTitle);
+    if (!job.isRetry && !job.approveSpec) {
+      startRun();
+    }
 
     try {
       let tasksMarkdown: string;
@@ -416,7 +424,6 @@ export class RunAgentPipelineUseCase {
             ticketKey: job.ticketKey,
             reason: `Branch ${branch} not found on remote — likely already merged and deleted after completion. Check the ticket status in Linear before retriggering.`,
           });
-          finalizePipelineRun(repoId, job.ticketKey, 'NEEDS_HUMAN');
           return;
         }
 
@@ -451,7 +458,6 @@ export class RunAgentPipelineUseCase {
               ticketKey: job.ticketKey,
               reason: 'Unexpected uncommitted changes in persistent workspace before retry sync',
             });
-            finalizePipelineRun(repoId, job.ticketKey, 'NEEDS_HUMAN');
             return;
           }
           // CAF-RETRYPIPELINE-01: resume onto the EXISTING ai-agent branch
@@ -465,10 +471,11 @@ export class RunAgentPipelineUseCase {
         }
 
         if (job.approveSpec) {
-          const approvedTasks = await this.approveSpecAndReadTasks(job, repoPath, branch, repoId, workspaceRoot);
+          const approvedTasks = await this.approveSpecAndReadTasks(job, repoPath, branch, workspaceRoot);
           if (approvedTasks === undefined) {
             return;
           }
+          startRun();
           tasksMarkdown = approvedTasks;
         } else {
           // CAF-SDD-04c: a branch the pipeline left on purpose (waiting for
@@ -477,6 +484,7 @@ export class RunAgentPipelineUseCase {
           const priorState = await readOrchestrationState(repoPath, job.ticketKey);
 
           if (priorState?.waitingFor === 'clarify') {
+            startRun();
             const planned = await this.resumeAfterClarify(job, repoPath, branch, repoId, workspaceRoot);
             if (planned === undefined) {
               return;
@@ -491,13 +499,13 @@ export class RunAgentPipelineUseCase {
               jobId: job.jobId,
               ticketKey: job.ticketKey,
             });
-            finalizePipelineRun(repoId, job.ticketKey, 'NEEDS_HUMAN');
             return;
           } else {
-            const retryGate = await this.checkAndConsumeRetryBudget(repoPath, job, repoId, priorState);
+            const retryGate = await this.checkAndConsumeRetryBudget(repoPath, job, priorState);
             if (!retryGate.allowed) {
               return;
             }
+            startRun();
             const { state } = retryGate;
 
             // Manual-change detection (Task 6): compare the just-synced HEAD
@@ -729,8 +737,9 @@ export class RunAgentPipelineUseCase {
   }
 
   /**
-   * After the planner (CAF-SDD-04c): `NEEDS_CLARIFICATION` always stops to ask;
-   * `DRAFT` on a ticket with the spec-gate label stops for approval. No
+   * After the planner (CAF-SDD-04c): `NEEDS_CLARIFICATION`, and a `DRAFT` with
+   * unanswered BLOCKING questions (04d), always stop to ask; any other `DRAFT`
+   * on a ticket with the spec-gate label stops for approval. No
    * requirements.md or no anchored `Status:` line (a repo without the spec
    * convention) and every other status fall through — the behavior before this
    * ticket. True when the job stopped here.
@@ -746,8 +755,11 @@ export class RunAgentPipelineUseCase {
     const status = spec === undefined ? undefined : parseSpecStatus(spec);
     if (spec === undefined || status === undefined) return false;
 
-    if (status === 'NEEDS_CLARIFICATION') {
-      await this.stopForClarification(job, repoPath, branch, repoId, workspaceRoot, findUnansweredBlockingQuestions(spec));
+    // CAF-SDD-04d: a DRAFT that still has unanswered BLOCKING questions is a
+    // Clarify whatever the labels — approving it would hand open questions on.
+    const open = findUnansweredBlockingQuestions(spec);
+    if (status === 'NEEDS_CLARIFICATION' || (status === 'DRAFT' && open.length > 0)) {
+      await this.stopForClarification(job, repoPath, branch, repoId, workspaceRoot, open);
       return true;
     }
     if (status === 'DRAFT' && this.isSpecGated(job)) {
@@ -884,15 +896,14 @@ export class RunAgentPipelineUseCase {
     job: ExistingJobPayload,
     repoPath: string,
     branch: string,
-    repoId: string,
     workspaceRoot: string,
   ): Promise<string | undefined> {
     const { gitService } = this.deps;
 
+    // CAF-SDD-04d: a rejection runs no agent, so it leaves the dashboard row alone.
     const reject = async (message: string): Promise<undefined> => {
       await this.postTicketComment(job, `⚠️ /caf-approve-spec: ${message} Nothing was changed.`);
       logger.info('Approve-spec rejected', undefined, { jobId: job.jobId, ticketKey: job.ticketKey, reason: message });
-      finalizePipelineRun(repoId, job.ticketKey, 'NEEDS_HUMAN');
       return undefined;
     };
 
@@ -1078,9 +1089,13 @@ export class RunAgentPipelineUseCase {
 
       // CAF-SDD-04b: counts of the final gate report against requirements.md's
       // AC ids. Undefined (no summary, no Q-1 rule) without AC lines, and while
-      // the gate was skipped — then there is no report to count.
+      // the gate was skipped — then there is no report to count. CAF-SDD-04d:
+      // only caf-validator writes a per-AC table; caf-qa's report has none, so
+      // reading it would mark every AC UNVERIFIED and trip Q-1 on a real PASS.
       const acSummary: AcSummary | undefined =
-        qaReportFile === undefined ? undefined : await this.buildAcSummary(repoPath, job, qaReport.raw);
+        qaReportFile === undefined || validationGate !== VALIDATOR_GATE
+          ? undefined
+          : await this.buildAcSummary(repoPath, job, qaReport.raw);
       const acSummaryText = acSummary ? renderAcSummary(acSummary) : '';
 
       if (qaReport.status === 'FAIL') {
@@ -1334,6 +1349,25 @@ export class RunAgentPipelineUseCase {
         prUrl: pullRequest.url,
       });
 
+      // CAF-SDD-04d: the reused PR may still be a Draft (spec / gate stop). The
+      // run succeeded, so hand it to review. Never throws: a failure here must
+      // not become a BullMQ retry of the whole pipeline — the PR just stays Draft.
+      let readyNote = '';
+      if (existingPr) {
+        try {
+          const switched = await vcsClient.markPullRequestReadyForReview({ owner, repo, prNumber: pullRequest.number });
+          if (switched) readyNote = '\n\nThe PR was a Draft and is now marked Ready for review.';
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          logger.error('Failed to mark the pull request ready for review', err instanceof Error ? err : new Error(message), {
+            jobId: job.jobId,
+            ticketKey: job.ticketKey,
+            prNumber: pullRequest.number,
+          });
+          readyNote = `\n\nCould not mark the PR Ready for review automatically, so it stays a Draft: ${message}`;
+        }
+      }
+
       // caf-qa keeps its pre-CAF-SDD-04a comment byte for byte; a validator run says which agent and report it was.
       const validationLine =
         validationGate !== QA_GATE && qaReportFile
@@ -1341,7 +1375,7 @@ export class RunAgentPipelineUseCase {
           : '';
       await this.postTicketComment(
         job,
-        `Agent pipeline complete. PR: ${pullRequest.url}\n\n${docsNote}\n\n${validationLine}${qaReport.raw}\n\n${reviewerReport.raw}`,
+        `Agent pipeline complete. PR: ${pullRequest.url}${readyNote}\n\n${docsNote}\n\n${validationLine}${qaReport.raw}\n\n${reviewerReport.raw}`,
       );
 
       const totalMs = ms(jobStart);
@@ -1421,7 +1455,6 @@ export class RunAgentPipelineUseCase {
   private async checkAndConsumeRetryBudget(
     repoPath: string,
     job: ExistingJobPayload,
-    repoId: string,
     state: OrchestrationState | undefined,
   ): Promise<{ allowed: false } | { allowed: true; state: OrchestrationState }> {
     if (!state) {
@@ -1433,7 +1466,6 @@ export class RunAgentPipelineUseCase {
         jobId: job.jobId,
         ticketKey: job.ticketKey,
       });
-      finalizePipelineRun(repoId, job.ticketKey, 'NEEDS_HUMAN');
       return { allowed: false };
     }
 
@@ -1449,7 +1481,6 @@ export class RunAgentPipelineUseCase {
         orchestrationRetryCount: state.orchestrationRetryCount,
         maxRetries,
       });
-      finalizePipelineRun(repoId, job.ticketKey, 'NEEDS_HUMAN');
       return { allowed: false };
     }
 
