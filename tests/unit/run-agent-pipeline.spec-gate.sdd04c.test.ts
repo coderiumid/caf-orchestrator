@@ -184,6 +184,7 @@ describe('RunAgentPipelineUseCase — CAF-SDD-04c', () => {
       createPullRequestReview: vi.fn().mockResolvedValue({ url: 'x', id: 1 }),
       findOpenPullRequestByHead: vi.fn().mockResolvedValue(undefined),
       updatePullRequest: vi.fn().mockResolvedValue({ url: 'https://github.com/ganjardbc/umkm-pos/pull/9', number: 9 }),
+      markPullRequestReadyForReview: vi.fn().mockResolvedValue(true),
       listTicketComments: vi.fn().mockResolvedValue([]),
     };
     notifier = {
@@ -633,6 +634,54 @@ describe('RunAgentPipelineUseCase — CAF-SDD-04c', () => {
 
       expect(vcsClient.findOpenPullRequestByHead).not.toHaveBeenCalled();
       expect(vcsClient.createPullRequest).toHaveBeenCalledTimes(1);
+    });
+  });
+  describe('CAF-SDD-04d: DRAFT with unanswered BLOCKING questions', () => {
+    it('AC-5: unlabelled DRAFT + open BLOCKING stops as Clarify — state, marker comment, push, NEEDS_HUMAN, no implementation', async () => {
+      plannerSpec = specText('DRAFT', OPEN_Q);
+
+      await expect(makeUseCase().execute(makeJob())).resolves.toBeUndefined();
+
+      expect(ranAgents()).toEqual(['caf-planner']);
+      expect(stateOnDisk()).toMatchObject({ waitingFor: 'clarify' });
+      expect(ticketComments().at(-1)!.startsWith(CLARIFY_COMMENT_MARKER)).toBe(true);
+      expect(gitService.push).toHaveBeenCalledWith(repo(), BRANCH, expect.any(String));
+      expect(finalizePipelineRunMock).toHaveBeenCalledWith('ganjardbc/umkm-pos', KEY, 'NEEDS_HUMAN');
+    });
+
+    it('AC-6: labelled DRAFT + open BLOCKING is Clarify, not spec approval — no spec Draft PR', async () => {
+      plannerSpec = specText('DRAFT', OPEN_Q);
+
+      await makeUseCase().execute(gatedJob());
+
+      expect(ranAgents()).toEqual(['caf-planner']);
+      expect(stateOnDisk()).toMatchObject({ waitingFor: 'clarify' });
+      expect(vcsClient.createPullRequest).not.toHaveBeenCalled();
+      expect(vcsClient.updatePullRequest).not.toHaveBeenCalled();
+      expect(ticketComments().at(-1)!.startsWith(CLARIFY_COMMENT_MARKER)).toBe(true);
+    });
+
+    it('AC-7: DRAFT with only answered BLOCKING questions — unlabelled continues, labelled waits for approval', async () => {
+      plannerSpec = specText('DRAFT', ['- Q-1 [BLOCKING] settled — Answer: yes']);
+      await makeUseCase().execute(makeJob());
+      expect(ranAgents()).toContain('caf-backend');
+
+      vi.clearAllMocks();
+      agentRunner.run = vi.fn(async (name: string) => {
+        if (name === 'caf-planner') writeTaskFile('requirements.md', plannerSpec!);
+        return ok();
+      });
+      await makeUseCase().execute(gatedJob());
+      expect(ranAgents()).toEqual(['caf-planner']);
+      expect(stateOnDisk()).toMatchObject({ waitingFor: 'spec-approval' });
+    });
+
+    it('D-6: APPROVED with open BLOCKING questions still continues', async () => {
+      plannerSpec = specText('APPROVED', OPEN_Q);
+
+      await makeUseCase().execute(makeJob());
+
+      expect(ranAgents()).toContain('caf-backend');
     });
   });
 });

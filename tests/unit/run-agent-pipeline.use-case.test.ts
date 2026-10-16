@@ -160,6 +160,7 @@ describe('RunAgentPipelineUseCase', () => {
       createPullRequestReview: vi.fn().mockResolvedValue({ url: 'https://github.com/ganjardbc/umkm-pos/pull/1#review-1', id: 1 }),
       findOpenPullRequestByHead: vi.fn().mockResolvedValue(undefined),
       updatePullRequest: vi.fn().mockResolvedValue({ url: 'https://github.com/ganjardbc/umkm-pos/pull/1', number: 1 }),
+      markPullRequestReadyForReview: vi.fn().mockResolvedValue(true),
     };
 
     notifier = {
