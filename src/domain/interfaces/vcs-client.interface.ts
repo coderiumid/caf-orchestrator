@@ -30,6 +30,12 @@ export interface UpdatePullRequestInput {
   body: string;
 }
 
+export interface MarkPullRequestReadyInput {
+  owner: string;
+  repo: string;
+  prNumber: number;
+}
+
 export interface ReplyToReviewCommentInput {
   owner: string;
   repo: string;
@@ -83,6 +89,9 @@ export interface IVcsClient {
   // before opening a new one — undefined when none is open.
   findOpenPullRequestByHead(input: FindPullRequestByHeadInput): Promise<CreatePullRequestResult | undefined>;
   updatePullRequest(input: UpdatePullRequestInput): Promise<CreatePullRequestResult>;
+  // CAF-SDD-04d: Draft → Ready for review. Resolves true when it switched the PR,
+  // false when it was not a Draft (nothing sent). Throws GithubApiError on failure.
+  markPullRequestReadyForReview(input: MarkPullRequestReadyInput): Promise<boolean>;
   // CAF-SDD-04c: comments of a GitHub Issue, oldest first — the answers to a Clarify.
   listTicketComments(input: ListTicketCommentsInput): Promise<TicketComment[]>;
 }
