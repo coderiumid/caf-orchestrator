@@ -106,7 +106,7 @@ Policy (Q-1/Q-2): the gate passes when nothing is `FAIL`, except when there is a
 
 Gate name (Q-4): `OrchestrationGate` is `implementation | validate | reviewer`; `recordGateFailure` writes `validate` for both `caf-qa` and `caf-validator` repos. `StoredOrchestrationGate` adds the legacy `qa`, which `readGateArtifact`/resume treat identically (no data migration). User-visible wording ("qa gate" in comments, commit messages, Draft PR headings) is unchanged via `gateLabel()`.
 
-Fix-review (Q-6): `buildFixReviewPrompt()` in `run-pr-review.use-case.ts` (modes `scoped` and `global`) tells `caf-reviewer` never to edit `requirements.md`/`tasks.md`; a comment asking for that is recorded under `## Proposed Spec Changes` in `fix-review-log.md` with `Status: SKIPPED`. `readFixReviewLog` treats a `## ` heading as the end of the comment blocks. A single-app target repo uses `--role frontend|backend` (no `caf-implementer` routing).
+Fix-review (Q-6): `buildFixReviewPrompt()` in `run-pr-review.use-case.ts` (modes `scoped` and `global`) tells `caf-reviewer` never to edit `requirements.md`/`tasks.md`; a comment asking for that is recorded under `## Proposed Spec Changes` in `fix-review-log.md` with `Status: SKIPPED`. `readFixReviewLog` treats a `## ` heading as the end of the comment blocks only after the current entry's `Status:` line and outside a ``` code fence (CAF-SDD-04e; the fence state resets at each `### Comment` header); before `Status:` a `## ` line belongs to the quoted comment and the entry stays open. Known limit: a note that has a raw `## ` line outside a fence after `Status:` is still cut there. A single-app target repo uses `--role frontend|backend` (no `caf-implementer` routing).
 
 ### Dynamic agent skip (`AGENT_SKIP_ENABLED`)
 
