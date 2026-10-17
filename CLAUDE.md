@@ -121,12 +121,23 @@ If an agent run fails with a `429` (API quota exhausted) or `404` (model not fou
 
 ### Agent execution model (`spawn-agent.service.ts`)
 
-Each agent is `spawn(config.claude.command, ['--agent', name, '--print', '--output-format', 'json', '--permission-mode', 'bypassPermissions'])` in the cloned workspace, prompt piped via stdin. Key details:
+Each agent is `spawn(config.claude.command, ['--agent', name, '--print', '--output-format', 'json', '--permission-mode', 'bypassPermissions'])` in the cloned workspace, prompt piped via stdin — except `caf-validator` with `agents.validator.restrictBash` true (see "Restricted validator" below). Key details:
 - `bypassPermissions` is deliberate: headless runs can't answer interactive tool-approval prompts, and each run happens inside the orchestrator's own scratch workspace, so it's safe here — do not remove this without understanding the tradeoff.
-- Every spawn gets `CAF_HEADLESS=1` in its env **and** a `[SYSTEM CONTEXT: Environment = headless ...]` line prepended to the prompt (agents without a Bash tool can't read env). Neither is configurable.
+- Every spawn gets `CAF_HEADLESS=1` in its env **and** a `[SYSTEM CONTEXT: Environment = headless ...]` line prepended to the prompt (agents without a Bash tool can't read env). Neither is configurable. Two things differ for `caf-validator` only (below): its permission mode/arguments and its env, which has the orchestrator's secrets removed.
 - `--output-format json` is what `agent-cost-parser.ts` reads the run's cost from, for the dashboard.
 - Timeout (`claude.agentTimeoutMs` in `caf.config.yaml`, default 30 min) is enforced in this service via `setTimeout`/SIGTERM→SIGKILL, not via BullMQ. BullMQ's `lockDuration` (35 min, see `infrastructure/queue/worker.ts`) is intentionally set above this so BullMQ doesn't flag the job stalled mid-escalation.
 - Process kill-by-signal is distinguished from non-zero exit in `AgentRunResult`; both currently cause a full pipeline retry (no step-resume state is persisted for crashes).
+
+#### Restricted validator (CAF-SDD-04f)
+
+Only `caf-validator` is affected; `caf-qa`, the planner, the implementation agents, the reviewer, the documentation agent and `pr-review` jobs keep `bypassPermissions` and the full env, byte for byte. With `agents.validator.restrictBash` true (default) the branch in `SpawnAgentService.run` spawns `--agent caf-validator --print --output-format json --permission-mode dontAsk --setting-sources project --allowedTools Bash(<pattern>)… Edit(.caf/tasks/**)`:
+
+- `dontAsk` auto-denies (no prompt) every tool call not allowed by `--allowedTools`. Bash is limited to `agents.validator.allowedCommands` (bare patterns, global only; default: `pnpm run *`, `pnpm test [*]`, `pnpm --filter * run *`, `pnpm --filter * test [*]`, `npm run *`, `npm test [*]`). `npx`, `pnpm dlx`, `pnpm exec`, `yarn`, `bun` and `make` are deliberately absent: Claude Code does not strip them as wrappers, so allowing them would allow arbitrary commands; add them via config if a repo needs them. An empty list is valid and fail-closed. Startup rejects empty entries, `*` alone and `Bash`/`Bash(...)` wrappers.
+- Writes are limited to `.caf/tasks/` by an **`Edit(...)`** rule, not `Write(...)`: Claude Code checks file-path rules only against `Edit`/`Read` (a `Write(...)` rule is accepted but never consulted, so the report could not be written). One `Edit` rule covers the Write and Edit tools and Bash `>`/`>>` redirection.
+- `--setting-sources project`: the worker user's `~/.claude/settings.json` (hooks, allow rules) is not loaded, otherwise it could rewrite commands or widen the allowlist. The target repo's own project settings still apply and are trusted like any script the validator runs. `--bare` is not used (it skips project agents and skills).
+- Env: `VALIDATOR_STRIPPED_ENV_KEYS` (`REDIS_URL`, `LINEAR_WEBHOOK_SECRET`, `LINEAR_API_KEY`, `GITHUB_TOKEN`, `GITHUB_WEBHOOK_SECRET`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `DASHBOARD_BASIC_AUTH_PASSWORD`) are deleted from a copy of the env (still built on `process.env`, never from scratch; the orchestrator's own `process.env` is untouched). Auth (`CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`), `PATH`, `CAF_HEADLESS` and model overrides are kept. `envSchema` is exported and every key must sit in exactly one of `VALIDATOR_STRIPPED_ENV_KEYS`/`VALIDATOR_KEPT_ENV_KEYS` — `tests/unit/spawn-agent.env-classification.test.ts` fails for a new unclassified key.
+- Rollback: `agents.validator.restrictBash: false` restores the previous args and env exactly. `config.agents.validator` is read only for `caf-validator`.
+- **Residual risk (not closed here):** `GitService.clone` puts the GitHub token in the `origin` URL, so it is stored in the workspace `.git/config` and readable by any process in the workspace regardless of env. Stripping the env reduces the surface; it does not close that.
 
 The actual agent definitions (`caf-planner`, `caf-frontend`, `caf-backend`, `caf-qa`/`caf-validator`, `caf-reviewer`, `caf-documentation` — `KNOWN_AGENT_NAMES` in `config/schema.ts`) live in the **target repo** being operated on (its own `.claude/agents/`), not in this repo — this repo only knows their names and invokes them.
 
@@ -198,7 +209,7 @@ Exactly one of two auth paths must be configured for the spawned `claude` CLI:
 - `openai.useOpenai: true` + `OPENAI_API_KEY` — routes agents through an Anthropic-compatible endpoint (`openai.baseUrl`, OpenRouter by default): `spawn-agent.service.ts` sets `ANTHROPIC_BASE_URL` and maps `OPENAI_API_KEY` to `ANTHROPIC_API_KEY`. Opt-in by flag, never inferred from the key being present.
 - `openai.useOpenai: false` (the default) + `CLAUDE_CODE_OAUTH_TOKEN` in `.env` — native Claude Code CLI auth, passed through unchanged via `process.env` to the child process, not something this codebase reads or transforms.
 
-`superRefine` in `schema.ts` fails startup fast if neither path is configured, rather than letting the first agent spawn fail silently mid-pipeline. The child env is always built on top of `process.env` (the CLI needs `PATH` etc.) — never rebuilt from scratch.
+`superRefine` in `schema.ts` fails startup fast if neither path is configured, rather than letting the first agent spawn fail silently mid-pipeline. The child env is always built on top of `process.env` (the CLI needs `PATH` etc.) — never rebuilt from scratch. The one exception to "passed through unchanged" is `caf-validator` with `restrictBash`, which has the secret keys removed from a copy (see "Restricted validator").
 
 ### Per-agent model routing
 
