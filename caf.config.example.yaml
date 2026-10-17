@@ -105,6 +105,31 @@ agents:
   # caf-planner/caf-frontend/caf-backend/caf-qa/caf-reviewer/caf-documentation;
   # values must be an exact entry in openai.allowedModels (below).
   modelOverrides: {}
+  # CAF-SDD-04f: applies to caf-validator ONLY (caf-qa and every other agent keep
+  # bypassPermissions and the full env). With restrictBash true the validator runs
+  # under `--permission-mode dontAsk --setting-sources project`: Bash commands not
+  # matching allowedCommands are denied without a prompt, writes are limited to
+  # .caf/tasks/ (an Edit(...) rule), and secret env keys (GITHUB_TOKEN, LINEAR_*,
+  # TELEGRAM_*, GITHUB_WEBHOOK_SECRET, REDIS_URL, DASHBOARD_BASIC_AUTH_PASSWORD) are
+  # removed from its environment. restrictBash: false restores the old behavior.
+  # allowedCommands are bare patterns (no Bash(...) wrapper); an empty list is valid
+  # and fail-closed (only read-only built-ins + the report write). Global only.
+  # The defaults below omit npx, pnpm dlx, pnpm exec, yarn, bun and make on purpose:
+  # Claude Code does not strip them as wrappers, so allowing them would allow any
+  # command. Add entries here if a repo needs them.
+  # Residual risk: the GitHub token stays in the workspace .git/config (origin URL).
+  validator:
+    restrictBash: true
+    allowedCommands:
+      - "pnpm run *"
+      - "pnpm test"
+      - "pnpm test *"
+      - "pnpm --filter * run *"
+      - "pnpm --filter * test"
+      - "pnpm --filter * test *"
+      - "npm run *"
+      - "npm test"
+      - "npm test *"
 
 # Opt-in routing of spawned Claude Code agents through OpenRouter's
 # Anthropic-compatible endpoint (failover + budget visibility). Off by
