@@ -210,6 +210,7 @@ const COMMENT_HEADER = /^###\s*Comment\s+(\S+)\s*\[(INLINE\s+([^\]:]+):(\d+)|GEN
 const STATUS_LINE = /^Status:\s*(FIXED|SKIPPED|NOT_APPLICABLE)\s*$/i;
 const NOTE_LINE = /^(?:Catatan|Notes):\s*(.*)$/i;
 const TRIGGERED_BY_LINE = /^Triggered by:\s*(scoped|global)\s*$/im;
+const CODE_FENCE_LINE = /^```/;
 
 export async function readFixReviewLog(workspacePath: string, ticketKey: string): Promise<FixReviewLog | undefined> {
   const raw = await readIfExists(join(taskDir(workspacePath, ticketKey), 'fix-review-log.md'));
@@ -226,6 +227,7 @@ export async function readFixReviewLog(workspacePath: string, ticketKey: string)
   // the first line, so a wrapped note doesn't get silently truncated.
   let noteLines: string[] = [];
   let inNote = false;
+  let inFence = false;
 
   const flush = (): void => {
     if (current?.commentRef && current.label && current.status) {
@@ -237,9 +239,11 @@ export async function readFixReviewLog(workspacePath: string, ticketKey: string)
 
   for (const rawLine of raw.split('\n')) {
     const line = rawLine.trim();
-    // CAF-SDD-04b: a `## ...` section (e.g. `## Proposed Spec Changes`) ends the
-    // comment blocks; its lines must not be swallowed into the last note.
-    if (/^##\s/.test(line)) {
+    // CAF-SDD-04b/04e: a `## ...` section (e.g. `## Proposed Spec Changes`) ends
+    // the comment blocks, but only once the current entry has its Status: and
+    // the line is outside a code fence; before Status: it is part of the quote.
+    if (CODE_FENCE_LINE.test(line)) inFence = !inFence;
+    else if (/^##\s/.test(line) && current?.status && !inFence) {
       flush();
       current = undefined;
       continue;
@@ -247,6 +251,7 @@ export async function readFixReviewLog(workspacePath: string, ticketKey: string)
     const header = COMMENT_HEADER.exec(line);
     if (header) {
       flush();
+      inFence = false;
       const [, commentRef, , inlinePath, inlineLine] = header;
       current = inlinePath
         ? { commentRef, label: 'INLINE', path: inlinePath, line: Number(inlineLine) }

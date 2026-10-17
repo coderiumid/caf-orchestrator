@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import type { IAgentRunner, AgentRunResult } from '../../domain/interfaces/agent-runner.interface.js';
 import { config } from '../../config/index.js';
-import { isAllowedModel } from '../../config/schema.js';
+import { isAllowedModel, VALIDATOR_EDIT_RULE, VALIDATOR_STRIPPED_ENV_KEYS } from '../../config/schema.js';
 import { logger } from '../logging/logger.js';
 
 /**
@@ -78,7 +78,7 @@ export class SpawnAgentService implements IAgentRunner {
           { agentName, model: rawAgentModel, allowedModels: config.openai.allowedModels },
         );
       }
-      const env = {
+      const env: NodeJS.ProcessEnv = {
         ...(agentModel
           ? {
               ...openaiEnv,
@@ -92,14 +92,39 @@ export class SpawnAgentService implements IAgentRunner {
         CAF_HEADLESS: '1',
       };
 
+      // CAF-SDD-04f: caf-validator (only) runs with an orchestrator-defined command
+      // allowlist instead of bypassPermissions, and without the orchestrator's secrets.
+      // `config.agents.validator` is read for this agent only. `env` above is already a
+      // fresh object, so deleting keys never touches the orchestrator's own process.env.
+      const restrictValidator = agentName === 'caf-validator' && config.agents.validator.restrictBash;
+      if (restrictValidator) {
+        for (const key of VALIDATOR_STRIPPED_ENV_KEYS) delete env[key];
+      }
+      const agentArgs = restrictValidator
+        ? [
+            '--agent', agentName,
+            '--print',
+            '--output-format', 'json',
+            // dontAsk auto-denies anything not allowed by --allowedTools (no prompt).
+            '--permission-mode', 'dontAsk',
+            // Ignore the worker user's settings (hooks, allow rules) which would
+            // rewrite or widen the allowlist; project settings of the repo still apply.
+            '--setting-sources', 'project',
+            // Variadic — must stay last.
+            '--allowedTools',
+            ...config.agents.validator.allowedCommands.map((pattern) => `Bash(${pattern})`),
+            VALIDATOR_EDIT_RULE,
+          ]
+        : [
+            '--agent', agentName,
+            '--print',
+            '--output-format', 'json',
+            '--permission-mode', 'bypassPermissions',
+          ];
+
       const proc = spawn(
         config.claude.command,
-        [
-          '--agent', agentName,
-          '--print',
-          '--output-format', 'json',
-          '--permission-mode', 'bypassPermissions',
-        ],
+        agentArgs,
         {
           cwd,
           stdio: ['pipe', 'pipe', 'pipe'],

@@ -32,6 +32,66 @@ export const KNOWN_AGENT_NAMES = [
   'caf-documentation',
 ] as const;
 
+// CAF-SDD-04f: caf-validator runs under `--permission-mode dontAsk` with an explicit
+// allowlist instead of bypassPermissions (see spawn-agent.service.ts).
+//
+// Default Bash patterns (bare, no `Bash(...)` wrapper). Deliberately narrow: no
+// `npx`, `pnpm dlx`, `pnpm exec`, `yarn`, `bun`, `make` — Claude Code does not strip
+// those runners as wrappers, so a rule like `Bash(pnpm *)` would let them run
+// arbitrary commands. Add what a repo needs via agents.validator.allowedCommands.
+export const DEFAULT_VALIDATOR_ALLOWED_COMMANDS: readonly string[] = [
+  'pnpm run *',
+  'pnpm test',
+  'pnpm test *',
+  'pnpm --filter * run *',
+  'pnpm --filter * test',
+  'pnpm --filter * test *',
+  'npm run *',
+  'npm test',
+  'npm test *',
+];
+
+// The only path the validator may write. An `Edit(...)` rule — Claude Code consults
+// file-path rules only for Edit/Read, never for `Write(...)`; one Edit rule also covers
+// the Write and Edit tools and Bash output redirection.
+export const VALIDATOR_EDIT_RULE = 'Edit(.caf/tasks/**)';
+
+// Env keys removed from the caf-validator child process. Every key of envSchema must
+// be in exactly one of the two lists below (enforced by a test), so a new env key
+// cannot silently leak to the validator.
+export const VALIDATOR_STRIPPED_ENV_KEYS = [
+  'REDIS_URL',
+  'LINEAR_WEBHOOK_SECRET',
+  'LINEAR_API_KEY',
+  'GITHUB_TOKEN',
+  'GITHUB_WEBHOOK_SECRET',
+  'TELEGRAM_BOT_TOKEN',
+  'TELEGRAM_CHAT_ID',
+  'DASHBOARD_BASIC_AUTH_PASSWORD',
+] as const;
+
+// envSchema keys the validator keeps: CLI auth (CLAUDE_CODE_OAUTH_TOKEN, OPENAI_API_KEY
+// which is mapped to ANTHROPIC_API_KEY) and non-secret operational flags.
+export const VALIDATOR_KEPT_ENV_KEYS = [
+  'NODE_ENV',
+  'LOG_LEVEL',
+  'ENABLE_PIPELINE_TRIGGER',
+  'AGENT_SKIP_ENABLED',
+  'OPENAI_API_KEY',
+  'CLAUDE_CODE_OAUTH_TOKEN',
+] as const;
+
+const VALIDATOR_COMMANDS_KEY = 'agents.validator.allowedCommands';
+
+// Empty, bare `*`, or a `Bash`/`Bash(...)` wrapper would widen or break the allowlist.
+function validatorCommandProblem(entry: string): string | undefined {
+  const t = entry.trim();
+  if (t === '') return 'entries cannot be empty';
+  if (/^\*+$/.test(t)) return 'an entry cannot be only "*"';
+  if (/^Bash(\(.*\))?$/.test(t)) return 'entries are bare patterns, not Bash or Bash(...)';
+  return undefined;
+}
+
 export interface AgentModelOverridesValidationResult {
   errors: string[];
 }
@@ -60,7 +120,7 @@ export function validateAgentModelOverrides(
 
 // Secrets and operationally-toggled flags — stay in .env / secret manager,
 // never move to the structural caf.config.yaml file.
-const envSchema = z.object({
+export const envSchema = z.object({
   NODE_ENV: z.enum(nodeEnvs).default('development'),
   LOG_LEVEL: z.enum(logLevels).default('info'),
 
@@ -192,7 +252,31 @@ const yamlSchema = z.object({
       maxRetries: z.coerce.number().int().nonnegative().default(1),
     }).default(() => ({ maxRetries: 1 })),
     modelOverrides: z.record(z.string(), z.string()).default({}),
-  }).default(() => ({ qa: { maxRetries: 1 }, reviewer: { maxRetries: 1 }, modelOverrides: {} })),
+    // CAF-SDD-04f: caf-validator only. restrictBash=false restores the old
+    // bypassPermissions + full-env behavior (rollback path).
+    validator: z.object({
+      restrictBash: z.boolean().default(true),
+      allowedCommands: z
+        .array(z.string(), { error: `${VALIDATOR_COMMANDS_KEY} must be a list of strings` })
+        .superRefine((entries, ctx) => {
+          for (const entry of entries) {
+            const problem = validatorCommandProblem(entry);
+            if (problem) {
+              ctx.addIssue({
+                code: 'custom' as const,
+                message: `${VALIDATOR_COMMANDS_KEY}: ${problem} (got ${JSON.stringify(entry)})`,
+              });
+            }
+          }
+        })
+        .default(() => [...DEFAULT_VALIDATOR_ALLOWED_COMMANDS]),
+    }).default(() => ({ restrictBash: true, allowedCommands: [...DEFAULT_VALIDATOR_ALLOWED_COMMANDS] })),
+  }).default(() => ({
+    qa: { maxRetries: 1 },
+    reviewer: { maxRetries: 1 },
+    modelOverrides: {},
+    validator: { restrictBash: true, allowedCommands: [...DEFAULT_VALIDATOR_ALLOWED_COMMANDS] },
+  })),
 
   // Opt-in routing of spawned Claude Code agents through OpenRouter's
   // Anthropic-compatible endpoint (failover + budget visibility). Off by
