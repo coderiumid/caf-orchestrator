@@ -19,11 +19,72 @@ const GIT_ENV: NodeJS.ProcessEnv = {
   GIT_COMMITTER_EMAIL: 'ganjardbc@gmail.com',
 };
 
-function getAuthenticatedRepoUrl(repoUrl: string): string {
-  if (repoUrl.startsWith('https://github.com/') && config.GITHUB_TOKEN) {
-    return repoUrl.replace('https://github.com/', `https://x-access-token:${config.GITHUB_TOKEN}@github.com/`);
-  }
-  return repoUrl;
+const GITHUB_PREFIX = 'https://github.com/';
+const GITHUB_EXTRAHEADER_KEY = 'http.https://github.com/.extraheader';
+const MIN_GIT_VERSION = { major: 2, minor: 31 };
+
+let gitVersionCheck: Promise<void> | undefined;
+
+/** Test seam: forget the cached `git --version` result. */
+export function resetGitVersionCheck(): void {
+  gitVersionCheck = undefined;
+}
+
+/** Strips userinfo (`user:token@`) from an https URL; other input is returned unchanged. */
+export function toCleanRepoUrl(url: string): string {
+  return url.replace(/^(https?:\/\/)[^/@]+@/, '$1');
+}
+
+function authSecrets(): string[] {
+  const token = config.GITHUB_TOKEN;
+  if (!token) return [];
+  return [token, Buffer.from(`x-access-token:${token}`).toString('base64')];
+}
+
+function redactSecrets(text: string): string {
+  return authSecrets().reduce((acc, secret) => acc.split(secret).join('***'), text);
+}
+
+function assertGitSupportsConfigEnv(): Promise<void> {
+  gitVersionCheck ??= runGit(['--version'], process.cwd()).then((out) => {
+    const m = /(\d+)\.(\d+)/.exec(out);
+    const major = m ? Number(m[1]) : 0;
+    const minor = m ? Number(m[2]) : 0;
+    if (major < MIN_GIT_VERSION.major || (major === MIN_GIT_VERSION.major && minor < MIN_GIT_VERSION.minor)) {
+      throw new GitError(
+        `git ${MIN_GIT_VERSION.major}.${MIN_GIT_VERSION.minor} or newer is required to authenticate via GIT_CONFIG_COUNT (found: ${out.trim()})`,
+        null,
+      );
+    }
+  });
+  // A failed check must not stay cached forever (e.g. transient spawn error).
+  gitVersionCheck.catch(() => {
+    gitVersionCheck = undefined;
+  });
+  return gitVersionCheck;
+}
+
+/**
+ * Extra env that authenticates one network git command against github.com
+ * (CAF-SDD-04g). The token travels only in the child's env as an
+ * `http.<url>.extraheader` config entry — never in argv, `.git/config` or the
+ * remote URL. Returns `{}` without a token or for non-github.com URLs.
+ */
+export async function buildGitAuthEnv(repoUrl: string): Promise<NodeJS.ProcessEnv> {
+  const token = config.GITHUB_TOKEN;
+  if (!token || !toCleanRepoUrl(repoUrl).startsWith(GITHUB_PREFIX)) return {};
+  await assertGitSupportsConfigEnv();
+  const basic = Buffer.from(`x-access-token:${token}`).toString('base64');
+  return {
+    GIT_CONFIG_COUNT: '1',
+    GIT_CONFIG_KEY_0: GITHUB_EXTRAHEADER_KEY,
+    GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${basic}`,
+  };
+}
+
+async function authEnvForOrigin(cwd: string): Promise<NodeJS.ProcessEnv> {
+  const origin = (await runGit(['remote', 'get-url', 'origin'], cwd)).trim();
+  return buildGitAuthEnv(origin);
 }
 
 function assertInsideWorkspace(dirPath: string, workspaceRoot?: string): void {
@@ -40,11 +101,11 @@ function assertSafeBranchName(branch: string): void {
   }
 }
 
-function runGit(args: string[], cwd: string): Promise<string> {
+function runGit(args: string[], cwd: string, extraEnv: NodeJS.ProcessEnv = {}): Promise<string> {
   return new Promise((resolvePromise, reject) => {
     const proc = spawn('git', args, {
       cwd,
-      env: GIT_ENV,
+      env: { ...GIT_ENV, ...extraEnv },
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 60_000,
     });
@@ -59,13 +120,13 @@ function runGit(args: string[], cwd: string): Promise<string> {
       if (code === 0) {
         resolvePromise(Buffer.concat(out).toString('utf-8'));
       } else {
-        const msg = Buffer.concat(err).toString('utf-8').trim();
+        const msg = redactSecrets(Buffer.concat(err).toString('utf-8').trim());
         reject(new GitError(`git ${args[0]} failed (${code ?? signal}): ${msg}`, code));
       }
     });
 
     proc.on('error', (spawnErr) => {
-      reject(new GitError(`git spawn error: ${spawnErr.message}`));
+      reject(new GitError(`git spawn error: ${redactSecrets(spawnErr.message)}`));
     });
   });
 }
@@ -75,8 +136,9 @@ export class GitService implements IGitService {
     assertInsideWorkspace(targetDir, workspaceRoot);
     assertSafeBranchName(branch);
 
-    const authenticatedUrl = getAuthenticatedRepoUrl(repoUrl);
-    logger.info('Cloning repository', undefined, { repoUrl: repoUrl.replace(/:[^@]+@/, ':***@'), branch });
+    const cleanUrl = toCleanRepoUrl(repoUrl);
+    const authEnv = await buildGitAuthEnv(cleanUrl);
+    logger.info('Cloning repository', undefined, { repoUrl: cleanUrl, branch });
 
     await runGit(
       [
@@ -85,10 +147,11 @@ export class GitService implements IGitService {
         '--single-branch',
         '--branch', branch,
         '--',
-        authenticatedUrl,
+        cleanUrl,
         targetDir,
       ],
       workspaceRoot ? resolve(workspaceRoot) : DEFAULT_WORKSPACE_ROOT,
+      authEnv,
     );
 
     logger.debug('Clone complete', undefined, { targetDir });
@@ -115,7 +178,7 @@ export class GitService implements IGitService {
     assertSafeBranchName(branch);
 
     logger.info('Pushing branch', undefined, { branch });
-    await runGit(['push', '--set-upstream', 'origin', '--', branch], targetDir);
+    await runGit(['push', '--set-upstream', 'origin', '--', branch], targetDir, await authEnvForOrigin(targetDir));
   }
 
   async preflightCleanup(targetDir: string, baseBranch: string, workspaceRoot?: string): Promise<PreflightCleanupResult> {
@@ -123,7 +186,15 @@ export class GitService implements IGitService {
     assertSafeBranchName(baseBranch);
 
     logger.debug('Preflight cleanup: fetching', undefined, { targetDir });
-    await runGit(['fetch', 'origin'], targetDir);
+    // Older clones were made with a token-bearing origin URL; scrub it before
+    // anything else so the token stops living in .git/config (CAF-SDD-04g).
+    const originUrl = (await runGit(['remote', 'get-url', 'origin'], targetDir)).trim();
+    const cleanOrigin = toCleanRepoUrl(originUrl);
+    if (cleanOrigin !== originUrl) {
+      await runGit(['remote', 'set-url', 'origin', cleanOrigin], targetDir);
+      logger.info('Preflight cleanup: removed credentials from origin URL', undefined, { targetDir });
+    }
+    await runGit(['fetch', 'origin'], targetDir, await buildGitAuthEnv(cleanOrigin));
 
     const branchBeforeReset = (await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], targetDir)).trim();
     const headCommitBeforeReset = (await runGit(['rev-parse', 'HEAD'], targetDir)).trim();
@@ -153,9 +224,10 @@ export class GitService implements IGitService {
 
   async remoteBranchExists(repoUrl: string, branch: string, cwd: string): Promise<boolean> {
     assertSafeBranchName(branch);
-    const authenticatedUrl = getAuthenticatedRepoUrl(repoUrl);
+    const cleanUrl = toCleanRepoUrl(repoUrl);
+    const authEnv = await buildGitAuthEnv(cleanUrl);
     try {
-      const out = await runGit(['ls-remote', '--exit-code', '--heads', authenticatedUrl, branch], cwd);
+      const out = await runGit(['ls-remote', '--exit-code', '--heads', cleanUrl, branch], cwd, authEnv);
       return out.trim().length > 0;
     } catch (err) {
       // exit code 2 = ls-remote ran fine but found no matching ref — the
