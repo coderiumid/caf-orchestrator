@@ -61,6 +61,8 @@ import {
   recordAgentEvent,
   recordAgentEnd,
   recordPullRequest,
+  recordWaitingFor,
+  recordAcSummary,
   pivPhaseForAgent,
 } from '../../infrastructure/db/pipeline-instrumentation.js';
 import type { PivPhase } from '../../infrastructure/db/pipeline-run.repository.js';
@@ -821,6 +823,7 @@ export class RunAgentPipelineUseCase {
       ticketKey: job.ticketKey,
       openQuestions: questions.length,
     });
+    recordWaitingFor(repoId, job.ticketKey, 'clarify');
     finalizePipelineRun(repoId, job.ticketKey, 'NEEDS_HUMAN');
     await this.deps.notifier?.notifyPipelineNeedsHuman({
       jobId: job.jobId,
@@ -876,6 +879,7 @@ export class RunAgentPipelineUseCase {
 
     await this.postTicketComment(job, buildSpecApprovalComment(job, pr, prError));
     logger.info('Pipeline stopped: spec awaiting approval', undefined, { jobId: job.jobId, ticketKey: job.ticketKey, prUrl: pr?.url });
+    recordWaitingFor(repoId, job.ticketKey, 'spec-approval');
     finalizePipelineRun(repoId, job.ticketKey, 'NEEDS_HUMAN');
     await this.deps.notifier?.notifyPipelineNeedsHuman({
       jobId: job.jobId,
@@ -1097,6 +1101,15 @@ export class RunAgentPipelineUseCase {
           ? undefined
           : await this.buildAcSummary(repoPath, job, qaReport.raw);
       const acSummaryText = acSummary ? renderAcSummary(acSummary) : '';
+      if (acSummary) {
+        recordAcSummary(repoId, job.ticketKey, {
+          pass: acSummary.pass,
+          fail: acSummary.fail,
+          unverified: acSummary.unverified,
+          total: acSummary.results.length,
+          allUnverified: acSummary.allUnverified,
+        });
+      }
 
       if (qaReport.status === 'FAIL') {
         const gateArtifact = { agentName: validationGate.agentName, file: qaReportFile ?? validationGate.reportFile };

@@ -23,6 +23,9 @@ const ADDED_COLUMNS: ReadonlyArray<readonly [table: string, column: string, type
   ['pipeline_runs', 'kind', 'TEXT'],
   ['pipeline_runs', 'review_mode', 'TEXT'],
   ['pipeline_runs', 'review_result', 'TEXT'],
+  // CAF-SDD-04h.
+  ['pipeline_runs', 'waiting_for', 'TEXT'],
+  ['pipeline_runs', 'ac_summary', 'TEXT'],
 ];
 
 // CAF-DASHBOARD-03 T1: a ticket has exactly one pipeline run row but any

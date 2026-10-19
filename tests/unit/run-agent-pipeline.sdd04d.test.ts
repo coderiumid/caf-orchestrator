@@ -47,6 +47,8 @@ vi.mock('../../src/infrastructure/db/pipeline-instrumentation.js', () => ({
   recordAgentEvent: vi.fn(),
   recordAgentEnd: vi.fn(),
   recordPullRequest: vi.fn(),
+  recordWaitingFor: vi.fn(),
+  recordAcSummary: vi.fn(),
   pivPhaseForAgent: () => 'implement',
 }));
 

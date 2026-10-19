@@ -21,12 +21,21 @@ var SCEN={
  retry:{label:'Verify fails, retry',ticket:'GAN-143',title:'Tidy the sales report table',pr:119,
   desc:'Frontend fails typecheck, then test, and only passes on the third attempt.',
   impl:[['frontend',{task:'Rework the report table component',attempts:[1,2,null]}]],qa:['pass']},
- qaretry:{label:'QA rejects once',ticket:'GAN-144',title:'Date range validation',pr:120,
-  desc:'QA finds a bug. The QA gate\'s single retry is used, then the result passes.',
+ qaretry:{label:'Validator rejects once',ticket:'GAN-144',title:'Date range validation',pr:120,
+  desc:'The Validator finds a failing criterion. The validation gate\'s single retry is used, then the result passes.',
   impl:[['frontend',{task:'Add date range validation',attempts:[null]}]],qa:['fail','pass']},
  human:{label:'Needs human',ticket:'GAN-145',title:'Export the report to Excel',pr:0,
   desc:'All three attempts are used up. The pipeline stops, a comment goes to Linear, and the ticket becomes Blocked.',
   impl:[['frontend',{task:'Build the Excel export button',attempts:[1,2,2]}]],qa:[]},
+ clarify:{label:'Spec needs answers',ticket:'GAN-147',title:'Low-stock alerts',pr:0,park:'clarify',
+  desc:'The Planner asks a BLOCKING question. The run is parked until someone answers on the ticket and triggers it again.',
+  impl:[],qa:[]},
+ specgate:{label:'Spec awaits approval',ticket:'GAN-148',title:'Refund flow',pr:122,park:'spec-approval',
+  desc:'The ticket carries the spec-gate label. A Draft PR holds the spec until someone comments /caf-approve-spec.',
+  impl:[],qa:[]},
+ unverified:{label:'Nothing proven (Q-1)',ticket:'GAN-149',title:'Print the receipt',pr:123,unverifiedAcs:3,
+  desc:'The Validator reports PASS but could not run the evidence for any criterion. The orchestrator treats that as needing a human.',
+  impl:[['frontend',{task:'Add the print button',attempts:[null]}]],qa:['pass']},
  crash:{label:'Crash, BullMQ retry',ticket:'GAN-146',title:'Sync stock after a transaction',pr:121,
   desc:'An exception mid-run. The run is marked ERROR, then BullMQ retries the job.',
   impl:[['backend',{task:'Sync stock after a transaction',attempts:[null],crashOnce:true}]],qa:['pass']},
@@ -96,6 +105,18 @@ async function pipeline(sc){
   log('ok','Planner: requirements.md and tasks.md ready');
   step('plan','pass','requirements.md, tasks.md');
 
+  if(sc.park){
+    var clar=sc.park==='clarify';
+    step('plan','pass','requirements.md');
+    await sendDoc(P,H,'requirements.md');
+    step('spec','active',sc.park);
+    log('warn',clar?'Spec needs clarification: answer the BLOCKING question on the ticket, then trigger it again':'Spec awaiting approval: comment /caf-approve-spec on the Draft PR');
+    if(!clar){step('pr','pass','Draft PR #'+sc.pr);say(H,'Draft PR #'+sc.pr+' holds the spec','warn');}
+    setStatus('needs',clar?'Waiting for answers':'Waiting for spec approval');
+    setState(H,'alert',clar?'Need your answers':'Approve the spec','warn');
+    return;
+  }
+
   var prev=P,last=null;
   for(var i=0;i<sc.impl.length;i++){
     var a=sc.impl[i][0],spec=sc.impl[i][1];
@@ -124,7 +145,7 @@ async function pipeline(sc){
   }
   step('impl','pass',NAME(last)+': verify-report.md');
 
-  step('qa','active','QA testing');
+  step('qa','active','Validating criteria');
   setState(Q,'verifying','Got the report','info');
   celebrate(last,'Status: SUCCESS');
   await sendDoc(last,Q,'verify-report.md');await ready(Q);
@@ -136,25 +157,40 @@ async function pipeline(sc){
       if(res==='fail'&&k===2){AF.checks(Q,k,3);failed=true;break;}
       AF.checks(Q,k,2);
     }
-    if(!failed){log('ok','QA: Status: PASS (qa-report.md)');break;}
-    log('warn','QA: Status: FAIL, retry gate 1/1');
+    if(!failed){log('ok','Validator: Status: PASS (validate-report.md)');break;}
+    log('warn','Validator: Status: FAIL, retry gate 1/1');
     setState(Q,'retrying','Bug found','warn');
-    step('qa','active','QA rejected, retry 1/1');
+    step('qa','active','Validator rejected, retry 1/1');
     await wait(1500);
-    setState(last,'implementing','Fix QA findings','info');
-    await sendDoc(Q,last,'qa-report.md');await ready(last);await wait(2600);
+    setState(last,'implementing','Fix validator findings','info');
+    await sendDoc(Q,last,'validate-report.md');await ready(last);await wait(2600);
     var ok2=await verify(last,null,1);
     if(ok2)log('ok',NAME(last)+': fix passed verify');
     celebrate(last,'Status: SUCCESS');
     setState(Q,'verifying','Got the fix','info');
     await sendDoc(last,Q,'verify-report.md');
   }
+  if(sc.unverifiedAcs){
+    var n=sc.unverifiedAcs;
+    AF.setAc({pass:0,fail:0,unverified:n,total:n,allUnverified:true});
+    log('warn','Criteria: 0 pass, 0 fail, '+n+' unverified, none proven, a PASS does not count');
+    step('qa','fail','NEEDS_HUMAN');
+    setState(Q,'blocked','Nothing proven','warn');
+    await wait(900);
+    await sendDoc(Q,H,'validate-report.md');
+    step('pr','pass','Draft PR #'+sc.pr);
+    setStatus('needs');
+    setState(H,'alert','Something needs a look','bad');
+    return;
+  }
   celebrate(Q,'Status: PASS');
-  step('qa','pass','qa-report.md: PASS');
+  step('qa','pass','validate-report.md: PASS');
+  AF.setAc({pass:3,fail:0,unverified:0,total:3,allUnverified:false});
+  log('ok','Criteria: 3 pass, 0 fail, 0 unverified');
 
   step('review','active','Reviewer assessing');
-  setState(Rv,'reviewing','Got qa-report.md','info');
-  await sendDoc(Q,Rv,'qa-report.md');await ready(Rv);
+  setState(Rv,'reviewing','Got validate-report.md','info');
+  await sendDoc(Q,Rv,'validate-report.md');await ready(Rv);
   var checks=['Check approach','Check security','Check technical debt'];
   for(var c=0;c<checks.length;c++){say(Rv,checks[c],'info');await wait(1900);}
   log('ok','Reviewer: review-notes.md done');

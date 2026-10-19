@@ -10,8 +10,13 @@
 (function(root){
 'use strict';
 
-var NAME={planner:'Planner',backend:'Backend',frontend:'Frontend',qa:'QA',reviewer:'Reviewer',docs:'Docs',human:'Manager'};
-var GATE={implementation:'implementation',qa:'QA',reviewer:'Reviewer'};
+var NAME={planner:'Planner',backend:'Backend',frontend:'Frontend',qa:'Validator',reviewer:'Reviewer',docs:'Docs',human:'Manager'};
+var GATE={implementation:'implementation',qa:'Validator',reviewer:'Reviewer'};
+/* A run parked on a human (CAF-SDD-04h): what it waits for, and what the person does next. */
+var WAITING={
+  'clarify':{pill:'Waiting for answers',bubble:'Need your answers',log:'Spec needs clarification: answer the BLOCKING questions on the ticket, then trigger it again'},
+  'spec-approval':{pill:'Waiting for spec approval',bubble:'Approve the spec',log:'Spec awaiting approval: comment /caf-approve-spec on the Draft PR'}
+};
 var CHECK_LABEL=[['lint','lint'],['typecheck','typecheck'],['test','test']];
 var WORK_TEXT={planning:'Planning',implementing:'Implementing',verifying:'Testing',reviewing:'Reviewing',fixing:'Fixing review comments'};
 var VERDICT={APPROVE:'APPROVE',CHANGES_REQUESTED:'CHANGES REQUESTED',DEFER:'DEFER'};
@@ -50,7 +55,7 @@ function translate(e,ctx){
     case 'run_started':
       calls.push(['reset']);
       if(e.kind==='pr-review'){
-        /* One stage only: a review job has no plan, implement, or QA step. */
+        /* One stage only: a review job has no plan, implement, or validate step. */
         calls.push(['setSteps',[['review',isFix(e.reviewMode)?'Fix review':'Review']]]);
         calls.push(['setRun',{
           title:e.ticket+'  '+e.ticketTitle,
@@ -106,10 +111,12 @@ function translate(e,ctx){
 
     case 'step':
       calls.push(['step',e.step,e.status,e.note||'']);
+      if(e.step==='spec'&&WAITING[e.note])log('warn',WAITING[e.note].log);
       if(e.step==='pr'&&e.status==='pass'){
         log('ok',e.note+' opened');
         /* "PR #n" = the final PR; "Draft PR #n" = the PR from a gate that stopped the run. */
         if(/^PR /.test(e.note||''))calls.push(['setState','human','alert',e.note+', ready for review','ok']);
+        else if(ctx&&ctx.waitingFor)calls.push(['say','human',e.note+' holds the spec','warn']);
         else calls.push(['say','human',e.note+' waiting','bad']);
       }
       break;
@@ -123,6 +130,19 @@ function translate(e,ctx){
       break;
 
     case 'run_finished':
+      if(e.acSummary){
+        var ac=e.acSummary;
+        calls.push(['setAc',ac]);
+        log(ac.allUnverified?'warn':ac.fail?'bad':'ok','Criteria: '+ac.pass+' pass, '+ac.fail+' fail, '+ac.unverified+' unverified'+(ac.allUnverified?', none proven, a PASS does not count':''));
+      }
+      if(e.waitingFor&&e.finalStatus==='NEEDS_HUMAN'&&WAITING[e.waitingFor]){
+        var w=WAITING[e.waitingFor];
+        if(ctx)ctx.waitingFor=e.waitingFor;
+        calls.push(['setStatus','needs',w.pill]);
+        calls.push(['setState','human','alert',w.bubble,'warn']);
+        log('warn','final_status: NEEDS_HUMAN (waiting, not failed)');
+        break;
+      }
       if(e.review&&e.finalStatus==='SUCCESS'){
         var res=e.review.result,pr=prText(e.review.prNumber);
         calls.push(['setStatus','success',isFix(e.review.mode)?'Fix review posted':'Review posted']);

@@ -51,14 +51,37 @@ Each row is one pipeline run (one ticket, one attempt-in-progress-or-finished).
 | **Repo** | `owner/repo` the ticket belongs to. |
 | **Ticket** | Ticket key + title. |
 | **Phase** | The PIV phase (`plan` / `implement` / `verify`) of the *most recent* agent event recorded for this run. This is "last known phase," not a guarantee the agent is still actively working in it right now — if the whole pipeline crashed mid-phase, this is where it stopped. |
-| **Retries** | Retry count **per gate**, shown as `<agent>: <count>` — e.g. `qa: 1` means the QA gate failed once and the implementation agent(s) were re-run. Only QA and Reviewer produce retries (see "How retries are counted" below); implementation-agent retries don't apply the same way, so `Implementation` never appears here. An em dash (`—`) means no retries yet. |
+| **Retries** | Retry count **per gate**, shown as `<agent>: <count>` — e.g. `qa: 1` means the validation gate (`caf-validator`, or `caf-qa` in older repos) failed once and the implementation agent(s) were re-run. Only QA and Reviewer produce retries (see "How retries are counted" below); implementation-agent retries don't apply the same way, so `Implementation` never appears here. An em dash (`—`) means no retries yet. |
 | **Cost** | Total cost in USD, summed across every agent that has finished so far in this run. See "About the cost figure" below — **this is a real number reported by the `claude` CLI itself, not an estimate.** Shows `belum tersedia` ("not available yet") when no agent has finished yet, not `$0.0000` — a genuinely-free run and a "no data yet" run are deliberately never shown the same way. |
 | **Status** | `RUNNING` while the pipeline hasn't concluded (no `finalStatus` recorded yet), otherwise the actual outcome: `SUCCESS`, `NEEDS_HUMAN` (stopped at a gate or a resume-budget rejection — same status, check the timeline for which), or `ERROR` (an unexpected crash — note the underlying job may still be retried by BullMQ, in which case this row resets to `RUNNING` on the next attempt). |
-| **Artifact** | Path (inside the target repo's workspace, not a clickable URL — see note below) of the most recent report artifact the pipeline produced — typically `verify-report.md`, `qa-report.md`, or `review-notes.md`, whichever gate most recently ran or failed. An em dash means no artifact recorded yet. |
+| **Artifact** | Path (inside the target repo's workspace, not a clickable URL — see note below) of the most recent report artifact the pipeline produced — typically `verify-report.md`, `validate-report.md` (`qa-report.md` in older repos), or `review-notes.md`, whichever gate most recently ran or failed. An em dash means no artifact recorded yet. |
 
 Click any row to open the detail panel on the right: the full chronological
 event timeline for that run (every agent start/end, retry, and gate
 exhaustion, each with its own phase/cost/artifact/timestamp).
+
+### Runs waiting on a person (CAF-SDD-04h)
+
+A ticket run can park on a human without failing. The database stores it as
+`NEEDS_HUMAN`, plus `pipeline_runs.waiting_for`, and the dashboard shows it as waiting:
+
+| `waiting_for` | Pill | What to do |
+|---|---|---|
+| `clarify` | Awaiting clarification | Answer the BLOCKING questions in the ticket comment, then move the ticket to Ready for AI again. |
+| `spec-approval` | Awaiting spec approval | Review the spec in the Draft PR, then comment `/caf-approve-spec` on it. |
+
+The card's rail reads Plan, Spec (amber), Implement, Verify. The **Waiting on you**
+stat and the **Waiting on you** status filter count these runs; **Needs attention**
+counts only gate stops and errors. A new attempt (Clarify answers, approval,
+retry) clears `waiting_for`. Rows recorded before this feature have none and
+show as before.
+
+The run inspector also shows **Criteria** (`N pass · N fail · N unverified`) once
+the validation gate ran with `caf-validator`. These counts come from
+`pipeline_runs.ac_summary` (JSON, counts only, no evidence text). A validator
+`PASS` with every criterion unverified is shown as "(none proven)": the
+orchestrator stops such a run (Q-1). Repos still on `caf-qa` have no per-AC table, so no
+counts.
 
 ### Run types: pipeline, review, fix review
 
@@ -176,7 +199,7 @@ seconds), so a ten-minute run replays in well under a minute. Pausing does not
 hold back live data: new events still arrive and are shown.
 
 The office is a single open-plan room: a pod of six desks close together
-(Planner, Backend, Frontend in front; QA, Docs, and Reviewer behind them),
+(Planner, Backend, Frontend in front; Validator, Docs, and Reviewer behind them),
 the PR gate with the PR box and the Manager's desk, and a meeting corner.
 Each agent has a fixed seat at its own desk, and **work always shows there**,
 through pose and screen only. (The approved prototype had agents walk to
@@ -215,10 +238,11 @@ is kept in the URL (`?repo=`).
 |---|---|
 | Sitting at the desk, sipping coffee | That agent is idle. With everyone like this, no run is active in this repo. |
 | Walking to the coffee counter, whiteboard, bookshelf, or fridge; stretching; two agents chatting in the meeting corner; Manager walking round the desks | Still idle. Decoration only (see above); the status list shows what it is doing. |
-| Typing at the desk, back turned | That agent's process is running (plan, implement, QA, or review). |
-| Scratching head (and, for QA, a bug in the QA lab) | A QA or Reviewer gate rejected the work and the implementation agents are re-run. The bubble shows the gate's own counter and limit (`retry 1/1`), from `agents.qa.maxRetries` / `agents.reviewer.maxRetries`. |
+| Typing at the desk, back turned | That agent's process is running (plan, implement, validate, or review). |
+| Scratching head (and, for the Validator, a bug in its lab) | A Validator or Reviewer gate rejected the work and the implementation agents are re-run. The bubble shows the gate's own counter and limit (`retry 1/1`), from `agents.qa.maxRetries` / `agents.reviewer.maxRetries` (the config key keeps its old name). |
 | Flying document | A report handed from one agent to the next (see "Handoffs" below). |
-| Raised hand, red screen, red lamp on the Manager's desk | `NEEDS_HUMAN`. |
+| Planner's `requirements.md` flies to the Manager, amber bubble ("Need your answers" / "Approve the spec"), a **Spec** step in the list | The run is parked on Clarify or spec approval (see "Runs waiting on a person"). Not a failure. |
+| Raised hand, red screen, red lamp on the Manager's desk | `NEEDS_HUMAN` at a gate. |
 | Small flame | The agent's process failed (`FAILED`, `KILLED`, or `TIMEOUT`); the run is `ERROR` and BullMQ may retry the job. |
 | Green lamp on the Manager's desk | `SUCCESS`; a PR is waiting for human review. |
 | Only the Reviewer working, one stage in the step list | A PR review or fix-review run (see "Run types" above). Reviewing shows a diff on the screen; fixing review comments shows code, and the status list says "Fixing review". |
@@ -272,9 +296,9 @@ Response: `{ run, events, nextCursor }`. Every event has `cursor`, `runId`,
 | `run_started` | `ticket`, `ticketTitle`, `repo`, `branch`, `startedAt`; on a PR review run also `kind: "pr-review"`, `reviewMode`, `prNumber` | Office resets, "Current run" panel filled. One per attempt. A review run swaps the step list for its single stage. |
 | `agent_state` | `agent`, `state`, and optionally `gate`, `retry: {count, max}`, `verify`, `outcome` | Character pose, screen, and speech bubble. |
 | `handoff` | `from`, `to` (an agent, `human`, or `outbox`), `file` | Flying document. |
-| `step` | `step` (`plan`/`impl`/`qa`/`review`/`pr`), `status` (`active`/`pass`/`fail`), `note`, and `prNumber` on the `pr` step | Step list. |
+| `step` | `step` (`plan`/`spec`/`impl`/`qa`/`review`/`pr`; `qa` is the Validator's step), `status` (`active`/`pass`/`fail`), `note`, and `prNumber` on the `pr` step | Step list. |
 | `usage` | `agent`, `costUsd`, `tokens` (always `null` for now), `durationMs` | "Agent details" panel. |
-| `run_finished` | `finalStatus`, `gate`, `superseded`; on a PR review run also `review: {mode, result, prNumber}` | Status pill and the Manager's lamp. |
+| `run_finished` | `finalStatus`, `gate`, `superseded`; `waitingFor` and `acSummary` when present (CAF-SDD-04h); on a PR review run also `review: {mode, result, prNumber}` | Status pill and the Manager's lamp. |
 
 Agent states: `idle`, `planning`, `implementing`, `verifying`, `retrying`,
 `reviewing`, `fixing`, `celebrating`, `blocked`, `error`, `offduty`. `fixing`
@@ -292,7 +316,7 @@ Three things worth knowing when reading that feed:
   before the number exists.
 - **Handoffs are derived, not recorded.** The pipeline does not log them; they
   are inferred from the order agents ran in (planner → implementation →
-  QA → reviewer, and back on a gate retry).
+  validator → reviewer, and back on a gate retry).
 - **Attempts.** A BullMQ retry or a `/caf-retry-pipeline` resume reuses the
   same run row and starts a new *attempt*; each attempt gets its own
   `run_started` / `run_finished`. Only the latest attempt's final status is
@@ -339,6 +363,11 @@ and so are the retry loops (`qaRetryCount`, `reviewerRetryCount`) and BullMQ's
 `queue.jobAttempts`. The verify-details parser is a separate file that only
 feeds this page; a report it cannot understand changes nothing about how the
 run proceeds.
+
+The Validator keeps the internal id `qa` (API, CSS, tests); only its labels changed to
+"Validator" / "Validate" / `validate-report.md`. A repo still on `caf-qa` also shows
+"Validator" on the floor. The demo has three extra scenarios: Spec needs answers,
+Spec awaits approval, and Nothing proven (Q-1).
 
 ### Adding a new agent state
 

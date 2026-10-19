@@ -4,6 +4,8 @@ import type {
   PipelineRun,
   ReviewMode,
   ReviewResult,
+  WaitingFor,
+  AcCounts,
 } from '../../../infrastructure/db/pipeline-run.repository.js';
 import type { VerifyDetails } from '../../../infrastructure/reports/verify-report-details.js';
 
@@ -39,7 +41,8 @@ export type FloorAgentState =
   | 'blocked'
   | 'error'
   | 'offduty';
-export type FloorStep = 'plan' | 'impl' | 'qa' | 'review' | 'pr';
+/** `spec` exists only on a run parked on Clarify / spec approval (CAF-SDD-04h). */
+export type FloorStep = 'plan' | 'spec' | 'impl' | 'qa' | 'review' | 'pr';
 export type FloorStepStatus = 'active' | 'pass' | 'fail';
 export type FloorGate = 'implementation' | 'qa' | 'reviewer';
 export type FloorFinalStatus = 'SUCCESS' | 'NEEDS_HUMAN' | 'ERROR';
@@ -121,6 +124,10 @@ export interface RunFinishedEvent extends FloorEventBase {
   superseded: boolean;
   /** Present only on a PR-review run: what was asked for, and its outcome once the job finished normally. */
   review?: { mode: ReviewMode | null; result: ReviewResult | null; prNumber: number | null };
+  /** CAF-SDD-04h. Present only on the current attempt of a run parked on a human: Clarify answers or `/caf-approve-spec`. */
+  waitingFor?: WaitingFor;
+  /** CAF-SDD-04h. The validator's AC counts, on the current attempt of a pipeline run once the validation gate ran. */
+  acSummary?: AcCounts;
 }
 
 export type FloorEvent = RunStartedEvent | AgentStateEvent | HandoffEvent | StepEvent | UsageEvent | RunFinishedEvent;
@@ -519,7 +526,8 @@ export function normalizeRun(run: PipelineRun, rows: AgentEvent[], options: Norm
         continue;
       }
 
-      if (agent === 'planner') setStep('plan', 'pass', 'tasks.md');
+      // A run parked on Clarify / spec approval stopped before tasks.md was required.
+      if (agent === 'planner') setStep('plan', 'pass', attempt === currentAttempt && run.waitingFor ? 'requirements.md' : 'tasks.md');
       out.push({
         ...at,
         type: 'agent_state',
@@ -574,6 +582,15 @@ export function normalizeRun(run: PipelineRun, rows: AgentEvent[], options: Norm
       }
     }
 
+    const waitingFor = !superseded && finalStatus === 'NEEDS_HUMAN' ? run.waitingFor : null;
+    if (waitingFor) {
+      // Parked on a human, not failed: the spec went to the Manager's desk.
+      if (state.lastEnded === 'planner') {
+        out.push({ ...finish, type: 'handoff', cursor: closeCursor(), from: 'planner', to: 'human', file: 'requirements.md' });
+      }
+      out.push({ ...finish, type: 'step', cursor: closeCursor(), step: 'spec', status: 'active', note: waitingFor });
+    }
+
     out.push({
       ...finish,
       type: 'run_finished',
@@ -581,6 +598,8 @@ export function normalizeRun(run: PipelineRun, rows: AgentEvent[], options: Norm
       finalStatus,
       gate: state.exhaustedGate,
       superseded,
+      ...(waitingFor ? { waitingFor } : {}),
+      ...(!superseded && run.acSummary ? { acSummary: run.acSummary } : {}),
     });
 
     // The final PR on success, or the Draft PR on a gate stop (see RunFinishedEvent).
