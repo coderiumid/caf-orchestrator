@@ -1,6 +1,6 @@
 {
   "name": "caf-orchestrator",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Linear webhook receiver + Claude Code agent pipeline orchestrator",
   "main": "dist/presentation/web/server.js",
   "scripts": {
