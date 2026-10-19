@@ -59,7 +59,7 @@ describe('translate', () => {
   it('a gate retry shows the gate counter and its real limit, never an assumed n/3', () => {
     const known = translate({ ...base, type: 'agent_state', agent: 'qa', state: 'retrying', gate: 'qa', retry: { count: 1, max: 1 } });
     expect(known[0]).toEqual(['setState', 'qa', 'retrying', 'Rejected, retry 1/1', 'warn', 0, { checks: null }]);
-    expect(known[1]).toEqual(['log', 'warn', 'QA: QA gate rejected, retry 1/1', 0]);
+    expect(known[1]).toEqual(['log', 'warn', 'Validator: Validator gate rejected, retry 1/1', 0]);
 
     const unknown = translate({ ...base, type: 'agent_state', agent: 'reviewer', state: 'retrying', gate: 'reviewer', retry: { count: 1, max: null } });
     expect(unknown[0][3]).toBe('Rejected, retry 1/?');
@@ -114,7 +114,7 @@ describe('translate', () => {
 
     expect(finished('SUCCESS').slice(0, 2)).toEqual([['setStatus', 'success'], ['setState', 'human', 'alert', 'Run finished', 'ok']]);
     expect(finished('NEEDS_HUMAN', 'qa').slice(0, 2)).toEqual([['setStatus', 'needs'], ['setState', 'human', 'alert', 'Something needs a look', 'bad']]);
-    expect(finished('NEEDS_HUMAN', 'qa')[2][2]).toBe('final_status: NEEDS_HUMAN (QA gate)');
+    expect(finished('NEEDS_HUMAN', 'qa')[2][2]).toBe('final_status: NEEDS_HUMAN (Validator gate)');
     expect(finished('NEEDS_HUMAN')[2][2]).toBe('final_status: NEEDS_HUMAN');
     expect(finished('ERROR')[0]).toEqual(['setStatus', 'error']);
     // A superseded attempt with no recorded status: no status is claimed.
@@ -131,7 +131,7 @@ describe('translate', () => {
 
   it('log times are the offset from the attempt start', () => {
     const calls = translate({ ...base, type: 'usage', agent: 'qa', costUsd: null, tokens: null, durationMs: null }, { runStartMs: T0 });
-    expect(calls[1]).toEqual(['log', 'info', 'QA: finished', 60_000]);
+    expect(calls[1]).toEqual(['log', 'info', 'Validator: finished', 60_000]);
   });
 
   it('never touches Docs: caf-documentation stays off duty for every event of a real-shaped run', () => {

@@ -10,6 +10,8 @@ import {
   type RunKind,
   type ReviewMode,
   type ReviewResult,
+  type WaitingFor,
+  type AcCounts,
 } from '../../../infrastructure/db/pipeline-run.repository.js';
 import { normalizeRun, eventsAfter, parseCursor } from '../agent-floor/event-normalizer.js';
 
@@ -40,6 +42,10 @@ interface PipelineRunApiShape {
   reviewMode: ReviewMode | null;
   /** PR-review runs only, once the job finished normally: the verdict, or FIXED/SKIPPED/NOT_APPLICABLE counts. */
   reviewResult: ReviewResult | null;
+  /** Ticket pipeline runs only: set while the run is parked on Clarify / spec approval (CAF-SDD-04h). */
+  waitingFor: WaitingFor | null;
+  /** Validator AC counts (pass/fail/unverified) once the validation gate ran, else null (CAF-SDD-04h). */
+  acSummary: AcCounts | null;
   repoId: string;
   ticketId: string;
   ticketTitle: string;
@@ -88,6 +94,8 @@ function toApiShape(run: PipelineRun, events: AgentEvent[]): PipelineRunApiShape
     kind: run.kind,
     reviewMode: run.reviewMode,
     reviewResult: run.reviewResult,
+    waitingFor: run.waitingFor,
+    acSummary: run.acSummary,
     repoId: run.repoId,
     ticketId: run.ticketId,
     ticketTitle: run.ticketTitle,

@@ -20,6 +20,19 @@ export type ReviewResult =
   | { type: 'verdict'; verdict: 'APPROVE' | 'CHANGES_REQUESTED' | 'DEFER'; postedAsComment: boolean }
   | { type: 'fix'; fixed: number; skipped: number; notApplicable: number };
 
+/** What a parked run waits for (CAF-SDD-04h): answers to BLOCKING questions, or a human's `/caf-approve-spec`. */
+export type WaitingFor = 'clarify' | 'spec-approval';
+
+/** Counts of the validator's per-AC result, kept on the row because the report lives in a workspace that is gone by then. */
+export interface AcCounts {
+  pass: number;
+  fail: number;
+  unverified: number;
+  total: number;
+  /** At least one AC and every one UNVERIFIED (Q-1). */
+  allUnverified: boolean;
+}
+
 export interface PipelineRun {
   id: string;
   repoId: string;
@@ -37,6 +50,10 @@ export interface PipelineRun {
   reviewMode: ReviewMode | null;
   /** Null for a pipeline run, and for a review run that hasn't finished successfully. */
   reviewResult: ReviewResult | null;
+  /** Set while a ticket run is parked on Clarify / spec approval; null otherwise (CAF-SDD-04h). */
+  waitingFor: WaitingFor | null;
+  /** Validator AC counts of the latest attempt that reached the validation gate; null otherwise (CAF-SDD-04h). */
+  acSummary: AcCounts | null;
 }
 
 export interface AgentEvent {
@@ -103,6 +120,8 @@ interface PipelineRunRow {
   kind: string | null;
   review_mode: string | null;
   review_result: string | null;
+  waiting_for: string | null;
+  ac_summary: string | null;
 }
 
 // Matches the predicate of the partial unique index in connection.ts.
@@ -142,6 +161,15 @@ function parseReviewResult(raw: string | null): ReviewResult | null {
   }
 }
 
+function parseAcCounts(raw: string | null): AcCounts | null {
+  if (raw === null) return null;
+  try {
+    return JSON.parse(raw) as AcCounts;
+  } catch {
+    return null;
+  }
+}
+
 function toPipelineRun(row: PipelineRunRow): PipelineRun {
   return {
     id: row.id,
@@ -156,6 +184,8 @@ function toPipelineRun(row: PipelineRunRow): PipelineRun {
     kind: row.kind === 'pr-review' ? 'pr-review' : 'pipeline',
     reviewMode: row.review_mode as ReviewMode | null,
     reviewResult: parseReviewResult(row.review_result),
+    waitingFor: row.waiting_for === 'clarify' || row.waiting_for === 'spec-approval' ? row.waiting_for : null,
+    acSummary: parseAcCounts(row.ac_summary),
   };
 }
 
@@ -202,6 +232,8 @@ export class PipelineRunRepository {
            ended_at = excluded.ended_at,
            final_status = excluded.final_status,
            review_result = NULL,
+           waiting_for = NULL,
+           ac_summary = NULL,
            attempt = COALESCE(pipeline_runs.attempt, 1) + 1`,
       )
       .run({
@@ -229,6 +261,16 @@ export class PipelineRunRepository {
   /** Stores the outcome of a finished PR review job. No-op if the row doesn't exist. */
   setReviewResult(id: string, result: ReviewResult): void {
     this.db.prepare('UPDATE pipeline_runs SET review_result = ? WHERE id = ?').run(JSON.stringify(result), id);
+  }
+
+  /** Marks a run as parked on a human (or clears it with null). No-op if the row doesn't exist. */
+  setWaitingFor(id: string, waitingFor: WaitingFor | null): void {
+    this.db.prepare('UPDATE pipeline_runs SET waiting_for = ? WHERE id = ?').run(waitingFor, id);
+  }
+
+  /** Stores the validator's AC counts. No-op if the row doesn't exist. */
+  setAcSummary(id: string, counts: AcCounts): void {
+    this.db.prepare('UPDATE pipeline_runs SET ac_summary = ? WHERE id = ?').run(JSON.stringify(counts), id);
   }
 
   /** Records the pull request opened (or reused) for this run. No-op if the row doesn't exist. */

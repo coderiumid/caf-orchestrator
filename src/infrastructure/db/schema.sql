@@ -20,7 +20,12 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
   -- job; review_mode/review_result are only set on the latter.
   kind          TEXT,
   review_mode   TEXT,
-  review_result TEXT
+  review_result TEXT,
+  -- CAF-SDD-04h. waiting_for: 'clarify' | 'spec-approval' while the run is
+  -- parked on a human (NULL otherwise). ac_summary: JSON counts of the
+  -- validator's per-AC result (no evidence text).
+  waiting_for   TEXT,
+  ac_summary    TEXT
 );
 
 -- The "one row per (repo_id, ticket_id)" unique index is created in

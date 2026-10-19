@@ -101,9 +101,9 @@ var DEF={
  frontend:{name:'Frontend',file:'caf-frontend',color:'#7a5af0',hair:'#c0572b',skin:'#e8b98f',acc:'phones',rate:.028,
   access:'Write, web scope',out:'code and verify-report.md',
   desc:'Works on the Vue 3 and Vite side with the same pattern: implement, verify, repeat up to three times.'},
- qa:{name:'QA',file:'caf-qa',color:'#36a35b',hair:'#e8c25a',skin:'#8d5a3a',acc:'goggles',rate:.016,
-  access:'Tests, writes a report',out:'qa-report.md',
-  desc:'Tests more deeply and checks edge cases. This gate has one retry.'},
+ qa:{name:'Validator',file:'caf-validator',color:'#36a35b',hair:'#e8c25a',skin:'#8d5a3a',acc:'goggles',rate:.016,
+  access:'Runs each criterion\'s evidence, writes a report',out:'validate-report.md (qa-report.md in older repos)',
+  desc:'Checks every acceptance criterion of the spec by running its evidence, and never fixes. A criterion it could not run is UNVERIFIED. This gate has one retry.'},
  reviewer:{name:'Reviewer',file:'caf-reviewer',color:'#e07b30',hair:'#6e6e78',skin:'#f3d2b5',acc:'glasses',rate:.012,
   access:'Read-only',out:'review-notes.md',
   desc:'Qualitative review: approach, technical debt, and security. This gate also has one retry.'},
@@ -121,7 +121,7 @@ var cv=$('#cv'),ctx=cv.getContext('2d'),scene=$('#scene'),ov=$('#ov'),stage=$('#
 var simT=0,speed=1,paused=false,epoch=0,timers=[],runT0=0,runEnd=null;
 var A={},docs=[],bugs=[],outboxFlag=false,selected='planner',nextIdleAt=0,nextPatrolAt=0;
 var stepsState={};
-var PIPELINE_STEPS=[['plan','Plan'],['impl','Implement and verify'],['qa','QA'],['review','Review'],['pr','PR and Linear']];
+var PIPELINE_STEPS=[['plan','Plan'],['impl','Implement and verify'],['qa','Validate'],['review','Review'],['pr','PR and Linear']];
 /* The stages listed for the current run. A PR review run replaces them through setSteps(); reset puts the pipeline's back. */
 var STEPS=PIPELINE_STEPS;
 /* mock=true only in demo mode: cost, tokens, and work time are computed from
@@ -347,7 +347,15 @@ function renderSteps(){
     stepsEl.appendChild(li);
   });
 }
-function step(id,status,note){stepsState[id]={status:status,note:note||''};renderSteps();}
+/* The Spec stage exists only for a run parked on Clarify / spec approval: it is added to the list when its step arrives, right after Plan. */
+var SPEC_STEP=['spec','Spec'];
+function step(id,status,note){
+  if(id==='spec'&&!STEPS.some(function(s){return s[0]==='spec';})){
+    var at=STEPS.map(function(s){return s[0];}).indexOf('plan');
+    if(at>=0)STEPS=STEPS.slice(0,at+1).concat([SPEC_STEP],STEPS.slice(at+1));
+  }
+  stepsState[id]={status:status,note:note||''};renderSteps();
+}
 function setSteps(list){STEPS=list&&list.length?list:PIPELINE_STEPS;renderSteps();}
 var PILL={idle:['Waiting for ticket','NULL'],run:['Running','NULL'],success:['Done, PR ready for review','SUCCESS'],needs:['Needs human','NEEDS_HUMAN'],error:['Error, BullMQ will retry','ERROR']};
 /* text (optional): replaces the pill's default wording, e.g. for a PR review run, which opens no PR of its own. */
@@ -355,6 +363,12 @@ function setStatus(k,text){
   var p=$('#rpill');
   if(k==='success'||k==='needs')runEnd=simT; else if(k==='run'||k==='idle')runEnd=null;
   p.className='pill '+k;p.textContent=text||PILL[k][0];$('#rfs').textContent=PILL[k][1];
+}
+/* Validator AC counts, or null for "not reported". */
+function setAc(c){
+  var el=$('#rac');
+  if(!c){el.textContent='not reported';return;}
+  el.textContent=c.pass+' pass, '+c.fail+' fail, '+c.unverified+' unverified'+(c.allUnverified?' (none proven)':'');
 }
 /* Fills the "Current run" panel. clock (optional): a function returning the run's elapsed ms from real data. */
 function setRun(r){
@@ -375,7 +389,7 @@ function resetWorld(){
     placeInitial(a);
   });
   say(A.docs,'zZ','mute');
-  STEPS=PIPELINE_STEPS;stepsState={};renderSteps();renderLogEmpty();
+  STEPS=PIPELINE_STEPS;stepsState={};renderSteps();renderLogEmpty();setAc(null);
   setRun({});setStatus('idle');
 }
 
@@ -412,7 +426,7 @@ function buildBG(){
   R(g,78,11,30,19,'#f4f5f9');R(g,78,11,30,1,'#8b8fa8');R(g,78,29,30,1,'#8b8fa8');
   R(g,81,16,6,6,'#3f7de0');R(g,90,16,6,6,'#7a5af0');R(g,99,16,6,6,'#36a35b');
   R(g,87,18,3,2,'#555a6e');R(g,96,18,3,2,'#555a6e');
-  /* QA poster */
+  /* Validator poster */
   R(g,120,11,20,22,'#f4f5f9');
   for(i=0;i<4;i++){R(g,123,15+i*5,3,3,'#36a35b');R(g,128,16+i*5,9,1,'#9aa0b8');}
   /* window */
@@ -638,7 +652,7 @@ function render(){
   ORDER.map(function(id){return A[id];}).sort(function(p,q){return p.y-q.y;}).forEach(function(a){drawChar(a,T);});
   bugs=bugs.filter(function(b){return simT<b.until;});
   bugs.forEach(function(){
-    /* crawls on the floor beside QA's desk */
+    /* crawls on the floor beside the Validator's desk */
     var bx=ST.qa.cx-16+Math.abs(((T*16)%64)-32),by=ST.qa.fy+12+(((T*10)|0)%2);
     function B(dx,dy,w,h,c){R(g,bx+dx*1.5,by+dy*1.5,w*1.5,h*1.5,c);}
     B(0,0,5,3,'#1a1a1a');B(1,-1,3,1,'#c0392b');B(-1,(((T*10)|0)%2),1,1,'#1a1a1a');B(5,1,1,1,'#1a1a1a');
@@ -815,7 +829,7 @@ requestAnimationFrame(frame);
 
 window.AgentFloor={
   setState:setState,say:say,sendDoc:sendDoc,step:step,setStatus:setStatus,log:log,
-  reset:resetWorld,setRun:setRun,setSteps:setSteps,usage:usage,checks:checks,
+  reset:resetWorld,setRun:setRun,setAc:setAc,setSteps:setSteps,usage:usage,checks:checks,
   wait:wait,ready:ready,later:later,fire:fire,celebrate:celebrate,CANCEL:CANCEL,
   setMock:function(v){mock=!!v;},
   isPaused:function(){return paused;},

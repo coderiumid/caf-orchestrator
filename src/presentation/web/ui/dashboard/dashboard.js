@@ -31,7 +31,8 @@
   }
 
   function agentLabel(name) {
-    return String(name || '').replace(/^caf-/, '').replace(/-/g, ' ');
+    var label = String(name || '').replace(/^caf-/, '').replace(/-/g, ' ');
+    return label === 'qa' ? 'qa (validator in newer repos)' : label;
   }
 
   function phaseIndex(phase) {
@@ -95,8 +96,34 @@
     return status.charAt(0) + status.slice(1).toLowerCase();
   }
 
-  function statusPill(status) {
-    return '<span class="pill ' + statusClass(status) + '">' + esc(statusLabel(status)) + '</span>';
+  // CAF-SDD-04h: a run parked on Clarify / spec approval is NEEDS_HUMAN in the
+  // database, but it is waiting on someone, not failed.
+  var WAITING = {
+    'clarify': {
+      label: 'Awaiting clarification',
+      hint: 'Answer the BLOCKING questions in the ticket comment, then move the ticket to Ready for AI again.',
+      short: 'Answer on the ticket'
+    },
+    'spec-approval': {
+      label: 'Awaiting spec approval',
+      hint: 'Review the spec in the Draft PR, then comment /caf-approve-spec on it.',
+      short: 'Comment /caf-approve-spec'
+    }
+  };
+
+  function waiting(run) {
+    return run.status === 'NEEDS_HUMAN' && run.waitingFor && WAITING[run.waitingFor] ? WAITING[run.waitingFor] : null;
+  }
+
+  function statusPill(status, run) {
+    var w = run && waiting(run);
+    return '<span class="pill ' + statusClass(status) + '">' + esc(w ? w.label : statusLabel(status)) + '</span>';
+  }
+
+  // The validator's AC counts, or null when the validation gate never reported them.
+  function acText(ac) {
+    if (!ac) return null;
+    return ac.pass + ' pass · ' + ac.fail + ' fail · ' + ac.unverified + ' unverified' + (ac.allUnverified ? ' (none proven)' : '');
   }
 
   function eventClass(type) {
@@ -118,6 +145,13 @@
     if (run.kind === 'pr-review') return reviewRail(run);
     var active = phaseIndex(run.currentPivPhase);
     var running = run.status === 'RUNNING';
+    if (waiting(run)) {
+      // Plan is done; the spec is with a human, so Implement and Verify have not started.
+      var stages = [['Plan', 'pass'], ['Spec', 'wait'], ['Implement', 'pending'], ['Verify', 'pending']];
+      return stages.map(function (s) {
+        return '<span class="st ' + s[1] + '"><span class="m"></span>' + s[0] + '</span>';
+      }).join('');
+    }
     return ['Plan', 'Implement', 'Verify'].map(function (label, i) {
       var cls = i < active || (run.status === 'SUCCESS' && i <= active) ? 'pass' : i === active ? 'active' : 'pending';
       if ((run.status === 'ERROR' || run.status === 'NEEDS_HUMAN') && i === active) cls = 'fail';
@@ -137,9 +171,10 @@
           '<span class="ttl">' + esc(run.ticketTitle || 'Untitled pipeline') + '</span>' +
           '<span class="repo">' + esc(run.repoId) + '</span>' +
         '</span>' +
-        statusPill(run.status) +
+        statusPill(run.status, run) +
       '</span>' +
-      '<span class="rail">' + phaseRail(run) + '</span>' +
+      '<span class="rail' + (waiting(run) ? ' spec' : '') + '">' + phaseRail(run) + '</span>' +
+      (waiting(run) ? '<span class="hint">' + esc(waiting(run).short) + '</span>' : '') +
       '<span class="run-meta">' +
         '<span><span class="k">Elapsed</span><span class="v">' + esc(elapsed(run)) + '</span></span>' +
         (review
@@ -154,7 +189,8 @@
     var q = search.value.trim().toLowerCase();
     return runs.filter(function (run) {
       var matchesQuery = !q || [run.repoId, run.ticketId, run.ticketTitle].join(' ').toLowerCase().indexOf(q) !== -1;
-      var matchesStatus = statusFilter.value === 'ALL' || run.status === statusFilter.value;
+      var matchesStatus = statusFilter.value === 'ALL' ||
+        (statusFilter.value === 'WAITING' ? !!waiting(run) : statusFilter.value === 'NEEDS_HUMAN' ? run.status === 'NEEDS_HUMAN' && !waiting(run) : run.status === statusFilter.value);
       var matchesRepo = repoFilter.value === 'ALL' || run.repoId === repoFilter.value;
       var matchesKind = kindFilter.value === 'ALL' || runType(run) === kindFilter.value;
       return matchesQuery && matchesStatus && matchesRepo && matchesKind;
@@ -180,11 +216,13 @@
   function renderStats() {
     var running = runs.filter(function (r) { return r.status === 'RUNNING'; }).length;
     var success = runs.filter(function (r) { return r.status === 'SUCCESS'; }).length;
-    var attention = runs.filter(function (r) { return r.status === 'NEEDS_HUMAN' || r.status === 'ERROR'; }).length;
+    var parked = runs.filter(function (r) { return !!waiting(r); }).length;
+    var attention = runs.filter(function (r) { return (r.status === 'NEEDS_HUMAN' && !waiting(r)) || r.status === 'ERROR'; }).length;
     var cost = runs.reduce(function (sum, r) { return sum + (r.totalCostUsd || 0); }, 0);
 
     document.getElementById('stat-running').textContent = running;
     document.getElementById('stat-success').textContent = success;
+    document.getElementById('stat-waiting').textContent = parked;
     document.getElementById('stat-attention').textContent = attention;
     document.getElementById('stat-cost').innerHTML = '$' + cost.toFixed(2) + ' <small>USD</small>';
   }
@@ -225,7 +263,9 @@
       '<p class="d-title">' + esc(d.ticketTitle || d.ticketId) + '</p>' +
       '<p class="d-repo">' + esc(d.repoId) + ' / ' + esc(d.ticketId) + '</p>' +
       '<dl class="kv">' +
-        '<dt>Status</dt><dd>' + statusPill(d.status) + '</dd>' +
+        '<dt>Status</dt><dd>' + statusPill(d.status, d) + '</dd>' +
+        (waiting(d) ? '<dt>Next step</dt><dd>' + esc(waiting(d).hint) + '</dd>' : '') +
+        (acText(d.acSummary) ? '<dt>Criteria</dt><dd>' + esc(acText(d.acSummary)) + '</dd>' : '') +
         '<dt>Type</dt><dd>' + esc(typeLabel(d)) + (d.prNumber ? ' · PR #' + esc(d.prNumber) : '') + '</dd>' +
         (d.kind === 'pr-review' ? '<dt>Result</dt><dd>' + esc(resultText(d)) + '</dd>' : '') +
         '<dt>Elapsed</dt><dd>' + esc(elapsed(d)) + '</dd>' +

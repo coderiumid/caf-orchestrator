@@ -39,6 +39,7 @@ vi.mock('../../src/infrastructure/reports/report-reader.js', () => ({
 }));
 
 const finalizePipelineRunMock = vi.fn();
+const recordWaitingForMock = vi.fn();
 vi.mock('../../src/infrastructure/db/pipeline-instrumentation.js', () => ({
   repoIdFromCloneUrl: () => 'ganjardbc/umkm-pos',
   recordPipelineStarted: vi.fn(),
@@ -46,6 +47,8 @@ vi.mock('../../src/infrastructure/db/pipeline-instrumentation.js', () => ({
   recordAgentEvent: vi.fn(),
   recordAgentEnd: vi.fn(),
   recordPullRequest: vi.fn(),
+  recordWaitingFor: recordWaitingForMock,
+  recordAcSummary: vi.fn(),
   pivPhaseForAgent: () => 'implement',
 }));
 
@@ -216,6 +219,7 @@ describe('RunAgentPipelineUseCase — CAF-SDD-04c', () => {
       expect(ranAgents()).toEqual(['caf-planner']);
       expect(vcsClient.createPullRequest).not.toHaveBeenCalled();
       expect(vcsClient.updatePullRequest).not.toHaveBeenCalled();
+      expect(recordWaitingForMock).toHaveBeenCalledWith('ganjardbc/umkm-pos', KEY, 'clarify');
       expect(finalizePipelineRunMock).toHaveBeenCalledWith('ganjardbc/umkm-pos', KEY, 'NEEDS_HUMAN');
       expect(notifier.notifyPipelineNeedsHuman).toHaveBeenCalledTimes(1);
       expect(notifier.notifyPipelineComplete).not.toHaveBeenCalled();
@@ -403,6 +407,7 @@ describe('RunAgentPipelineUseCase — CAF-SDD-04c', () => {
       expect(input.body).toContain('/caf-approve-spec');
       expect(input.body).not.toContain('verify-report');
       expect(ticketComments().at(-1)).toContain('https://github.com/ganjardbc/umkm-pos/pull/5');
+      expect(recordWaitingForMock).toHaveBeenCalledWith('ganjardbc/umkm-pos', KEY, 'spec-approval');
       expect(finalizePipelineRunMock).toHaveBeenCalledWith('ganjardbc/umkm-pos', KEY, 'NEEDS_HUMAN');
       expect(notifier.notifyPipelineNeedsHuman).toHaveBeenCalledTimes(1);
       expect(stateOnDisk()).toMatchObject({ waitingFor: 'spec-approval' });

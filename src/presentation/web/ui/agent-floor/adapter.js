@@ -60,10 +60,13 @@ function eventsUrl(run,after){
 
 /* ====== applying events ====== */
 function apply(e){
-  if(e.type==='run_started'){current.startMs=Date.parse(e.startedAt);current.endMs=null;}
+  if(e.type==='run_started'){current.startMs=Date.parse(e.startedAt);current.endMs=null;current.tctx={};}
   if(e.type==='run_finished')current.endMs=Date.parse(e.timestamp);
   current.lastMs=Date.parse(e.timestamp);
-  TR.translate(e,{runStartMs:current.startMs}).forEach(function(call){
+  /* tctx lives for the attempt: the translator notes there that the run is parked on a human, for the PR step that follows. */
+  var tctx=current.tctx||(current.tctx={});
+  tctx.runStartMs=current.startMs;
+  TR.translate(e,tctx).forEach(function(call){
     var fn=call[0],args=call.slice(1);
     if(fn==='setRun'){
       var c=current;

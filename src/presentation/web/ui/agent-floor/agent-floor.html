@@ -51,6 +51,7 @@
             <dt>final_status</dt><dd class="fs"><code id="rfs">NULL</code></dd>
             <dt>Elapsed</dt><dd id="rel">00:00</dd>
             <dt id="rcostk">Cost</dt><dd id="rcost">not available yet</dd>
+            <dt>Criteria</dt><dd id="rac">not reported</dd>
           </dl>
           <ol class="steps" id="steps"></ol>
         </div>
@@ -103,7 +104,8 @@
       <li><b>Manager walking round the desks.</b> While agents are working, the Manager does a round of the workspace and stops behind each one that is busy to look at its screen. With nobody working it joins the idle activities instead. It hurries back to its own desk when its lamp comes on.</li>
       <li><b>Three bars on the screen.</b> Verify: lint, typecheck, test. Yellow is running, green passed, red failed.</li>
       <li><b>Scratching head.</b> A check or gate failed and the agent is retrying. Implementation agents get three verify attempts.</li>
-      <li><b>Flying document.</b> An artifact handed from one agent to the next: requirements.md, verify-report.md, qa-report.md.</li>
+      <li><b>Flying document.</b> An artifact handed from one agent to the next: requirements.md, verify-report.md, validate-report.md.</li>
+      <li><b>Spec step, amber note on the Manager's desk.</b> The Planner's spec went to the Manager and the run is parked, not failed: either the Planner asked BLOCKING questions (answer on the ticket, then trigger it again), or the ticket carries the spec-gate label and a person must give the spec-go-ahead comment on the Draft PR. This page only shows it; it has no controls.</li>
       <li><b>Raised hand, red screen.</b> NEEDS_HUMAN. The pipeline stopped and the lamp on the Manager's desk turns red.</li>
       <li><b>Small flame overhead.</b> ERROR. An exception that BullMQ will retry.</li>
       <li><b>Green lamp on the Manager's desk.</b> A PR is open and waiting for human review. There is no auto-merge.</li>

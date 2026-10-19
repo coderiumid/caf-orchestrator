@@ -27,7 +27,8 @@
     <section class="stats" aria-label="Pipeline overview">
       <div class="stat info"><span class="k">Active runs</span><span class="v" id="stat-running">—</span></div>
       <div class="stat ok"><span class="k">Completed</span><span class="v" id="stat-success">—</span></div>
-      <div class="stat warn"><span class="k">Needs attention</span><span class="v" id="stat-attention">—</span></div>
+      <div class="stat warn"><span class="k">Waiting on you</span><span class="v" id="stat-waiting">—</span></div>
+      <div class="stat bad"><span class="k">Needs attention</span><span class="v" id="stat-attention">—</span></div>
       <div class="stat brand"><span class="k">Recorded spend</span><span class="v" id="stat-cost">—</span></div>
     </section>
 
@@ -45,6 +46,7 @@
           <option value="ALL">All statuses</option>
           <option value="RUNNING">Running</option>
           <option value="SUCCESS">Successful</option>
+          <option value="WAITING">Waiting on you</option>
           <option value="NEEDS_HUMAN">Needs attention</option>
           <option value="ERROR">Error</option>
         </select>

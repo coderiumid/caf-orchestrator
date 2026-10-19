@@ -6,6 +6,8 @@ import {
   type AgentOutcome,
   type ReviewMode,
   type ReviewResult,
+  type WaitingFor,
+  type AcCounts,
 } from './pipeline-run.repository.js';
 import type { VerifyDetails } from '../reports/verify-report-details.js';
 import { parseAgentUsage } from '../agent/agent-cost-parser.js';
@@ -91,6 +93,22 @@ export function recordPipelineStarted(repoId: string, ticketId: string, ticketTi
 export function finalizePipelineRun(repoId: string, ticketId: string, finalStatus: string): void {
   warnOnFailure('finalizePipelineRun', { repoId, ticketId, finalStatus }, () => {
     repository().finalizePipelineRun(pipelineRunId(repoId, ticketId), new Date().toISOString(), finalStatus);
+  });
+  broadcastChange(repoId, ticketId);
+}
+
+/** Marks the run as parked on Clarify / spec approval; the next recordPipelineStarted clears it (CAF-SDD-04h). */
+export function recordWaitingFor(repoId: string, ticketId: string, waitingFor: WaitingFor): void {
+  warnOnFailure('recordWaitingFor', { repoId, ticketId, waitingFor }, () => {
+    repository().setWaitingFor(pipelineRunId(repoId, ticketId), waitingFor);
+  });
+  broadcastChange(repoId, ticketId);
+}
+
+/** Stores the validator's AC counts for the run (CAF-SDD-04h). */
+export function recordAcSummary(repoId: string, ticketId: string, counts: AcCounts): void {
+  warnOnFailure('recordAcSummary', { repoId, ticketId }, () => {
+    repository().setAcSummary(pipelineRunId(repoId, ticketId), counts);
   });
   broadcastChange(repoId, ticketId);
 }

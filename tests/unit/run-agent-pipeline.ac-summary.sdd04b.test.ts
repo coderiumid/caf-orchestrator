@@ -49,6 +49,7 @@ vi.mock('../../src/infrastructure/reports/orchestration-state.js', () => ({
 
 const recordAgentEventMock = vi.fn();
 const recordAgentEndMock = vi.fn();
+const recordAcSummaryMock = vi.fn();
 vi.mock('../../src/infrastructure/db/pipeline-instrumentation.js', () => ({
   repoIdFromCloneUrl: () => 'ganjardbc/umkm-pos',
   recordPipelineStarted: vi.fn(),
@@ -56,6 +57,8 @@ vi.mock('../../src/infrastructure/db/pipeline-instrumentation.js', () => ({
   recordAgentEvent: recordAgentEventMock,
   recordAgentEnd: recordAgentEndMock,
   recordPullRequest: vi.fn(),
+  recordWaitingFor: vi.fn(),
+  recordAcSummary: recordAcSummaryMock,
   pivPhaseForAgent: () => 'implement',
 }));
 
@@ -248,6 +251,13 @@ describe('RunAgentPipelineUseCase — CAF-SDD-04b AC summary and validate gate',
       expect(notifier.notifyPipelineNeedsHuman).toHaveBeenCalledTimes(1);
       expect(notifier.notifyPipelineComplete).not.toHaveBeenCalled();
       expect(recordGateFailureMock).toHaveBeenCalledWith(expect.any(String), 'CAF-123', 'validate', 'deadbeef', expect.anything());
+      expect(recordAcSummaryMock).toHaveBeenCalledWith('ganjardbc/umkm-pos', 'CAF-123', {
+        pass: 0,
+        fail: 0,
+        unverified: 3,
+        total: 3,
+        allUnverified: true,
+      });
     });
 
     it('also stops when a retry after FAIL comes back PASS with everything UNVERIFIED', async () => {
@@ -288,6 +298,13 @@ describe('RunAgentPipelineUseCase — CAF-SDD-04b AC summary and validate gate',
       expect(ranAgents()).toEqual(['caf-planner', 'caf-backend', 'caf-validator', 'caf-reviewer']);
       expect(vcsClient.createPullRequest).not.toHaveBeenCalledWith(expect.objectContaining({ draft: true }));
       expect(notifier.notifyPipelineComplete).toHaveBeenCalledTimes(1);
+      expect(recordAcSummaryMock).toHaveBeenCalledWith('ganjardbc/umkm-pos', 'CAF-123', {
+        pass: 1,
+        fail: 0,
+        unverified: 2, // AC-2 reported UNVERIFIED, AC-3 missing from the report
+        total: 3,
+        allUnverified: false,
+      });
     });
   });
 
@@ -424,6 +441,7 @@ describe('RunAgentPipelineUseCase — CAF-SDD-04b AC summary and validate gate',
       expect(comments().at(-1)).toContain('Agent pipeline complete');
       expect(comments().at(-1)).not.toContain('AC Summary');
       expect(recordGateFailureMock).not.toHaveBeenCalled();
+      expect(recordAcSummaryMock).not.toHaveBeenCalled();
     });
 
     it('AC-1: a caf-qa gate Draft PR carries no summary either', async () => {
