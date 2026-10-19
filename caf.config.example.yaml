@@ -117,7 +117,6 @@ agents:
   # The defaults below omit npx, pnpm dlx, pnpm exec, yarn, bun and make on purpose:
   # Claude Code does not strip them as wrappers, so allowing them would allow any
   # command. Add entries here if a repo needs them.
-  # Residual risk: the GitHub token stays in the workspace .git/config (origin URL).
   validator:
     restrictBash: true
     allowedCommands:
