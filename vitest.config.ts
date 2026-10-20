@@ -9,7 +9,7 @@ export default defineConfig({
       provider: 'v8',
       reporter: ['text', 'json', 'html'],
       include: ['src/**/*.ts'],
-      exclude: ['src/worker.ts', 'src/presentation/web/server.ts'],
+      exclude: ['src/worker.ts', 'src/presentation/web/server.ts', 'src/tui/index.ts', 'src/tui/presentation/app.ts', 'src/tui/presentation/widgets/**'],
     },
     testTimeout: 15_000,
   },

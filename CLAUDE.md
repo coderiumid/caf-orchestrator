@@ -22,6 +22,8 @@ pnpm test:coverage  # vitest with v8 coverage
 pnpm db:migrate     # create/upgrade the SQLite run-history db at db.path
 ```
 
+`pnpm tui` opens a terminal control panel (start/stop server + worker, live run monitoring) — see `docs/tui.md`. Code lives in `src/tui/` (neo-blessed) in domain / application / infrastructure / presentation layers (rules enforced by `tests/unit/tui-architecture.test.ts`, layout in `docs/tui.md`); it must never import `config/index.ts`, which throws without a full env. `pnpm tunnel` (`src/tunnel/`, settings `TUNNEL_NAME`/`TUNNEL_URL`/`TUNNEL_TARGET_URL` in `.env`, also controlled from the TUI) runs the Cloudflare tunnel for webhooks.
+
 Single test file: `pnpm vitest run tests/unit/task-router.test.ts`
 Single test by name: `pnpm vitest run -t "test name"`
 
