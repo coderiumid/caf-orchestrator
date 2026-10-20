@@ -14,6 +14,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "tunnel": "tsx src/tunnel/cli.ts",
+    "tunnle": "tsx src/tunnel/cli.ts",
+    "start:tunnel": "node dist/tunnel/cli.js",
     "db:migrate": "tsx src/infrastructure/db/migrate.ts"
   },
   "engines": {
