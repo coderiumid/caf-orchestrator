@@ -71,3 +71,9 @@ html,body{height:100%}
   .stagep{height:62vh;min-height:360px}
   .hd-r{margin-left:0}
 }
+
+/* ===== header spend (replaces the title when cost data exists) ===== */
+.spend{display:flex;flex-wrap:wrap;gap:4px 22px;margin:0;align-items:baseline}
+.spend dt{font-size:11px;color:var(--ink2);text-transform:uppercase;letter-spacing:.04em}
+.spend dd{margin:0;font:600 18px/1.2 var(--display);font-variant-numeric:tabular-nums}
+.spend>div{display:grid;gap:1px}

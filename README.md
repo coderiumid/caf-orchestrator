@@ -50,6 +50,8 @@ src/
 ├── infrastructure/  adapters — git, queue, Linear, GitHub, agent spawning, reports,
 │                    SQLite run history, filesystem watcher, Telegram
 ├── presentation/    Fastify app, routes, DTOs, dashboard UI
+├── tui/             terminal control panel (`pnpm tui`), own domain/application/infrastructure/presentation layers
+├── tunnel/          Cloudflare tunnel runner (`pnpm tunnel`)
 └── config/          zod-validated config (.env + caf.config.yaml), project registry
 ```
 
@@ -60,6 +62,17 @@ See [CLAUDE.md](./CLAUDE.md) for a detailed walkthrough of the pipeline stages, 
 A live pipeline-monitoring dashboard (PIV phase, retry counts, cost, artifact links, PR review runs, real-time via SSE) is available at `/dashboard`, with an animated "Agent Floor" view selectable via `DASHBOARD_DEFAULT_VIEW`. It is off by default and behind a login page. See [docs/dashboard.md](./docs/dashboard.md) for access and how to read it.
 
 Run history is stored in a SQLite file (`db.path`, default `./data/caf-dashboard.sqlite`), written by the worker and read by the web server.
+
+### Terminal UI
+
+`pnpm tui` opens a terminal control panel for local/ops use. It shows the same run data as the dashboard without a browser, login or running web server, and can start and stop the web server, worker and Cloudflare tunnel for you.
+
+- Header with process status (server, worker, tunnel) and Redis / DB / HTTP health, plus queue counts.
+- Summary cards (active, completed, waiting on you, needs attention, spend), a run list, and a text version of the Agent Floor for the selected run.
+- Live logs from the managed processes, and a command palette (`ctrl+p`) with every action.
+- Failed-job list with retry, and webhook URLs copied from `TUNNEL_URL`.
+
+It needs an interactive terminal, `.env`, `caf.config.yaml` and a reachable Redis. Redis is only shown as up/down, not managed. See [docs/tui.md](./docs/tui.md) for layout, keys, the tunnel and the code layout.
 
 ## Requirements
 
@@ -95,6 +108,7 @@ Then fill in both files (see [Configuration](#configuration)) and point the webh
 ```bash
 pnpm dev            # web server
 pnpm dev:worker     # worker (separate process)
+pnpm tui            # or: terminal panel that starts/stops both and shows runs live
 ```
 
 Production (bare):
@@ -115,6 +129,8 @@ Production (Docker): `docker-compose.yml` runs `redis`, `api` and `worker` from 
 |---|---|
 | `pnpm dev` | run web server (tsx, no build) |
 | `pnpm dev:worker` | run worker (tsx, no build) |
+| `pnpm tui` / `pnpm start:tui` | terminal control panel (tsx / compiled), see [docs/tui.md](./docs/tui.md) |
+| `pnpm tunnel` / `pnpm start:tunnel` | run the Cloudflare tunnel for local webhooks (tsx / compiled) |
 | `pnpm build` | compile TypeScript to `dist/` |
 | `pnpm start` / `pnpm start:worker` | run compiled output |
 | `pnpm lint` | eslint over `src` |
