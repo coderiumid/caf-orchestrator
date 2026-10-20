@@ -4,6 +4,37 @@ All notable changes to caf-orchestrator are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/) (pre-1.0: minor and patch releases may still change behavior).
 
+## [0.2.0] - 2026-10-20
+
+### Added
+- Terminal UI, `pnpm tui` (`pnpm start:tui` after a build): a control panel that
+  starts and stops the web server, worker and Cloudflare tunnel, shows queue and
+  Redis / DB / HTTP health, summary cards, the run list, a text version of the
+  Agent Floor, live logs, a command palette and a failed-job list with retry.
+  It needs no browser, login or running web server. See `docs/tui.md`.
+- Cloudflare tunnel runner, `pnpm tunnel` (`pnpm start:tunnel` after a build),
+  so Linear and GitHub webhooks can reach a local machine. Settings:
+  `TUNNEL_NAME`, `TUNNEL_URL`, `TUNNEL_TARGET_URL`, `CLOUDFLARED_BIN` in `.env`.
+  Also controllable from the TUI.
+- Dashboard login page at `/dashboard/login` with a signed, HttpOnly session
+  cookie (12 hours) and a **Log out** button.
+- `DASHBOARD_DEFAULT_VIEW` (`dashboard` | `agent-floor`) in `.env` chooses what
+  `/dashboard` shows.
+- Agent Floor header shows total cost and average cost per run for the runs in
+  the selected repo (runs without a recorded cost are left out of the average).
+
+### Changed
+- The dashboard no longer uses browser Basic Auth. `dashboard.basicAuthUser` and
+  `DASHBOARD_BASIC_AUTH_PASSWORD` are still the credentials, but they are now
+  entered on the login page. Changing either invalidates every session. Behind a
+  reverse proxy, also proxy `/dashboard/login`, `/dashboard/logout` and
+  `/dashboard/floor/*`, and send `X-Forwarded-Proto: https` so the cookie gets
+  the `Secure` flag.
+- The Agent Floor is no longer served at `/dashboard/agent-floor`. `GET /dashboard`
+  serves either view; its files are under `/dashboard/floor/*`.
+- Docker image copies the login page's static files.
+- README documents the TUI and the tunnel.
+
 ## [0.1.1] - 2026-10-20
 
 ### Added
