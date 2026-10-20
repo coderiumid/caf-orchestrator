@@ -32,15 +32,23 @@ counts, cost, artifacts), not just raw job-queue state.
    `http://localhost:3030/dashboard` for local dev — check `server.port` in
    `caf.config.yaml` for the real port).
 
-4. The browser will show its native HTTP Basic Auth prompt. Use the
-   `dashboard.basicAuthUser` / `DASHBOARD_BASIC_AUTH_PASSWORD` values from
-   step 1. Once entered, the browser remembers them for the rest of the
-   session; you won't be asked again for API/SSE calls the page makes in
-   the background.
+4. You are redirected to the login page (`/dashboard/login`). Sign in with
+   the `dashboard.basicAuthUser` / `DASHBOARD_BASIC_AUTH_PASSWORD` values from
+   step 1. A signed, HttpOnly session cookie (12 hours) then covers the page,
+   `/api/pipelines*` and the SSE stream; **Log out** in the header clears it.
+   Changing the user or password invalidates every session.
+
+5. Optional: set `DASHBOARD_DEFAULT_VIEW` in `.env` to choose what `/dashboard`
+   shows: `dashboard` (pipeline monitoring, the default) or `agent-floor`
+   (the Agent Floor, below). It is one route; there is no separate
+   Agent Floor URL.
 
 If you're behind a reverse proxy, make sure `/dashboard`, `/api/pipelines*`,
-and `/api/events/stream` are all proxied and served over HTTPS — Basic Auth
-credentials are sent in plaintext-equivalent (base64) over the connection.
+and `/api/events/stream` are all proxied and served over HTTPS — the login
+form and session cookie are otherwise sent in clear text. Also proxy
+`/dashboard/login`, `/dashboard/logout` and `/dashboard/floor/*` (all under
+the `/dashboard` prefix). Send `X-Forwarded-Proto: https` so the cookie gets
+the `Secure` flag.
 
 ## Reading the table
 
@@ -172,14 +180,14 @@ approve, retry, or stop control anywhere on it.
 
 ### Accessing it
 
-`http://<host>:<port>/dashboard/agent-floor`, or the **Agent Floor** link in
-the dashboard header. Same on/off switch (`dashboard.enabled`) and same Basic
-Auth credentials as the dashboard.
+Set `DASHBOARD_DEFAULT_VIEW=agent-floor` and open `http://<host>:<port>/dashboard`.
+Same on/off switch (`dashboard.enabled`) and same login as the monitoring view.
+The old `/dashboard/agent-floor` route no longer exists.
 
 Behind a reverse proxy nothing new needs routing as long as `/dashboard` and
 `/api/pipelines` are proxied **by prefix**: the page lives under `/dashboard/`
 and its data endpoint under `/api/pipelines/`. If your proxy rules match those
-paths exactly instead, add `/dashboard/agent-floor*`.
+paths exactly instead, add `/dashboard/floor/*`.
 
 The page loads its two fonts from Google Fonts (as the approved prototype
 did). Without internet access it falls back to system fonts; nothing else
@@ -191,7 +199,7 @@ depends on an external host.
 |---|---|---|
 | **Live** | Open the page. With no manual choice it follows whichever run is `RUNNING` in the selected repo; with none running, everyone sits at their desk drinking coffee. | Real, as it happens. |
 | **Replay** | Click a finished run in the **Run** list. | Real, read back from the database and played from the start. Costs nothing and triggers nothing. |
-| **Demo** | `/dashboard/agent-floor?demo=1`, or the **Demo** button. | Scripted mock scenarios. Makes no data request at all; marked "Sample data". |
+| **Demo** | `/dashboard?demo=1`, or the **Demo** button. | Scripted mock scenarios. Makes no data request at all; marked "Sample data". |
 
 **Pause** and **1× / 2× / 4×** control animation and replay speed. Replay
 compresses real time 30× (a gap between two events plays as 0.35 to 3.5
@@ -386,22 +394,21 @@ three modes behaving the same: `render.js` draws and never fetches;
 `translate.js` is a pure event-to-calls mapping; `adapter.js` is the only file
 that talks to the server (GET only); `demo.js` drives the same public API
 (`window.AgentFloor`) from scripted scenarios. They are plain static files —
-no build step — served by `routes/agent-floor-ui.ts`.
+no build step — served by `routes/dashboard-ui.ts` under `/dashboard/floor/`.
 
 ### If the page shows "Disconnected"
 
 The connection badge reads **Connected** or **Disconnected, retrying**; the
-browser reconnects on its own. The SSE stream is authenticated by a one-hour
-cookie that the page sets and that each successful (re)connect renews. If the
-cookie has lapsed anyway — a laptop asleep for longer than that — the page
-reloads itself once to go back through Basic Auth.
+browser reconnects on its own. The SSE stream is authenticated by the login
+session cookie. If the session has expired — a laptop asleep for longer than
+12 hours — the page reloads itself once and lands on the login page.
 
 ## Design system
 
 The dashboard and the Agent Floor share one look: the retro style approved for
 the Agent Floor. It lives in a single stylesheet,
 `src/presentation/web/ui/shared/design-system.css`, served at
-`/dashboard/ds.css` (same Basic Auth) and linked by both pages **before** their
+`/dashboard/ds.css` (public, so the login page can use it) and linked by both pages **before** their
 own stylesheet. `dashboard.css` and `agent-floor.css` hold only page-specific
 layout; anything two pages would both use belongs in the shared file.
 

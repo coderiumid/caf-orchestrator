@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>CAF Login</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Pixelify+Sans:wght@500;600&display=swap">
+<link rel="stylesheet" href="/dashboard/ds.css">
+<link rel="stylesheet" href="/dashboard/login.css">
+</head>
+<body>
+<main class="login">
+  <section class="panel" aria-label="Sign in">
+    <div class="ph">
+      <img class="logo" alt="CAF" width="36" height="36" src="/dashboard/logo.png">
+      <h2>Sign in</h2>
+    </div>
+    <form id="login-form" class="pb form" autocomplete="on">
+      <label for="username">Username</label>
+      <input id="username" name="username" class="field" type="text" autocomplete="username" required autofocus>
+      <label for="password">Password</label>
+      <input id="password" name="password" class="field" type="password" autocomplete="current-password" required>
+      <p id="login-error" class="err" role="alert" hidden></p>
+      <button id="login-submit" class="btn primary" type="submit">Sign in</button>
+    </form>
+  </section>
+</main>
+<script src="/dashboard/login.js" defer></script>
+</body>
+</html>

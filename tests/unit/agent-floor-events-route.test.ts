@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { sessionCookie } from '../helpers/dashboard-session.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -23,7 +24,7 @@ vi.mock('../../src/config/index.js', () => ({
   },
 }));
 
-const AUTH = { authorization: `Basic ${Buffer.from('admin:correct-horse').toString('base64')}` };
+const AUTH = { cookie: sessionCookie('admin', 'correct-horse') };
 const UMKM = 'ganjardbc/umkm-pos';
 const CODERIUM = 'ganjardbc/coderium-web-v2';
 const url = (repoId: string, ticketId: string, after?: string): string =>
@@ -89,13 +90,13 @@ describe('GET /api/pipelines/:repoId/:ticketId/floor-events', () => {
     };
   }
 
-  it('rejects a client with no auth, or wrong credentials (401)', async () => {
+  it('rejects a client with no session, or a session signed with another password (401)', async () => {
     const w = await writer();
     w.startRun(UMKM, 'GAN-1');
     const app = await buildTestApp();
 
     expect((await app.inject({ method: 'GET', url: url(UMKM, 'GAN-1') })).statusCode).toBe(401);
-    const wrong = { authorization: `Basic ${Buffer.from('admin:nope').toString('base64')}` };
+    const wrong = { cookie: sessionCookie('admin', 'nope') };
     expect((await app.inject({ method: 'GET', url: url(UMKM, 'GAN-1'), headers: wrong })).statusCode).toBe(401);
 
     await app.close();

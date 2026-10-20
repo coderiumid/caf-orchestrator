@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { sessionCookie } from '../helpers/dashboard-session.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -16,7 +17,7 @@ vi.mock('../../src/config/index.js', () => ({
   },
 }));
 
-const AUTH_HEADER = `Basic ${Buffer.from('admin:correct-horse').toString('base64')}`;
+const SESSION_COOKIE = sessionCookie('admin', 'correct-horse');
 
 describe('GET /api/pipelines*', () => {
   let tmpDir: string;
@@ -100,7 +101,7 @@ describe('GET /api/pipelines*', () => {
     const response = await app.inject({
       method: 'GET',
       url: '/api/pipelines?repoId=ganjardbc%2Fumkm-pos',
-      headers: { authorization: AUTH_HEADER },
+      headers: { cookie: SESSION_COOKIE },
     });
     expect(response.statusCode).toBe(200);
     const body = response.json() as Array<Record<string, unknown>>;
@@ -124,7 +125,7 @@ describe('GET /api/pipelines*', () => {
     const response = await app.inject({
       method: 'GET',
       url: '/api/pipelines?repoId=ganjardbc%2Fother-repo',
-      headers: { authorization: AUTH_HEADER },
+      headers: { cookie: SESSION_COOKIE },
     });
     const body = response.json() as Array<Record<string, unknown>>;
     expect(body.map((r) => r.ticketId)).toEqual(['CAF-9']);
@@ -139,7 +140,7 @@ describe('GET /api/pipelines*', () => {
     const response = await app.inject({
       method: 'GET',
       url: '/api/pipelines/ganjardbc%2Fumkm-pos/CAF-1',
-      headers: { authorization: AUTH_HEADER },
+      headers: { cookie: SESSION_COOKIE },
     });
     expect(response.statusCode).toBe(200);
     const body = response.json() as Record<string, unknown>;
@@ -205,7 +206,7 @@ describe('GET /api/pipelines*', () => {
     const response = await app.inject({
       method: 'GET',
       url: '/api/pipelines/ganjardbc%2Fumkm-pos/CAF-5',
-      headers: { authorization: AUTH_HEADER },
+      headers: { cookie: SESSION_COOKIE },
     });
     expect(response.statusCode).toBe(200);
     const body = response.json() as Record<string, unknown>;
@@ -226,7 +227,7 @@ describe('GET /api/pipelines*', () => {
     const response = await app.inject({
       method: 'GET',
       url: '/api/pipelines/ganjardbc%2Fumkm-pos/CAF-1',
-      headers: { authorization: AUTH_HEADER },
+      headers: { cookie: SESSION_COOKIE },
     });
     const body = response.json() as Record<string, unknown>;
     expect(body.totalCostUsd).toBeNull();
@@ -241,7 +242,7 @@ describe('GET /api/pipelines*', () => {
     const response = await app.inject({
       method: 'GET',
       url: '/api/pipelines/ganjardbc%2Fumkm-pos/CAF-DOES-NOT-EXIST',
-      headers: { authorization: AUTH_HEADER },
+      headers: { cookie: SESSION_COOKIE },
     });
     expect(response.statusCode).toBe(404);
 
@@ -281,7 +282,7 @@ describe('GET /api/pipelines*', () => {
       db.close();
     }
 
-    const get = async (url: string, headers: Record<string, string> = { authorization: AUTH_HEADER }) => {
+    const get = async (url: string, headers: Record<string, string> = { cookie: SESSION_COOKIE }) => {
       const app = await buildTestApp();
       const response = await app.inject({ method: 'GET', url, headers });
       await app.close();

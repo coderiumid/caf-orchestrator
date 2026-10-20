@@ -23,7 +23,8 @@ if(params.get('demo')==='1'){window.AgentFloorDemo.start();return;}
 var STATUS={RUNNING:['run','Running'],SUCCESS:['success','SUCCESS'],NEEDS_HUMAN:['needs','NEEDS_HUMAN'],ERROR:['error','ERROR']};
 var LIVE_GAP_MS=250;
 
-var runs=[],repo=params.get('repo')||null;
+var ALL='ALL';
+var runs=[],repo=params.get('repo')||ALL;
 /* current: the run being shown.
    mode 'live' follows a running run; 'replay' plays a run back from the start.
    pinned: chosen by hand, so a newly active run does not take over. */
@@ -33,9 +34,8 @@ var listEl=$('#scen'),repoEl=$('#repo'),connEl=$('#conn');
 
 /* ====== server (read-only) ====== */
 function reloadOnce(){
-  /* 401: the SSE cookie or the Basic Auth session is no longer valid.
-     Reloading the page goes back through Basic Auth and sets a fresh cookie.
-     Rate-limited so it cannot loop if the server keeps refusing. */
+  /* 401: the login session is no longer valid. Reloading the page redirects
+     to the login page. Rate-limited so it cannot loop if the server keeps refusing. */
   var last=0;
   try{last=+sessionStorage.getItem('caf-floor-reload')||0;}catch{}
   if(Date.now()-last<30000)return;
@@ -147,7 +147,7 @@ function poll(){
 }
 
 /* ====== run list and repo selector ====== */
-function inRepo(){return runs.filter(function(r){return r.repoId===repo;});}
+function inRepo(){return repo===ALL?runs:runs.filter(function(r){return r.repoId===repo;});}
 function isCurrent(r){return !!current&&current.runId===r.runId;}
 function kindLabel(r){
   if(r.kind!=='pr-review')return '';
@@ -155,11 +155,9 @@ function kindLabel(r){
 }
 function renderRepoOptions(){
   var list=runs.map(function(r){return r.repoId;}).filter(function(v,i,a){return a.indexOf(v)===i;}).sort();
-  if(list.indexOf(repo)===-1){
-    var active=runs.filter(function(r){return r.status==='RUNNING';})[0];
-    repo=active?active.repoId:(list[0]||null);
-  }
+  if(repo!==ALL&&list.indexOf(repo)===-1)repo=ALL;
   repoEl.innerHTML='';
+  var all=document.createElement('option');all.value=ALL;all.textContent='All repositories';all.selected=repo===ALL;repoEl.appendChild(all);
   list.forEach(function(v){
     var o=document.createElement('option');o.value=v;o.textContent=v;o.selected=v===repo;repoEl.appendChild(o);
   });

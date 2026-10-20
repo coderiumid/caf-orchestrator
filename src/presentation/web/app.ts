@@ -7,7 +7,6 @@ import { webhookRoutes } from './routes/webhooks.js';
 import { eventsRoutes } from './routes/events.js';
 import { pipelinesRoutes } from './routes/pipelines.js';
 import { dashboardUiRoutes } from './routes/dashboard-ui.js';
-import { agentFloorUiRoutes } from './routes/agent-floor-ui.js';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -103,7 +102,6 @@ export function buildApp() {
   app.register(eventsRoutes);
   app.register(pipelinesRoutes);
   app.register(dashboardUiRoutes);
-  app.register(agentFloorUiRoutes);
 
   return app;
 }

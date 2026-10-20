@@ -1,0 +1,11 @@
+/* Login page. Tokens and components (.hd, .panel, .field, .btn, .ver) come
+   from ../shared/design-system.css (/dashboard/ds.css); only layout is here. */
+.login{width:min(420px,100%);min-height:100vh;min-height:100dvh;margin:0 auto;display:grid;align-content:center;gap:12px;padding:14px}
+.login .hd{flex-direction:column;justify-content:center;text-align:center;gap:8px;padding-bottom:6px}
+.login .logo{width:42px;height:42px}
+.login h1{font-size:28px}
+.form{display:grid;gap:8px}
+.form label{font-size:12px;font-weight:500;color:var(--ink2)}
+.form .btn{margin-top:8px;padding:8px 12px}
+.form .btn:disabled{opacity:.6;cursor:progress}
+.err{margin:0;padding:6px 10px;border:2px solid var(--bad);color:var(--bad);background:color-mix(in srgb,var(--bad) 14%,var(--bg));font-size:13px;font-weight:600}
