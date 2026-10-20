@@ -3,6 +3,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { get, type IncomingMessage } from 'node:http';
 import { eventsRoutes } from '../../src/presentation/web/routes/events.js';
 import { eventBroadcaster, type DashboardEvent } from '../../src/presentation/web/sse/event-broadcaster.js';
+import { sessionCookie } from '../helpers/dashboard-session.js';
 
 // CAF-DASHBOARD-01 Task 4 verify: "buka 2 SSE client, ubah state.json di 2
 // repo berbeda, konfirmasi tiap client terima event dengan repoId yang
@@ -12,12 +13,10 @@ import { eventBroadcaster, type DashboardEvent } from '../../src/presentation/we
 // receives the broadcast event with the correct repoId.
 //
 // Auth: EventSource cannot set an Authorization header, so this route checks
-// the `caf_dashboard_auth` cookie that the dashboard page handler sets after
-// Basic Auth succeeds (see events.ts / dashboard-ui.ts) — not a Basic header.
-// The value matches caf.config.yaml's `dashboard.basicAuthUser: admin` and
-// tests/setup.ts's default DASHBOARD_BASIC_AUTH_PASSWORD.
-const AUTH_VALUE = Buffer.from('admin:test-dashboard-password').toString('base64');
-const AUTH_COOKIE = `caf_dashboard_auth=${AUTH_VALUE}`;
+// the login session cookie (see events.ts / auth/dashboard-session.ts).
+// The user matches caf.config.yaml's `dashboard.basicAuthUser: admin` and the
+// password tests/setup.ts's default DASHBOARD_BASIC_AUTH_PASSWORD.
+const AUTH_COOKIE = sessionCookie('admin', 'test-dashboard-password');
 
 function connectSse(port: number, cookie = AUTH_COOKIE): Promise<{ res: IncomingMessage; frames: () => string[] }> {
   return new Promise((resolve, reject) => {
@@ -114,22 +113,12 @@ describe('GET /api/events/stream', () => {
     expect(await statusFor(port, {})).toBe(401);
   });
 
-  it('rejects a wrong cookie value, and a Basic Authorization header without the cookie (401)', async () => {
-    expect(await statusFor(port, { cookie: 'caf_dashboard_auth=nope' })).toBe(401);
-    expect(await statusFor(port, { authorization: `Basic ${AUTH_VALUE}` })).toBe(401);
-  });
-
-  it('renews the auth cookie on every successful connect (CAF-DASHBOARD-02)', async () => {
-    const client = await connectSse(port);
-    const setCookie = client.res.headers['set-cookie']?.join('; ') ?? '';
-
-    expect(client.res.statusCode).toBe(200);
-    expect(setCookie).toContain(AUTH_COOKIE);
-    expect(setCookie).toContain('Max-Age=3600');
-    expect(setCookie).toContain('Path=/api');
-    expect(setCookie).toContain('HttpOnly');
-
-    client.res.destroy();
+  it('rejects a bad, expired or wrongly signed session, and a Basic Authorization header without the cookie (401)', async () => {
+    expect(await statusFor(port, { cookie: 'caf_dashboard_session=nope' })).toBe(401);
+    expect(await statusFor(port, { cookie: sessionCookie('admin', 'wrong-password') })).toBe(401);
+    expect(await statusFor(port, { cookie: sessionCookie('admin', 'test-dashboard-password', Date.now() - 1000) })).toBe(401);
+    const basic = Buffer.from('admin:test-dashboard-password').toString('base64');
+    expect(await statusFor(port, { authorization: `Basic ${basic}` })).toBe(401);
   });
 
   it('stops the broadcaster from writing to a client after it disconnects', async () => {

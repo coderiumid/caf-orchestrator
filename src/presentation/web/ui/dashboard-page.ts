@@ -7,7 +7,7 @@ import { join } from 'node:path';
  * as agent-floor/) read once at startup — nothing here is
  * request-specific, so there's no per-request templating to do.
  * dashboard-ui.ts serves the HTML at `/dashboard` and the CSS/JS at
- * `/dashboard/app.css` / `/dashboard/app.js`, all behind the same basic-auth
+ * `/dashboard/app.css` / `/dashboard/app.js`, all behind the login session
  * hook. Because these are referenced via external <link>/<script src> tags
  * (not inlined), helmet's default CSP (`script-src 'self'`, `style-src 'self'`)
  * already allows them — no CSP nonce plumbing needed, unlike the old

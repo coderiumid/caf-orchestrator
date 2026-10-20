@@ -265,7 +265,7 @@ window.AgentFloorDemo={
     $('#lph').textContent='Scenarios';$('#lps').setAttribute('aria-label','Scenarios');
     $('#ver').textContent='demo';$('#mock').hidden=false;
     $('#helpnote').textContent='Every event, time, and cost in demo mode is produced by the scenario script, not real data.';
-    var link=$('#modelink');link.textContent='Live';link.href='/dashboard/agent-floor';
+    var link=$('#modelink');link.textContent='Live';link.href='/dashboard';
     buildScen();
     runScenario('smooth');
   }

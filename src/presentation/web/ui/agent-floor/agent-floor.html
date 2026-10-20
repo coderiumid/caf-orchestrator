@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Pixelify+Sans:wght@500;600&display=swap">
 <link rel="stylesheet" href="/dashboard/ds.css">
-<link rel="stylesheet" href="/dashboard/agent-floor/app.css">
+<link rel="stylesheet" href="/dashboard/floor/app.css">
 </head>
 <body>
 <div class="app">
@@ -24,8 +24,8 @@
         <button type="button" data-s="4" aria-pressed="false">4×</button>
       </div>
       <button class="btn" id="helpb" type="button">Animation guide</button>
-      <a class="btn" id="modelink" href="/dashboard/agent-floor?demo=1">Demo</a>
-      <a class="btn primary" href="/dashboard">Dashboard</a>
+      <a class="btn" id="modelink" href="/dashboard?demo=1">Demo</a>
+      <button class="btn primary js-logout" type="button">Log out</button>
       <div class="stt"><span class="k">Status</span><span class="mock" id="mock" hidden>Sample data</span><span class="conn" id="conn" role="status" hidden>Connecting</span><span class="pill idle" id="rpill" aria-live="polite">Waiting for ticket</span></div>
     </div>
   </header>
@@ -115,9 +115,10 @@
   </div>
 </dialog>
 
-<script src="/dashboard/agent-floor/render.js" defer></script>
-<script src="/dashboard/agent-floor/translate.js" defer></script>
-<script src="/dashboard/agent-floor/demo.js" defer></script>
-<script src="/dashboard/agent-floor/adapter.js" defer></script>
+<script src="/dashboard/floor/render.js" defer></script>
+<script src="/dashboard/floor/translate.js" defer></script>
+<script src="/dashboard/floor/demo.js" defer></script>
+<script src="/dashboard/floor/adapter.js" defer></script>
+<script src="/dashboard/session.js" defer></script>
 </body>
 </html>

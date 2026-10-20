@@ -77,6 +77,7 @@ export const VALIDATOR_KEPT_ENV_KEYS = [
   'LOG_LEVEL',
   'ENABLE_PIPELINE_TRIGGER',
   'AGENT_SKIP_ENABLED',
+  'DASHBOARD_DEFAULT_VIEW',
   'OPENAI_API_KEY',
   'CLAUDE_CODE_OAUTH_TOKEN',
 ] as const;
@@ -169,6 +170,10 @@ export const envSchema = z.object({
   // only when dashboard.enabled is true in caf.config.yaml — see superRefine
   // below, same pairing pattern as TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID.
   DASHBOARD_BASIC_AUTH_PASSWORD: z.string().min(1).optional(),
+
+  // Which UI GET /dashboard serves: the pipeline monitoring dashboard or the
+  // Agent Floor. Only read when dashboard.enabled is true.
+  DASHBOARD_DEFAULT_VIEW: z.enum(['dashboard', 'agent-floor']).default('dashboard'),
 });
 
 // Structural (non-secret) config — sourced from caf.config.yaml.
@@ -311,7 +316,7 @@ const yamlSchema = z.object({
     maxOrchestrationRetries: z.coerce.number().int().nonnegative().default(2),
   }).default(() => ({ maxOrchestrationRetries: 2 })),
 
-  // Pipeline monitoring dashboard at /dashboard, basic-auth gated. Off by
+  // Pipeline monitoring dashboard at /dashboard, behind a login page. Off by
   // default — fail-safe, must be explicitly enabled.
   dashboard: z.object({
     enabled: z.boolean().default(false),

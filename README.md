@@ -57,7 +57,7 @@ See [CLAUDE.md](./CLAUDE.md) for a detailed walkthrough of the pipeline stages, 
 
 ### Dashboard
 
-A live pipeline-monitoring dashboard (PIV phase, retry counts, cost, artifact links, PR review runs, real-time via SSE) is available at `/dashboard`, with an animated "Agent Floor" view at `/dashboard/agent-floor`. It is off by default and basic-auth gated. See [docs/dashboard.md](./docs/dashboard.md) for access and how to read it.
+A live pipeline-monitoring dashboard (PIV phase, retry counts, cost, artifact links, PR review runs, real-time via SSE) is available at `/dashboard`, with an animated "Agent Floor" view selectable via `DASHBOARD_DEFAULT_VIEW`. It is off by default and behind a login page. See [docs/dashboard.md](./docs/dashboard.md) for access and how to read it.
 
 Run history is stored in a SQLite file (`db.path`, default `./data/caf-dashboard.sqlite`), written by the worker and read by the web server.
 

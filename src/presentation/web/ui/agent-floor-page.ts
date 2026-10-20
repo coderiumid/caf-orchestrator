@@ -4,7 +4,8 @@ import { join } from 'node:path';
 /**
  * CAF-DASHBOARD-02: the Agent Floor page as plain static files read once at
  * startup, same approach as dashboard-page.ts (no build step, no per-request
- * templating). agent-floor-ui.ts serves them under /dashboard/agent-floor.
+ * templating). dashboard-ui.ts serves them under /dashboard/floor, and the page itself at
+ * /dashboard when DASHBOARD_DEFAULT_VIEW=agent-floor.
  *
  * Everything is referenced through external <link>/<script src> tags, so
  * helmet's default CSP (`script-src 'self'`, no inline scripts or inline
@@ -26,7 +27,7 @@ function asset(file: string, contentType: string): AgentFloorAsset {
 
 const page = asset('agent-floor.html', 'text/html');
 
-/** Keyed by the file name in the URL (`/dashboard/agent-floor/<name>`). */
+/** Keyed by the file name in the URL (`/dashboard/floor/<name>`). */
 const assets: Readonly<Record<string, AgentFloorAsset>> = {
   'app.css': asset('agent-floor.css', 'text/css'),
   // render: world/canvas/panels. translate: contract event → render calls.

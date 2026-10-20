@@ -306,7 +306,11 @@
 
   function load() {
     return fetch('/api/pipelines')
-      .then(function (r) { if (!r.ok) throw new Error(); return r.json(); })
+      .then(function (r) {
+        if (r.status === 401) { location.assign('/dashboard/login'); throw new Error('401'); }
+        if (!r.ok) throw new Error();
+        return r.json();
+      })
       .then(function (data) {
         runs = data;
         renderRepoOptions();
@@ -328,7 +332,7 @@
   function connect() {
     var source = new EventSource('/api/events/stream');
     source.onopen = function () { setConnectionStatus('live'); };
-    source.onerror = function () { setConnectionStatus('down'); };
+    source.onerror = function () { setConnectionStatus('down'); load(); };
     source.onmessage = function () {
       load();
       if (selected) openDetail(selected);
