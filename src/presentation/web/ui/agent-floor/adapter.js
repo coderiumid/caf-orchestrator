@@ -163,9 +163,22 @@ function renderRepoOptions(){
   });
   $('#lpt').hidden=list.length===0;
 }
+/* Spend of the runs in view, from totalCostUsd on /api/pipelines. Runs with no
+   cost recorded (null) are left out of the average, not counted as free. */
+function costsOf(list){return list.map(function(r){return r.totalCostUsd;}).filter(function(c){return typeof c==='number';});}
+function sumOf(costs){return costs.reduce(function(a,c){return a+c;},0);}
+function renderSpend(list){
+  var costs=costsOf(list);
+  if(!costs.length){$('#spt').textContent='$0';$('#spa').textContent='$0';return;}
+  var sum=sumOf(costs);
+  $('#spt').textContent=money(sum);
+  $('#spa').textContent=money(sum/costs.length)+' ('+costs.length+' run'+(costs.length>1?'s':'')+')';
+}
+function money(v){return v===0?'$0':'$'+v.toFixed(4);}
 function renderRuns(){
   var list=inRepo();
   $('#scn').textContent=list.length+' run';
+  renderSpend(list);
   listEl.innerHTML='';
   if(!list.length){
     var p=document.createElement('p');p.className='lp-empty';

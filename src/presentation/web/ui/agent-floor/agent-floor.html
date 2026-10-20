@@ -14,9 +14,17 @@
 <div class="app">
   <header class="hd">
     <img class="logo" alt="CAF" width="36" height="36" src="/dashboard/logo.png">
-    <h1>CAF Agent Floor</h1>
-    <span class="ver" id="ver">live</span>
+    <dl class="spend" id="spend" aria-label="Spend">
+      <div><dt>Total cost</dt><dd id="spt">$0</dd></div>
+      <div><dt>Avg cost / run</dt><dd id="spa">$0</dd></div>
+    </dl>
     <div class="hd-r">
+      <div class="stt">
+        <span class="ver" id="ver">live</span>
+        <span class="mock" id="mock" hidden>Sample data</span>
+        <span class="conn" id="conn" role="status" hidden>Connecting</span>
+        <span class="pill idle" id="rpill" aria-live="polite">Waiting for ticket</span>
+      </div>
       <button class="btn" id="pp" type="button" aria-pressed="false">Pause</button>
       <div class="seg" id="spd" role="group" aria-label="Speed">
         <button type="button" data-s="1" aria-pressed="true">1×</button>
@@ -26,7 +34,6 @@
       <button class="btn" id="helpb" type="button">Animation guide</button>
       <a class="btn" id="modelink" href="/dashboard?demo=1">Demo</a>
       <button class="btn primary js-logout" type="button">Log out</button>
-      <div class="stt"><span class="k">Status</span><span class="mock" id="mock" hidden>Sample data</span><span class="conn" id="conn" role="status" hidden>Connecting</span><span class="pill idle" id="rpill" aria-live="polite">Waiting for ticket</span></div>
     </div>
   </header>
 
